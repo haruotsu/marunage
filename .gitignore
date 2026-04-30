@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# review-fix-loop の作業ディレクトリ（中間レビュー / サマリー / 最終レポート）
+.marunage-review/
