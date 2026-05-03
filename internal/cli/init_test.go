@@ -251,6 +251,58 @@ func TestInit_WritesAuditLine(t *testing.T) {
 	}
 }
 
+// TestInit_InvalidMode_LeavesAuditUntouched mirrors the rationale in
+// internal/cli/config.go (open audit only after validation): a typo'd
+// --mode must not leave a stale logs/ tree on disk. The previous
+// implementation opened logging.NewAuditLog before validating --mode,
+// which created ~/.marunage/logs/audit.log even though no config was
+// written. This test pins the "no side effects on rejected input"
+// invariant for init.
+func TestInit_InvalidMode_LeavesAuditUntouched(t *testing.T) {
+	cfgPath := configPathInsideHome(t)
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"--config", cfgPath, "init", "--non-interactive", "--mode", "yolo"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("init invalid mode exit=0; want non-zero")
+	}
+
+	auditPath := auditLogFor(cfgPath)
+	if _, err := os.Stat(auditPath); !os.IsNotExist(err) {
+		t.Errorf("audit.log should not exist after rejected --mode; stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(auditPath)); !os.IsNotExist(err) {
+		t.Errorf("logs/ dir should not exist after rejected --mode; stat err=%v", err)
+	}
+}
+
+// TestInit_RejectsConfigOutsideMarunageConvention pins the safety
+// invariant flagged by the security review: when --config does not point
+// inside a `.marunage/` directory, the previous implementation silently
+// fell back to os.UserHomeDir() and provisioned the *real* ~/.marunage
+// — a destructive surprise for users testing init in throwaway dirs or
+// pointing at /etc-style paths. The fix: refuse to proceed and tell the
+// user the convention.
+func TestInit_RejectsConfigOutsideMarunageConvention(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "marunage.toml") // NOT inside .marunage/
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "init", "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("init unconventional --config exit=0; want non-zero")
+	}
+	// stderr should mention the convention so the user knows what to fix.
+	if !strings.Contains(stderr.String(), ".marunage") {
+		t.Errorf("stderr should mention .marunage convention; got %q", stderr.String())
+	}
+	// No layout artefacts under tmp.
+	for _, sub := range []string{"logs", "sources", "marunage.toml"} {
+		if _, err := os.Stat(filepath.Join(tmp, sub)); err == nil {
+			t.Errorf("init touched %s despite rejection", sub)
+		}
+	}
+}
+
 // TestInit_NoLongerLeafStub ensures the migration from "stub" to real
 // implementation took effect, mirroring the doctor test pattern.
 func TestInit_NoLongerLeafStub(t *testing.T) {

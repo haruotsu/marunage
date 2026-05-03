@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -62,9 +61,9 @@ func newInitCmd(configPath *string) *cobra.Command {
 		// banner on errors so a typo does not bury the actionable message.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			home := homeFromConfigPath(*configPath)
-			if home == "" {
-				return fmt.Errorf("--config %q: cannot derive home directory", *configPath)
+			home, err := homeFromConfigPath(*configPath)
+			if err != nil {
+				return err
 			}
 
 			chosen := mode
@@ -74,8 +73,16 @@ func newInitCmd(configPath *string) *cobra.Command {
 					return err
 				}
 				chosen = picked
-			} else if chosen == "" {
-				chosen = "bypass"
+			}
+
+			// Validate mode BEFORE opening the audit writer so a typo'd
+			// flag never leaves a stale logs/ tree behind (mirrors the
+			// comment in newConfigCmd). initialize.Run also validates,
+			// but by then logging.NewAuditLog has already MkdirAll'd
+			// logs/ and created an empty audit.log.
+			resolved, err := initialize.ResolveMode(chosen)
+			if err != nil {
+				return err
 			}
 
 			auditor, closeAudit, err := openInitAuditor(*configPath)
@@ -86,17 +93,13 @@ func newInitCmd(configPath *string) *cobra.Command {
 
 			res, err := initialize.Run(initialize.Options{
 				Home:    home,
-				Mode:    chosen,
+				Mode:    resolved,
 				Auditor: auditor,
 			})
 			if err != nil {
-				if errors.Is(err, initialize.ErrInvalidMode) {
-					return err
-				}
-				return fmt.Errorf("init: %w", err)
+				return err
 			}
-
-			printInitResult(cmd.OutOrStdout(), res, chosen)
+			printInitResult(cmd.OutOrStdout(), res, resolved)
 			return nil
 		},
 	}
@@ -106,33 +109,24 @@ func newInitCmd(configPath *string) *cobra.Command {
 	return cmd
 }
 
-// homeFromConfigPath turns an absolute --config path into the implicit
-// home directory init is provisioning: <home>/.marunage/config.toml maps
-// back to <home>. Anything that does not match the convention falls back
-// to the user's actual home, so an exotic --config layout still works
-// end-to-end (the user just gets ~/.marunage created on disk).
-func homeFromConfigPath(p string) string {
+// homeFromConfigPath turns the active --config path into the implicit
+// home directory init provisions. The contract is "--config must point
+// at <home>/.marunage/config.toml" — anything else gets rejected so a
+// user testing init with a throwaway path cannot accidentally mutate
+// their real ~/.marunage.
+func homeFromConfigPath(p string) (string, error) {
 	if p == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return ""
+			return "", fmt.Errorf("resolve home directory: %w", err)
 		}
-		return home
+		return home, nil
 	}
 	dir := filepath.Dir(p)
-	if filepath.Base(dir) == ".marunage" {
-		return filepath.Dir(dir)
+	if filepath.Base(dir) != ".marunage" {
+		return "", fmt.Errorf("--config %q: must point inside a .marunage/ directory (e.g. %s/.marunage/config.toml)", p, filepath.Dir(p))
 	}
-	// --config does not point inside ~/.marunage; fall back to the real
-	// home. This keeps the layout convention deterministic: marunage
-	// always materialises ~/.marunage/{logs,sources,config.toml}, even if
-	// the user pointed --config at a sibling file for testing config
-	// loading.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return home
+	return filepath.Dir(dir), nil
 }
 
 // promptForMode renders the documented numeric menu, reads stdin until a
