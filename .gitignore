@@ -37,3 +37,5 @@ go.work.sum
 # 設計ドキュメント (ローカル管理)
 docs/pr_split_plan.md
 docs/requirement.md
+
+CLAUDE.local.md
