@@ -10,18 +10,21 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/skills"
 )
 
 // newSetupCmd builds the `marunage setup` subcommand. PR-34 implements
-// only the `--skills` arm; the documented `--source <name>` and bare
-// `marunage setup` (the full interactive wizard) land in later PRs.
+// only the `--skills` arm; the documented `--from <name>` (Phase 4
+// shared registry) and bare `marunage setup` (the full interactive
+// wizard) land in later PRs.
 //
 // The command is intentionally strict: invoking it with no recognised
 // sub-flag returns a typed error so a fat-fingered run never silently
 // no-ops. Once the wizard ships, that branch will route into it
 // instead.
-func newSetupCmd() *cobra.Command {
+func newSetupCmd(configPath *string) *cobra.Command {
 	var (
 		doSkills     bool
 		force        bool
@@ -54,7 +57,7 @@ func newSetupCmd() *cobra.Command {
 			if !doSkills {
 				return errSetupNoArm
 			}
-			return runSkills(cmd, runSkillsArgs{
+			return runSkills(cmd, *configPath, runSkillsArgs{
 				Force:        force,
 				Diff:         diff,
 				Merge:        merge,
@@ -78,7 +81,7 @@ func newSetupCmd() *cobra.Command {
 // what to do". We surface it as a typed sentinel so a future wizard
 // branch can `errors.Is` against it before defaulting to the full
 // interactive flow.
-var errSetupNoArm = errors.New("setup: specify --skills (the only PR-34 arm); --source / interactive wizard land in later PRs")
+var errSetupNoArm = errors.New("setup: specify --skills; the interactive wizard and --from <registry> are not yet implemented")
 
 // runSkillsArgs bundles the Skills-arm flags so the RunE closure stays
 // readable. It is package-private — tests drive `Execute` end-to-end.
@@ -90,7 +93,7 @@ type runSkillsArgs struct {
 	FromDir      string
 }
 
-func runSkills(cmd *cobra.Command, args runSkillsArgs) error {
+func runSkills(cmd *cobra.Command, configPath string, args runSkillsArgs) error {
 	target, err := skillsTargetDir()
 	if err != nil {
 		return err
@@ -101,6 +104,21 @@ func runSkills(cmd *cobra.Command, args runSkillsArgs) error {
 		return err
 	}
 
+	// Open the audit writer only for the modes that mutate disk.
+	// --diff and --check-updates are pure read operations and would
+	// otherwise create an empty logs/ tree on first run.
+	var auditor config.Auditor = config.NopAuditor{}
+	closeAudit := func() {}
+	if !args.Diff && !args.CheckUpdates {
+		a, closer, err := openSetupAuditor(configPath)
+		if err != nil {
+			return err
+		}
+		auditor = a
+		closeAudit = closer
+	}
+	defer closeAudit()
+
 	res, err := skills.Install(skills.InstallOptions{
 		Target:       target,
 		Source:       source,
@@ -110,6 +128,7 @@ func runSkills(cmd *cobra.Command, args runSkillsArgs) error {
 		CheckUpdates: args.CheckUpdates,
 		Out:          cmd.OutOrStdout(),
 		In:           activeStdinReader(),
+		Auditor:      auditor,
 	})
 	if err != nil {
 		return err
@@ -117,6 +136,19 @@ func runSkills(cmd *cobra.Command, args runSkillsArgs) error {
 
 	printSkillsResult(cmd.OutOrStdout(), target, res)
 	return nil
+}
+
+// openSetupAuditor mirrors openInitAuditor: open the audit writer at
+// the documented per-config-path location and hand back a no-arg
+// closer. A failure to open is fatal because the "No silent execution"
+// invariant explicitly requires setup.skills.* to land on disk.
+func openSetupAuditor(configPath string) (config.Auditor, func(), error) {
+	auditPath := auditLogPathFor(configPath)
+	a, err := logging.NewAuditLog(auditPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open audit log %s: %w", auditPath, err)
+	}
+	return a, func() { _ = a.Close() }, nil
 }
 
 // skillsTargetDir resolves ~/.claude/skills, the documented install
