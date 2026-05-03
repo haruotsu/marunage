@@ -13,9 +13,13 @@ session per task in an isolated cmux workspace.
 
 ## Status
 
-PR-01 (this commit) ships only the bootstrap: `marunage --version`, the
-project layout, the Makefile, and CI. The full Phase 1 surface
-(`init` / `add` / `dispatch` / `web` …) lands in subsequent PRs.
+The CLI skeleton is in place: every Phase 1 subcommand from
+[`docs/requirement.md`](./docs/requirement.md) (`init`, `doctor`, `setup`,
+`add`, `dispatch`, `web`, `config`, `daemon`, …) is wired through cobra and
+listed in `marunage --help`. The leaves are stubs that print
+`not yet implemented (see docs/pr_split_plan.md)` and exit non-zero — actual
+behavior lands in later PRs along the
+[PR split plan](./docs/pr_split_plan.md).
 
 ## Build
 
