@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
@@ -907,5 +908,75 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 	if !strings.Contains(row.JudgmentReason, "send") && !strings.Contains(row.JudgmentReason, "Send") {
 		t.Errorf("judgment_reason = %q; want to mention Send", row.JudgmentReason)
+	}
+}
+
+// F1/F2/F3: workspaceName must trim by rune count, not byte count, so a
+// title containing multi-byte characters (Japanese, emoji) is not chopped
+// mid-rune. A byte-based trim would leave the cmux dashboard label with a
+// trailing replacement character (U+FFFD) and, more dangerously, propagate
+// invalid UTF-8 into anything that later parses the workspace name.
+func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
+	cases := []struct {
+		name    string
+		title   string
+		wantSub string // a substring expected in the trimmed name
+	}{
+		{
+			// "あ" is 3 bytes; 50 of them is 150 bytes. Byte-trim at 40 cuts
+			// the 14th rune mid-way and yields invalid UTF-8.
+			name:    "japanese-overflow",
+			title:   strings.Repeat("あ", 50),
+			wantSub: strings.Repeat("あ", 40),
+		},
+		{
+			// 🍎 is 4 bytes (a single rune in Go). 50 of them = 200 bytes.
+			// Even though 40 / 4 == 10 happens to align, the test pins the
+			// rune-count semantics: we want exactly 40 emoji preserved (not
+			// 10) once the trim is rune-based.
+			name:    "emoji-overflow",
+			title:   strings.Repeat("🍎", 50),
+			wantSub: strings.Repeat("🍎", 40),
+		},
+		{
+			// Pure ASCII regression: 50 'a' chars trim to 40 'a' chars.
+			name:    "ascii-overflow",
+			title:   strings.Repeat("a", 50),
+			wantSub: strings.Repeat("a", 40),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDispatchFixture(t)
+			id, err := f.repo.Insert(f.ctx, store.Task{
+				Source: "manual", Title: tc.title, CWD: "/tmp",
+			})
+			if err != nil {
+				t.Fatalf("Insert: %v", err)
+			}
+			if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if len(f.cmux.newWorkspaceCalls) != 1 {
+				t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+			}
+			got := f.cmux.newWorkspaceCalls[0].Name
+			if !utf8.ValidString(got) {
+				t.Errorf("workspace name %q is not valid UTF-8 (byte-trim cut a multi-byte rune)", got)
+			}
+			wantPrefix := fmt.Sprintf("#%d ", id)
+			if !strings.HasPrefix(got, wantPrefix) {
+				t.Errorf("name = %q; want prefix %q", got, wantPrefix)
+			}
+			if !strings.Contains(got, tc.wantSub) {
+				t.Errorf("name = %q; want it to contain %d-rune trimmed title %q",
+					got, len([]rune(tc.wantSub)), tc.wantSub)
+			}
+			// The title portion must not exceed the documented rune cap.
+			titlePart := strings.TrimPrefix(got, wantPrefix)
+			if got := len([]rune(titlePart)); got > 40 {
+				t.Errorf("title rune count = %d; want <= 40", got)
+			}
+		})
 	}
 }
