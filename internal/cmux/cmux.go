@@ -23,7 +23,36 @@ import (
 // methods at once.
 type Client interface {
 	NewWorkspace(ctx context.Context, opts NewWorkspaceOptions) (Workspace, error)
+	WaitReady(ctx context.Context, ws Workspace) error
 	Send(ctx context.Context, ws Workspace, text string) error
+}
+
+// ReadinessProbe returns whether ws has finished its boot sequence (trust
+// prompt, bypass-permissions prompt, ...) and is ready to accept a Send.
+// PR-42 will eventually wire this to a tail of cmux's status JSON; the
+// interface is split out so this package can ship before that arrives
+// and tests can drive WaitReady without a real cmux.
+type ReadinessProbe interface {
+	IsReady(ctx context.Context, ws Workspace) (bool, error)
+}
+
+// ReadinessProbeFunc adapts a plain function into a ReadinessProbe so a
+// caller can write `WithReadinessProbe(ReadinessProbeFunc(myFunc))`
+// rather than declaring a struct.
+type ReadinessProbeFunc func(ctx context.Context, ws Workspace) (bool, error)
+
+func (f ReadinessProbeFunc) IsReady(ctx context.Context, ws Workspace) (bool, error) {
+	return f(ctx, ws)
+}
+
+// neverReadyProbe is the default. Until PR-42 wires a real probe, calling
+// WaitReady on a freshly-built Client always exhausts the timeout — which
+// is the right answer: a caller that forgot to inject a probe must not
+// silently treat every workspace as ready.
+type neverReadyProbe struct{}
+
+func (neverReadyProbe) IsReady(_ context.Context, _ Workspace) (bool, error) {
+	return false, nil
 }
 
 // Workspace is the typed handle returned by NewWorkspace. ID is the raw
@@ -79,6 +108,12 @@ var (
 	// NewWorkspace call failed and its zero-value Workspace was reused
 	// by mistake.
 	ErrInvalidWorkspace = errors.New("cmux: workspace id is empty")
+
+	// ErrTimeout is returned by WaitReady when the readiness probe
+	// never reports ready before the configured startup timeout
+	// elapses. Distinct from context.DeadlineExceeded so callers can
+	// distinguish "cmux is slow" from "the parent deadline fired".
+	ErrTimeout = errors.New("cmux: workspace did not become ready before timeout")
 )
 
 // Defaults match docs/requirement.md execution dispatcher details. The
@@ -95,6 +130,7 @@ const (
 // the struct itself can stay unexported.
 type client struct {
 	runner         Runner
+	probe          ReadinessProbe
 	startupTimeout time.Duration
 	pollInterval   time.Duration
 	clock          func() time.Time
@@ -114,6 +150,13 @@ type Option func(*client)
 // also pass a wrapping Runner that adds tracing / retry / metrics.
 func WithRunner(r Runner) Option {
 	return func(c *client) { c.runner = r }
+}
+
+// WithReadinessProbe injects the probe WaitReady polls. PR-42 will pass
+// a probe backed by `cmux status --json`; tests pass a scripted bool
+// stream.
+func WithReadinessProbe(p ReadinessProbe) Option {
+	return func(c *client) { c.probe = p }
 }
 
 // WithStartupTimeout overrides the 60s default. Tests squash this to a
@@ -140,11 +183,13 @@ func WithFallbackBinary(name string) Option {
 	return func(c *client) { c.fallbackBinary = name }
 }
 
-// NewClient returns a Client wired to ExecRunner by default. Callers in
-// production can override the Runner; tests override Runner + timing.
+// NewClient returns a Client wired to ExecRunner / a never-ready probe by
+// default. Callers in production can override the Runner and probe;
+// tests override Runner + probe + timing.
 func NewClient(opts ...Option) Client {
 	c := &client{
 		runner:         ExecRunner{},
+		probe:          neverReadyProbe{},
 		startupTimeout: defaultStartupTimeout,
 		pollInterval:   defaultPollInterval,
 		clock:          time.Now,
@@ -223,4 +268,45 @@ func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
 	}
 	return fmt.Errorf("cmux send failed (%v, stderr=%s); %s fallback also failed: %w (stderr=%s)",
 		primaryErr, primaryStderr, c.fallbackBinary, fbErr, strings.TrimSpace(string(fbStderr)))
+}
+
+// WaitReady blocks until the readiness probe reports ws is ready, the
+// startup timeout elapses (-> ErrTimeout), or the parent context is
+// cancelled (-> ctx.Err()). It probes once before the first sleep so a
+// workspace that came up during NewWorkspace's exec round-trip does not
+// pay an extra pollInterval before being noticed.
+func (c *client) WaitReady(ctx context.Context, ws Workspace) error {
+	if ws.ID == "" {
+		return ErrInvalidWorkspace
+	}
+
+	deadline := c.clock().Add(c.startupTimeout)
+	ticker := time.NewTicker(c.pollInterval)
+	defer ticker.Stop()
+
+	ready, err := c.probe.IsReady(ctx, ws)
+	if err != nil {
+		return fmt.Errorf("cmux readiness probe: %w", err)
+	}
+	if ready {
+		return nil
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if !c.clock().Before(deadline) {
+				return ErrTimeout
+			}
+			ready, err := c.probe.IsReady(ctx, ws)
+			if err != nil {
+				return fmt.Errorf("cmux readiness probe: %w", err)
+			}
+			if ready {
+				return nil
+			}
+		}
+	}
 }
