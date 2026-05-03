@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -253,6 +254,32 @@ func TestSendFallsBackToWsSendOnFailure(t *testing.T) {
 	}
 }
 
+// 8b: when the ws-send fallback is itself missing from PATH, Send must
+// surface a diagnostic that names the missing binary so doctor / users
+// can fix it. The resulting error wraps both legs so callers can still
+// see the primary failure that triggered the fallback.
+func TestSendDiagnosesMissingFallbackBinary(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(
+		runResult{Err: errors.New("cmux send: exit 1")},
+		runResult{Err: &exec.Error{Name: "ws-send", Err: exec.ErrNotFound}},
+	)
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "msg")
+	if err == nil {
+		t.Fatalf("Send returned nil; want error naming the missing fallback")
+	}
+	if !strings.Contains(err.Error(), "ws-send") {
+		t.Errorf("err = %v; want it to mention the missing fallback binary name", err)
+	}
+	// The primary failure must still be visible in the chain so the caller
+	// can see what triggered the fallback in the first place.
+	if !strings.Contains(err.Error(), "cmux send") {
+		t.Errorf("err = %v; want it to mention the primary cmux send failure", err)
+	}
+}
+
 // 9: empty workspace ID is rejected up-front so we never shell out with "".
 func TestSendRejectsEmptyWorkspace(t *testing.T) {
 	r := &fakeRunner{}
@@ -316,6 +343,35 @@ func TestWaitReadyTimesOut(t *testing.T) {
 	if !errors.Is(err, cmux.ErrTimeout) {
 		t.Fatalf("err = %v; want ErrTimeout", err)
 	}
+}
+
+// 13: zero-valued pollInterval / startupTimeout from a buggy caller must
+// not panic the runtime. The library defends with a fall-back to the
+// package defaults so a misconfigured Option never crashes dispatch.
+func TestWaitReadyRejectsNonPositiveTuning(t *testing.T) {
+	t.Run("zero poll interval falls back to default", func(t *testing.T) {
+		probe := &scriptedProbe{ready: []bool{true}}
+		c := cmux.NewClient(
+			cmux.WithReadinessProbe(probe),
+			cmux.WithPollInterval(0),
+			cmux.WithStartupTimeout(time.Second),
+		)
+		// Must not panic: NewTicker(0) would panic without the guard.
+		if err := c.WaitReady(context.Background(), cmux.Workspace{ID: "workspace:1"}); err != nil {
+			t.Fatalf("WaitReady: %v", err)
+		}
+	})
+	t.Run("zero startup timeout falls back to default", func(t *testing.T) {
+		probe := &scriptedProbe{ready: []bool{true}}
+		c := cmux.NewClient(
+			cmux.WithReadinessProbe(probe),
+			cmux.WithStartupTimeout(0),
+			cmux.WithPollInterval(time.Millisecond),
+		)
+		if err := c.WaitReady(context.Background(), cmux.Workspace{ID: "workspace:1"}); err != nil {
+			t.Fatalf("WaitReady: %v", err)
+		}
+	})
 }
 
 // 12: parent ctx cancel short-circuits WaitReady.

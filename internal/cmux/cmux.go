@@ -41,6 +41,7 @@ type ReadinessProbe interface {
 // rather than declaring a struct.
 type ReadinessProbeFunc func(ctx context.Context, ws Workspace) (bool, error)
 
+// IsReady satisfies ReadinessProbe by delegating to the wrapped function.
 func (f ReadinessProbeFunc) IsReady(ctx context.Context, ws Workspace) (bool, error) {
 	return f(ctx, ws)
 }
@@ -280,8 +281,20 @@ func (c *client) WaitReady(ctx context.Context, ws Workspace) error {
 		return ErrInvalidWorkspace
 	}
 
-	deadline := c.clock().Add(c.startupTimeout)
-	ticker := time.NewTicker(c.pollInterval)
+	// Defend against a misconfigured Option (e.g. WithPollInterval(0)) by
+	// falling back to the package defaults: time.NewTicker(0) would panic
+	// otherwise, taking the entire dispatcher down with it.
+	startupTimeout := c.startupTimeout
+	if startupTimeout <= 0 {
+		startupTimeout = defaultStartupTimeout
+	}
+	pollInterval := c.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultPollInterval
+	}
+
+	deadline := c.clock().Add(startupTimeout)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	ready, err := c.probe.IsReady(ctx, ws)
