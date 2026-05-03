@@ -84,16 +84,21 @@ func BuildPrompt(in PromptInputs) string {
 }
 
 // sentinelInstruction renders the closing block that tells Claude how to
-// publish completion atomically. Two-step contract:
+// publish completion atomically. Three-step contract:
 //
-//  1. Write `<dir>/.result_summary` with the trimmed final summary.
-//  2. Write `<dir>/.exit_code.tmp` then `mv` it to `<dir>/.exit_code`.
+//  1. Capture the task's $? IMMEDIATELY into $EC, before anything else
+//     mutates it (printf in step 2 would otherwise overwrite $? with
+//     printf's own — almost always 0 — exit code, silently turning
+//     every failed task into a "success").
+//  2. Write `<dir>/.result_summary` with the trimmed final summary.
+//  3. Write `<dir>/.exit_code.tmp` (carrying $EC) then `mv` it to
+//     `<dir>/.exit_code`.
 //
 // The mv is the publish barrier: same-FS rename is atomic on POSIX, so
 // the PR-43 completion watcher polling `<dir>/.exit_code` either sees
 // the final byte or no file at all — never a half-written sentinel.
-// Writing `.result_summary` first guarantees the watcher reading both
-// files after the rename always finds a complete summary.
+// Writing `.result_summary` before the rename guarantees the watcher
+// reading both files after the rename always finds a complete summary.
 //
 // Empty workspaceDir returns "" so the section is omitted entirely
 // (back-compat for callers that have not wired completion yet).
@@ -106,9 +111,13 @@ func sentinelInstruction(workspaceDir string) string {
 	summaryPath := filepath.Join(workspaceDir, ".result_summary")
 	return fmt.Sprintf(
 		"## Completion sentinel\n\n"+
-			"When this task is complete (success OR failure), publish the outcome by running:\n\n"+
+			"When this task is complete (success OR failure), publish the outcome by running, "+
+			"in this exact order:\n\n"+
+			"  EC=$?\n"+
 			"  printf '%%s' \"<one-line summary>\" > %s\n"+
-			"  echo $? > %s && mv %s %s\n\n"+
+			"  echo \"$EC\" > %s && mv %s %s\n\n"+
+			"The EC=$? capture MUST come first so the sentinel records the task's exit code, "+
+			"not printf's (which is almost always 0 and would silently mask every failure).\n"+
 			"The mv is the publish barrier — the marunage completion watcher polls %s "+
 			"and treats its presence as the signal that this task has exited. Do not write %s "+
 			"directly; always go through the .tmp + mv so the reader never sees a half-written file.",

@@ -149,6 +149,41 @@ func TestBuildPromptOmitsSentinelInstructionWhenWorkspaceDirEmpty(t *testing.T) 
 	}
 }
 
+// P5: the sentinel instruction must capture the task's $? BEFORE
+// running anything that mutates $? (printf the summary, etc.). A naive
+// `printf ... > summary; echo $? > .exit_code` captures printf's exit
+// (always 0), not the task's — every failed task would silently look
+// successful. Pin the contract: an "EC=$?" (or equivalent capture)
+// appears before the printf line, and the sentinel write uses the
+// captured variable rather than a fresh $?.
+func TestBuildPromptCapturesExitCodeBeforeSummary(t *testing.T) {
+	const dir = "/home/me/.marunage/workspaces/11"
+	got := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base: "BASE",
+		Task: store.Task{
+			ID: 11, Source: "manual", Title: "exit code capture", Body: "b",
+		},
+		WorkspaceDir: dir,
+	})
+
+	captureAt := strings.Index(got, "EC=$?")
+	printfAt := strings.Index(got, "printf")
+	if captureAt < 0 {
+		t.Fatalf("prompt missing EC=$? capture (sentinel would record printf's exit code, not the task's):\n%s", got)
+	}
+	if printfAt < 0 {
+		t.Fatalf("prompt missing printf line:\n%s", got)
+	}
+	if captureAt >= printfAt {
+		t.Errorf("EC=$? must come BEFORE printf so the captured exit code is the task's, not printf's; capture=%d printf=%d in:\n%s",
+			captureAt, printfAt, got)
+	}
+	// The sentinel write should also use the captured variable.
+	if !strings.Contains(got, "$EC") {
+		t.Errorf("sentinel write must reference the captured $EC variable; got:\n%s", got)
+	}
+}
+
 // P4: result_summary write precedes the sentinel rename, so the
 // publish barrier (.exit_code) is observed only after the summary file
 // is already on disk. We pin the order by string position.
