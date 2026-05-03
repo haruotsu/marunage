@@ -803,8 +803,8 @@ func TestTaskRepoListRejectsOversizedFilter(t *testing.T) {
 //      "transition forbidden").
 
 //  30. EscalateToHuman from running: status flips, judgment_reason is
-//      overwritten with the supplied reason, and the AFTER UPDATE trigger
-//      bumps updated_at past the seeded old timestamp.
+//     overwritten with the supplied reason, and the AFTER UPDATE trigger
+//     bumps updated_at past the seeded old timestamp.
 func TestTaskRepoEscalateToHumanFromRunning(t *testing.T) {
 	f := newRepoFixture(t)
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -842,7 +842,7 @@ func TestTaskRepoEscalateToHumanFromRunning(t *testing.T) {
 }
 
 //  31. EscalateToHuman is idempotent on waiting_human and refreshes the
-//      reason. Same prompt firing twice must not error.
+//     reason. Same prompt firing twice must not error.
 func TestTaskRepoEscalateToHumanIdempotentOnWaitingHuman(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -871,7 +871,7 @@ func TestTaskRepoEscalateToHumanIdempotentOnWaitingHuman(t *testing.T) {
 }
 
 //  32. EscalateToHuman rejects every status outside {running, waiting_human}
-//      with ErrInvalidTransition, leaving the row untouched.
+//     with ErrInvalidTransition, leaving the row untouched.
 func TestTaskRepoEscalateToHumanRejectsInvalidSources(t *testing.T) {
 	cases := []struct {
 		name string
@@ -915,7 +915,7 @@ func TestTaskRepoEscalateToHumanRejectsInvalidSources(t *testing.T) {
 }
 
 //  33. EscalateToHuman rejects an empty reason. The Web UI / Slack DM has
-//      nothing to show otherwise.
+//     nothing to show otherwise.
 func TestTaskRepoEscalateToHumanRejectsEmptyReason(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -940,8 +940,8 @@ func TestTaskRepoEscalateToHumanRejectsEmptyReason(t *testing.T) {
 }
 
 //  34. EscalateToHuman on missing id returns ErrNotFound, distinct from
-//      ErrInvalidTransition. Same atomic-update + probe pattern as
-//      AcquireLock.
+//     ErrInvalidTransition. Same atomic-update + probe pattern as
+//     AcquireLock.
 func TestTaskRepoEscalateToHumanMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
 	err := f.repo.EscalateToHuman(f.ctx, 99999, "phantom")
@@ -970,7 +970,7 @@ func TestTaskRepoEscalateToHumanMissingReturnsErrNotFound(t *testing.T) {
 //      the post-mortem in `marunage review` can see why this row landed
 //      on the human queue in the first place.
 
-//  35-37. ExpireWaitingHuman flips only the right rows.
+// 35-37. ExpireWaitingHuman flips only the right rows.
 func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 	f := newRepoFixture(t)
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -1050,7 +1050,7 @@ func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 	}
 }
 
-//  38. ExpireWaitingHuman returns (0, nil) when nothing matches.
+// 38. ExpireWaitingHuman returns (0, nil) when nothing matches.
 func TestTaskRepoExpireWaitingHumanNoMatchesIsNotAnError(t *testing.T) {
 	f := newRepoFixture(t)
 	deadline := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -1064,9 +1064,9 @@ func TestTaskRepoExpireWaitingHumanNoMatchesIsNotAnError(t *testing.T) {
 }
 
 //  39. Zero deadline rejects with ErrDeadlineRequired. Without this guard
-//      a caller that forgets to compute (now - human_wait_timeout) would
-//      pass time.Time{} (epoch), which would silently expire nothing and
-//      mask the bug forever.
+//     a caller that forgets to compute (now - human_wait_timeout) would
+//     pass time.Time{} (epoch), which would silently expire nothing and
+//     mask the bug forever.
 func TestTaskRepoExpireWaitingHumanZeroDeadlineRejected(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
