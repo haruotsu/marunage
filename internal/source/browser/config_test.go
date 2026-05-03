@@ -1,0 +1,245 @@
+package browser
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeFile(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("seed %s: %v", path, err)
+	}
+	return path
+}
+
+// TestLoadConfigParsesSingleSite verifies the happy path: a minimal
+// browser.toml round-trips into a SiteConfig with every documented field
+// populated.
+func TestLoadConfigParsesSingleSite(t *testing.T) {
+	t.Parallel()
+
+	body := `
+[[site]]
+name = "slack-saved"
+url = "https://app.slack.com/saved"
+item_selector = ".p-saved_msg"
+key_field = "id"
+
+[site.fields]
+title = { selector = ".p-msg__title" }
+body = { selector = ".p-msg__body" }
+id = { selector = "[data-id]", attr = "data-id" }
+`
+	path := writeFile(t, t.TempDir(), "browser.toml", body)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Sites) != 1 {
+		t.Fatalf("Sites = %d, want 1", len(cfg.Sites))
+	}
+	s := cfg.Sites[0]
+	if s.Name != "slack-saved" {
+		t.Errorf("Name = %q", s.Name)
+	}
+	if s.URL != "https://app.slack.com/saved" {
+		t.Errorf("URL = %q", s.URL)
+	}
+	if s.ItemSelector != ".p-saved_msg" {
+		t.Errorf("ItemSelector = %q", s.ItemSelector)
+	}
+	if s.KeyField != "id" {
+		t.Errorf("KeyField = %q", s.KeyField)
+	}
+	if r, ok := s.Fields["id"]; !ok || r.Selector != "[data-id]" || r.Attr != "data-id" {
+		t.Errorf("Fields[id] = %+v ok=%v", r, ok)
+	}
+	if r := s.Fields["title"]; r.Attr != "" || r.Selector != ".p-msg__title" {
+		t.Errorf("Fields[title] = %+v", r)
+	}
+}
+
+// TestLoadConfigParsesMultipleSitesPreservesOrder asserts that two sites
+// declared in TOML come back in declaration order — the plugin's List
+// concatenates per-site results in this order so a stable ordering is
+// load-bearing for diffability.
+func TestLoadConfigParsesMultipleSitesPreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	body := `
+[[site]]
+name = "first"
+url = "https://example.com/1"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+
+[[site]]
+name = "second"
+url = "https://example.com/2"
+item_selector = ".y"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`
+	path := writeFile(t, t.TempDir(), "browser.toml", body)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Sites) != 2 {
+		t.Fatalf("Sites = %d", len(cfg.Sites))
+	}
+	if cfg.Sites[0].Name != "first" || cfg.Sites[1].Name != "second" {
+		t.Errorf("order: %q, %q", cfg.Sites[0].Name, cfg.Sites[1].Name)
+	}
+}
+
+// TestLoadConfigRejectsMissingFields enumerates every required field and
+// verifies the typed sentinel surfaces with a message naming the field
+// (so the operator knows what to fix). We deliberately test these
+// scenarios in one table because the validator returns the same sentinel
+// for each — the message is the only differentiator.
+func TestLoadConfigRejectsMissingFields(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		body    string
+		wantSub string
+	}{
+		{
+			name: "missing name",
+			body: `[[site]]
+url = "https://example.com/"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`,
+			wantSub: "name",
+		},
+		{
+			name: "missing url",
+			body: `[[site]]
+name = "x"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`,
+			wantSub: "url",
+		},
+		{
+			name: "missing item_selector",
+			body: `[[site]]
+name = "x"
+url = "https://example.com/"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`,
+			wantSub: "item_selector",
+		},
+		{
+			name: "missing key_field",
+			body: `[[site]]
+name = "x"
+url = "https://example.com/"
+item_selector = ".x"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`,
+			wantSub: "key_field",
+		},
+		{
+			name: "key_field not declared in fields",
+			body: `[[site]]
+name = "x"
+url = "https://example.com/"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+title = { selector = ".t" }
+`,
+			wantSub: "key_field",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeFile(t, t.TempDir(), "browser.toml", tc.body)
+			_, err := LoadConfig(path)
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("err = %v, want ErrInvalidConfig", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("err message %q missing hint %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestLoadConfigRejectsDuplicateSiteNames guards against a copy-paste
+// mistake: two sites with the same name would make ExternalIDs ambiguous
+// (Source = "browser:slack-saved" twice) and confuse the operator.
+func TestLoadConfigRejectsDuplicateSiteNames(t *testing.T) {
+	t.Parallel()
+
+	body := `
+[[site]]
+name = "dup"
+url = "https://a/"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+
+[[site]]
+name = "dup"
+url = "https://b/"
+item_selector = ".y"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`
+	path := writeFile(t, t.TempDir(), "browser.toml", body)
+	_, err := LoadConfig(path)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("err = %v, want ErrInvalidConfig", err)
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("err message %q missing 'duplicate'", err)
+	}
+}
+
+// TestLoadConfigRejectsEmptyFile rejects a config that declares zero sites
+// — a Plugin with nothing to scrape is almost certainly a misconfiguration
+// (empty array left after deleting the sole rule). We surface this as a
+// loud failure rather than silently returning an empty task list.
+func TestLoadConfigRejectsEmptyFile(t *testing.T) {
+	t.Parallel()
+
+	path := writeFile(t, t.TempDir(), "browser.toml", "")
+	_, err := LoadConfig(path)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("err = %v, want ErrInvalidConfig", err)
+	}
+}
+
+// TestLoadConfigMissingFileWraps confirms a missing file produces a
+// readable error (not a typed sentinel — the OS error already carries
+// fs.ErrNotExist and callers can match on that if they care).
+func TestLoadConfigMissingFileWraps(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadConfig(filepath.Join(t.TempDir(), "nope.toml"))
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+}
