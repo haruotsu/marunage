@@ -73,17 +73,21 @@ func (a *AuditLog) Record(e config.AuditEvent) {
 	}
 
 	record := struct {
-		Time   string `json:"time"`
-		Action string `json:"action"`
-		Path   string `json:"path,omitempty"`
-		Key    string `json:"key,omitempty"`
-		Value  string `json:"value,omitempty"`
+		Time    string `json:"time"`
+		Action  string `json:"action"`
+		Path    string `json:"path,omitempty"`
+		Key     string `json:"key,omitempty"`
+		Value   string `json:"value,omitempty"`
+		Backend string `json:"backend,omitempty"`
+		Name    string `json:"name,omitempty"`
 	}{
-		Time:   time.Now().UTC().Format(time.RFC3339Nano),
-		Action: e.Action,
-		Path:   e.Path,
-		Key:    e.Key,
-		Value:  e.Value,
+		Time:    time.Now().UTC().Format(time.RFC3339Nano),
+		Action:  e.Action,
+		Path:    e.Path,
+		Key:     e.Key,
+		Value:   e.Value,
+		Backend: e.Backend,
+		Name:    e.Name,
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

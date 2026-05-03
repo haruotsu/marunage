@@ -17,11 +17,13 @@ import (
 // type keeps the file format part of the spec rather than an implementation
 // detail.
 type auditLine struct {
-	Time   string `json:"time"`
-	Action string `json:"action"`
-	Path   string `json:"path"`
-	Key    string `json:"key"`
-	Value  string `json:"value"`
+	Time    string `json:"time"`
+	Action  string `json:"action"`
+	Path    string `json:"path"`
+	Key     string `json:"key"`
+	Value   string `json:"value"`
+	Backend string `json:"backend"`
+	Name    string `json:"name"`
 }
 
 func readAuditLines(t *testing.T, path string) []auditLine {
@@ -202,6 +204,56 @@ func TestAuditLogSatisfiesAuditor(t *testing.T) {
 	t.Cleanup(func() { _ = a.Close() })
 
 	var _ config.Auditor = a
+}
+
+// TestAuditLogSerializesSecretsFields pins the on-disk shape for
+// secrets.set / secrets.delete events so the file format and the
+// internal/secrets decorator agree on what reaches audit.log. The most
+// important guarantee is that no Value field is written - the decorator
+// never sets it, but a regression that wrote it as "" would still be a
+// downgrade because operators might start expecting it.
+func TestAuditLogSerializesSecretsFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+
+	a, err := logging.NewAuditLog(path)
+	if err != nil {
+		t.Fatalf("NewAuditLog: %v", err)
+	}
+	a.Record(config.AuditEvent{
+		Action:  "secrets.set",
+		Backend: "file",
+		Name:    "gmail",
+	})
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	raw := string(body)
+	if !strings.Contains(raw, `"backend":"file"`) {
+		t.Errorf("audit line missing backend field: %s", raw)
+	}
+	if !strings.Contains(raw, `"name":"gmail"`) {
+		t.Errorf("audit line missing name field: %s", raw)
+	}
+	if strings.Contains(raw, `"value":`) {
+		t.Errorf("audit line carries a value field for secrets.set: %s", raw)
+	}
+
+	lines := readAuditLines(t, path)
+	if len(lines) != 1 {
+		t.Fatalf("lines = %d; want 1", len(lines))
+	}
+	got := lines[0]
+	if got.Action != "secrets.set" || got.Backend != "file" || got.Name != "gmail" {
+		t.Errorf("decoded line = %+v; want secrets.set/file/gmail", got)
+	}
+	if got.Value != "" {
+		t.Errorf("Value = %q; secrets events must never carry a value", got.Value)
+	}
 }
 
 // TestAuditLogRecordAfterClose: closing the writer must not panic later
