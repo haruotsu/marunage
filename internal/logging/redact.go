@@ -12,35 +12,46 @@ import (
 // multiple places.
 const redactionPlaceholder = "[REDACTED]"
 
-// secretPatterns is the (compiled, ordered) list of regexes Redact walks
-// to mask secrets. Order matters: more-specific prefixes (e.g.
-// `sk-ant-...`) come before broader ones (`sk-...`) so the longer match
-// always wins. Each pattern targets ONE provider; we deliberately avoid
-// generic high-entropy detection because UUIDs / commit SHAs / base64
-// fixtures would false-positive and obscure real failures.
+// secretPattern bundles a compiled regex with whether the regex
+// preserves a leading capture group (so a header / query keyword like
+// "Bearer " or "password=" survives in the masked output for forensic
+// context).
+type secretPattern struct {
+	re        *regexp.Regexp
+	keepGroup bool
+}
+
+// secretPatterns is the ordered list of regexes Redact walks to mask
+// secrets. Order matters: more-specific prefixes (`sk-ant-...`) come
+// before broader ones (`sk-...`) so the longer match always wins.
 //
 // Pattern shape rationale:
 //   - 20+ char tail keeps the regex from matching short, non-secret
 //     strings that happen to start with the same prefix.
-//   - `[A-Za-z0-9_\-]` is the safe set across all listed providers; any
-//     extra character (e.g. ".") would let the pattern run past the
-//     secret and into surrounding text.
+//   - `[A-Za-z0-9_\-]` is the safe set across all listed providers;
+//     any extra character (e.g. ".") would let the pattern run past
+//     the secret and into surrounding text.
 //
-// MAINTAINER NOTE: the matching unit-test cases live in
-// redact_test.go; if you add or change a pattern, update both.
-var secretPatterns = []*regexp.Regexp{
+// MAINTAINER NOTE: matching unit-test cases live in redact_test.go;
+// if you add or change a pattern, update both.
+var secretPatterns = []secretPattern{
 	// Anthropic API keys: sk-ant-[anything]-[20+ chars]
-	regexp.MustCompile(`sk-ant-[A-Za-z0-9_\-]{20,}`),
-	// OpenAI / generic sk- keys (must come AFTER the sk-ant- pattern).
-	regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`),
+	{re: regexp.MustCompile(`sk-ant-[A-Za-z0-9_\-]{20,}`)},
+	// OpenAI / generic sk- keys (MUST come AFTER the sk-ant- pattern).
+	{re: regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`)},
 	// GitHub PATs: ghp_, gho_, ghu_, ghs_, ghr_ followed by 20+ chars.
-	regexp.MustCompile(`gh[psour]_[A-Za-z0-9]{20,}`),
+	{re: regexp.MustCompile(`gh[psour]_[A-Za-z0-9]{20,}`)},
 	// Slack tokens: xoxb-, xoxp-, xoxa-, xoxr-, xoxs-.
-	regexp.MustCompile(`xox[bpars]-[A-Za-z0-9\-]{10,}`),
-	// Bearer / Authorization header values. We match the value AFTER
-	// "Bearer " (case-insensitive) so the header keyword survives in
-	// the log line for forensic context.
-	regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9_\-\.~+/]+=*`),
+	{re: regexp.MustCompile(`xox[bpars]-[A-Za-z0-9\-]{10,}`)},
+	// Bearer header value (case-insensitive); keep the keyword.
+	{re: regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9_\-\.~+/]+=*`), keepGroup: true},
+	// Basic auth header value (base64 user:pass); keep the keyword.
+	{re: regexp.MustCompile(`(?i)(Basic\s+)[A-Za-z0-9+/]+=*`), keepGroup: true},
+	// URL query string secrets: ?password= / ?passwd= / ?api_key= /
+	// ?apikey= / ?token= / ?access_token= / ?secret=. Match key=value
+	// up to the next `&` or whitespace. The key prefix is preserved
+	// so a reviewer can tell which parameter leaked.
+	{re: regexp.MustCompile(`(?i)((?:password|passwd|api[_-]?key|token|access[_-]?token|secret)=)[^&\s]+`), keepGroup: true},
 }
 
 // Redact returns s with every recognised secret pattern replaced by
@@ -57,6 +68,7 @@ var secretPatterns = []*regexp.Regexp{
 //   - Google API keys (AIza[A-Za-z0-9_-]{35})
 //   - Stripe live keys (sk_live_…)
 //   - Raw JWTs not behind a Bearer keyword (eyJ…)
+//   - HTTP form-encoded POST bodies (key=value pairs in body, not URL)
 //
 // The list is intentionally conservative — adding generic high-entropy
 // detection would mask UUIDs, commit SHAs, and base64 fixtures (high
@@ -68,14 +80,12 @@ func Redact(s string) string {
 		return s
 	}
 	out := s
-	for i, re := range secretPatterns {
-		// Bearer pattern preserves capture group 1 (the header keyword).
-		// Other patterns blank the whole match.
-		if i == len(secretPatterns)-1 {
-			out = re.ReplaceAllString(out, "${1}"+redactionPlaceholder)
+	for _, p := range secretPatterns {
+		if p.keepGroup {
+			out = p.re.ReplaceAllString(out, "${1}"+redactionPlaceholder)
 			continue
 		}
-		out = re.ReplaceAllString(out, redactionPlaceholder)
+		out = p.re.ReplaceAllString(out, redactionPlaceholder)
 	}
 	return out
 }
