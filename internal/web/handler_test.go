@@ -94,6 +94,53 @@ func TestRoutes_TestPostRejectedWithoutCSRF(t *testing.T) {
 	}
 }
 
+// TestRoutes_TestPostAcceptedWithCSRF is the brief's positive
+// counterpart (#4 in the test list): a POST that carries the matching
+// cookie + header is forwarded through the full middleware chain
+// (security headers → access log → CSRF → mux) to the dummy handler
+// and returns 200.  Without this test a regression that breaks the
+// middleware order silently leaves only the negative path covered.
+func TestRoutes_TestPostAcceptedWithCSRF(t *testing.T) {
+	srv := newTestServer(t)
+
+	const token = "fixed-test-token"
+	req := httptest.NewRequest(http.MethodPost, "/test-post", nil)
+	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: token})
+	req.Header.Set(CSRFHeaderName, token)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 with valid CSRF material", rec.Code)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q; want nosniff (security headers must wrap the success path too)", got)
+	}
+}
+
+// TestRoutes_SecurityHeadersOnRejectedPost pins the middleware-order
+// invariant the server.go comment promises: even a 403 from CSRF must
+// carry the baseline security headers.  Without this check, swapping
+// the chain order (e.g. CSRF outside of securityHeaders) would slip
+// through unnoticed.
+func TestRoutes_SecurityHeadersOnRejectedPost(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/test-post", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403", rec.Code)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options on 403 = %q; want nosniff", got)
+	}
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Errorf("Content-Security-Policy missing on 403; security headers must wrap CSRF rejection")
+	}
+}
+
 // TestRoutes_EventsServesSSE confirms the /events endpoint is wired
 // to the SSE handler.  The full streaming behaviour is exercised in
 // sse_test.go; here we only need the wire-up + Content-Type.
