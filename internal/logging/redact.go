@@ -51,6 +51,18 @@ var secretPatterns = []*regexp.Regexp{
 // The function is safe to call on any string and is the canonical
 // pre-write sanitiser for anything that lands in judgment_reason,
 // audit.log, or daemon.log.
+//
+// COVERAGE LIMITS — patterns this function does NOT yet match:
+//   - AWS access keys (AKIA[A-Z0-9]{16})
+//   - Google API keys (AIza[A-Za-z0-9_-]{35})
+//   - Stripe live keys (sk_live_…)
+//   - Raw JWTs not behind a Bearer keyword (eyJ…)
+//
+// The list is intentionally conservative — adding generic high-entropy
+// detection would mask UUIDs, commit SHAs, and base64 fixtures (high
+// false-positive rate that would obscure real failures). Add a new
+// pattern to secretPatterns when marunage actually integrates with the
+// corresponding provider so the regex is grounded in a real call site.
 func Redact(s string) string {
 	if s == "" {
 		return s

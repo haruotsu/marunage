@@ -15,6 +15,7 @@ package dispatch
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/store"
@@ -45,24 +46,43 @@ type PromptInputs struct {
 // cmux scrollback without inflating the byte count cmux send carries.
 const promptSeparator = "\n\n"
 
-// fenceEscapeReplacement breaks the literal "<<" sequence so a
-// user-derived field cannot forge a fence open/close. We insert a
-// zero-width-looking marker that is harmless to a human reader (still
-// visible verbatim) but makes the escaped substring lexically distinct
-// from any of the labelled fence tokens this package emits. We use
-// "<\\<" (a backslash between the two angle brackets) because (a) it is
-// reviewer-readable in the rendered prompt, (b) it does not collide
-// with any markdown construct cmux's text relay would treat specially,
-// and (c) it cannot accidentally re-form a fence after another pass
-// (the backslash means no further "<<" / "</" remains).
-const fenceEscapeReplacement = `<\<`
+// leftAngleRunRe matches any maximal run of "<" characters. We rewrite
+// runs of length >=2 so no two "<" can ever appear adjacent in the
+// escaped output — that is what guarantees an attacker cannot forge a
+// "<<label>>" fence-open or "<</label>>" fence-close inside their own
+// content. A naive single-pass `strings.ReplaceAll("<<", "<\<")` is
+// NOT idempotent: input like "<<<<" replaces left-to-right and leaves
+// adjacent "<" pairs at the seams (`<\<<\<` still contains "<<").
+// Using a regex on the maximal run lets us emit "<\<\<\..." in one
+// shot, with each "<" followed by a backslash so no two "<" remain
+// adjacent and the transformation is idempotent under repeated
+// application.
+var leftAngleRunRe = regexp.MustCompile(`<+`)
 
-// fenceEscape rewrites every "<<" inside a user-derived value so the
-// downstream Claude session cannot be tricked into treating attacker
-// content as a fence boundary. Trusted sections (Base / SourceSpecific
-// from skills/) skip this pass — they are not under attacker control.
+// fenceEscape rewrites every multi-"<" run inside a user-derived value
+// so the downstream Claude session cannot be tricked into treating
+// attacker content as a fence boundary. The escape is idempotent (a
+// second pass changes nothing) so a future refactor that accidentally
+// double-applies it does not progressively corrupt the prompt.
+//
+// Trusted sections (Base / SourceSpecific from skills/) skip this pass
+// — they are not under attacker control. Per-character `<` (run of
+// length 1) is left untouched because it appears legitimately in many
+// task bodies (HTML snippets, "<3", code fragments).
+//
+// Note on coverage: only the "<<" pattern is escaped, NOT "</" alone.
+// The fence-close token is "<</label>>", which always contains "<<"
+// at its head; breaking "<<" therefore breaks every closing fence too.
 func fenceEscape(s string) string {
-	return strings.ReplaceAll(s, "<<", fenceEscapeReplacement)
+	return leftAngleRunRe.ReplaceAllStringFunc(s, func(run string) string {
+		if len(run) < 2 {
+			return run
+		}
+		// Separate each "<" with a backslash so no two "<" remain
+		// adjacent. Length grows by len(run); the cost is bounded by
+		// the size of the user-derived field.
+		return strings.Repeat(`<\`, len(run))
+	})
 }
 
 // fenced wraps the (already-escaped) value in <<label>>...<</label>>.
