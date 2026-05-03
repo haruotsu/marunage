@@ -218,6 +218,35 @@ func TestMigrationsIdempotentAcrossReopens(t *testing.T) {
 	}
 }
 
+// TestOpenChmodsParentDir0700 closes a gap that was invisible on macOS
+// (where t.TempDir lives under /var/folders/... 0700) but real on Linux CI
+// (TMPDIR=/tmp is 0755): os.MkdirAll silently does nothing if the parent
+// already exists, so a parent that was created by some earlier step at 0755
+// would be left world-readable, exposing tasks.db's Gmail / Slack content
+// to other local users despite the 0600 file mode. We pre-create the parent
+// at 0755 to force the previously-invisible branch.
+func TestOpenChmodsParentDir0700(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "marunage")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("seed parent at 0755: %v", err)
+	}
+	path := filepath.Join(parent, "tasks.db")
+
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("stat parent: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("parent dir perm = %o; want 0700 (Open must tighten an existing dir)", perm)
+	}
+}
+
 // TestOpenChmodsDBFile0600 closes the gap between the 0700 parent directory
 // and the SQLite-created files (tasks.db / -wal / -shm), which would
 // otherwise inherit the user umask (often 0644). tasks.body / notes carry

@@ -57,8 +57,15 @@ var migrationsFS embed.FS
 // synchronous=NORMAL (the documented WAL pairing), and a 5s busy_timeout so
 // a competing writer does not surface as SQLITE_BUSY to callers.
 func Open(path string) (*sql.DB, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	// MkdirAll is a no-op on an existing directory and will not narrow its
+	// mode, so explicitly tighten an already-present parent (e.g. /tmp/foo
+	// created at 0755 by an earlier step) down to 0700.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod parent %s: %w", dir, err)
 	}
 
 	db, err := sql.Open("sqlite", buildDSN(path))
