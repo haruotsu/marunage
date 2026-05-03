@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -416,6 +417,101 @@ func TestRunSkipsLockedRowAndContinues(t *testing.T) {
 	// MaxParallel=1 was consumed by the free row, not the skipped one.
 	if got := len(f.cmux.newWorkspaceCalls); got != 1 {
 		t.Errorf("NewWorkspace calls = %d; want 1 (locked row must not consume budget)", got)
+	}
+}
+
+// E_audit: requirement.md L29 invariant #2 "No silent execution" +
+// L745 ("各ディスパッチで誰が何のタスクをいつ何にディスパッチしたか・
+// どの権限モードで起動したかを残す") mandate audit.log entries for
+// every dispatch start and failure. Without these, a malicious or
+// buggy dispatcher could move a row through pending -> running ->
+// failed without leaving a forensic trail.
+//
+// fakeAuditor captures the events the dispatcher records so tests can
+// assert (a) start fires after SetWorkspace, (b) fail fires from each
+// failure branch, (c) the event carries id / ws / claude_command.
+type fakeAuditor struct {
+	mu     sync.Mutex
+	events []config.AuditEvent
+}
+
+func (a *fakeAuditor) Record(e config.AuditEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, e)
+}
+func (a *fakeAuditor) Events() []config.AuditEvent {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]config.AuditEvent, len(a.events))
+	copy(out, a.events)
+	return out
+}
+
+func TestRunRecordsAuditOnSuccessfulDispatch(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit success", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	events := au.Events()
+	var start *config.AuditEvent
+	for i := range events {
+		if events[i].Action == "dispatch.start" {
+			start = &events[i]
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("dispatch.start audit event not recorded; got %+v", events)
+	}
+	if !strings.Contains(start.Key, fmt.Sprintf("%d", id)) {
+		t.Errorf("dispatch.start Key = %q; want it to mention task id %d", start.Key, id)
+	}
+	if start.Value == "" {
+		t.Errorf("dispatch.start Value is empty; want it to record the cmux ws reference")
+	}
+}
+
+func TestRunRecordsAuditOnDispatchFailure(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return errors.New("cmux send: exit 1")
+	}
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit fail", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	events := au.Events()
+	var fail *config.AuditEvent
+	for i := range events {
+		if events[i].Action == "dispatch.fail" {
+			fail = &events[i]
+			break
+		}
+	}
+	if fail == nil {
+		t.Fatalf("dispatch.fail audit event not recorded; got %+v", events)
+	}
+	if !strings.Contains(fail.Key, fmt.Sprintf("%d", id)) {
+		t.Errorf("dispatch.fail Key = %q; want it to mention task id %d", fail.Key, id)
+	}
+	if fail.Value == "" {
+		t.Errorf("dispatch.fail Value is empty; want it to record the failure reason")
 	}
 }
 

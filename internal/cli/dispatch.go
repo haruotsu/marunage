@@ -3,12 +3,14 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -72,6 +74,17 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 	repo := store.NewTaskRepo(db)
 	cm := cmux.NewClient()
 
+	// Open the audit log alongside the SQLite store so requirement.md
+	// invariant #2 "No silent execution" is honoured for every dispatch.
+	// A best-effort failure (e.g. the parent dir is not writable) falls
+	// back to NopAuditor rather than blocking dispatch entirely — losing
+	// audit visibility is bad, but dropping the queue would be worse.
+	auditPath := filepath.Join(filepath.Dir(dbPath), "logs", "audit.log")
+	var auditor config.Auditor = config.NopAuditor{}
+	if al, alErr := logging.NewAuditLog(auditPath); alErr == nil {
+		auditor = al
+	}
+
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
@@ -79,12 +92,19 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
+		dispatch.WithAuditor(auditor),
 	)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("build dispatcher: %w", err)
 	}
-	return d, db.Close, nil
+	closer := func() error {
+		if al, ok := auditor.(*logging.AuditLog); ok {
+			_ = al.Close()
+		}
+		return db.Close()
+	}
+	return d, closer, nil
 }
 
 // baseExecutionSkill is the placeholder text PR-42 ships before PR-34
