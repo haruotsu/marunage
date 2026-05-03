@@ -77,70 +77,74 @@ func writeExportJSON(w io.Writer, rows []store.Task) error {
 	return err
 }
 
-// writeExportMarkdown renders one H2 section per task with a short
-// metadata table followed by the body. The shape is a "retrospective
-// document" rather than a 1:1 mirror of taskJSON: archival readers want
-// to skim titles, not parse keys.
+// writeExportMarkdown renders one H2 section per task — title +
+// metadata list + body — for the "paste into a retrospective doc" use
+// case. Empty result emits "No tasks." so the operator can tell a
+// working command from one that exited silently.
 //
-// Empty result emits "No tasks." so the operator can tell a working
-// command from one that exited silently — same convention as `list`.
-//
-// taskFromStore is the bridge to the same RFC3339 / null treatment the
-// JSON path uses, so timestamps cannot drift between the two formats.
+// taskFromStore bridges to the same RFC3339 / null treatment the JSON
+// path uses so timestamps cannot drift between the two formats.
 func writeExportMarkdown(w io.Writer, rows []store.Task) error {
 	if len(rows) == 0 {
 		_, err := fmt.Fprintln(w, "No tasks.")
 		return err
 	}
+	for i, r := range rows {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		if err := renderMarkdownTask(w, r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// renderMarkdownTask is the per-row writer extracted so the if/err
+// chain only appears once. Optional fields are skipped when empty so
+// a minimal task does not leave bare "- key: " stubs.
+func renderMarkdownTask(w io.Writer, r store.Task) error {
+	view := taskFromStore(r)
 	deref := func(p *string) string {
 		if p == nil {
 			return ""
 		}
 		return *p
 	}
-	for i, r := range rows {
-		view := taskFromStore(r)
-		if i > 0 {
-			if _, err := fmt.Fprintln(w); err != nil {
-				return err
-			}
+	kv := func(format string, args ...any) error {
+		_, err := fmt.Fprintf(w, format, args...)
+		return err
+	}
+	if err := kv("## #%d %s\n\n", r.ID, r.Title); err != nil {
+		return err
+	}
+	if err := kv("- source: %s\n", r.Source); err != nil {
+		return err
+	}
+	if err := kv("- status: %s\n", r.Status); err != nil {
+		return err
+	}
+	if err := kv("- priority: %d\n", r.Priority); err != nil {
+		return err
+	}
+	for _, opt := range []struct{ key, value string }{
+		{"external_id", r.ExternalID},
+		{"external_url", r.ExternalURL},
+		{"created_at", deref(view.CreatedAt)},
+		{"completed_at", deref(view.CompletedAt)},
+	} {
+		if opt.value == "" {
+			continue
 		}
-		if _, err := fmt.Fprintf(w, "## #%d %s\n\n", r.ID, r.Title); err != nil {
+		if err := kv("- %s: %s\n", opt.key, opt.value); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "- source: %s\n", r.Source); err != nil {
+	}
+	if r.Body != "" {
+		if err := kv("\n%s\n", r.Body); err != nil {
 			return err
-		}
-		if _, err := fmt.Fprintf(w, "- status: %s\n", r.Status); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintf(w, "- priority: %d\n", r.Priority); err != nil {
-			return err
-		}
-		if r.ExternalID != "" {
-			if _, err := fmt.Fprintf(w, "- external_id: %s\n", r.ExternalID); err != nil {
-				return err
-			}
-		}
-		if r.ExternalURL != "" {
-			if _, err := fmt.Fprintf(w, "- external_url: %s\n", r.ExternalURL); err != nil {
-				return err
-			}
-		}
-		if s := deref(view.CreatedAt); s != "" {
-			if _, err := fmt.Fprintf(w, "- created_at: %s\n", s); err != nil {
-				return err
-			}
-		}
-		if s := deref(view.CompletedAt); s != "" {
-			if _, err := fmt.Fprintf(w, "- completed_at: %s\n", s); err != nil {
-				return err
-			}
-		}
-		if r.Body != "" {
-			if _, err := fmt.Fprintf(w, "\n%s\n", r.Body); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
