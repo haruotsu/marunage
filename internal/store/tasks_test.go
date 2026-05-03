@@ -38,6 +38,12 @@ import (
 //  20. ReleaseLock clears lock_key
 //  21. ReleaseLock on missing id -> ErrNotFound
 //  22. AcquireLock with empty lockKey -> validation error
+//  23. AcquireLock on missing id -> ErrNotFound
+//  24. AcquireLock when another *pending* row already holds the same
+//      lock_key -> ErrLockHeld (catches the dispatch race a probe limited
+//      to status='running' would miss)
+//  25. AcquireLock(id, k) twice on the same row leaves lock_key=k
+//      (idempotent self-acquire for crash-recovery flows)
 
 // repoFixture wires a TaskRepo to a fresh on-disk SQLite plus a deterministic
 // clock so every test below can pin timestamps without sleeping.
