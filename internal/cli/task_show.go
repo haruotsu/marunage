@@ -84,6 +84,9 @@ var errTaskNotFound = errors.New("show: task not found")
 func writeShowText(w io.Writer, t store.Task) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 
+	// row prints "<key>: <value>", normalising the empty string to
+	// "(empty)" so the reader can tell an absent field from a literal
+	// blank one.
 	row := func(key, value string) {
 		if value == "" {
 			value = "(empty)"
@@ -91,14 +94,16 @@ func writeShowText(w io.Writer, t store.Task) error {
 		_, _ = fmt.Fprintf(tw, "%s:\t%s\n", key, value)
 	}
 
-	timeOrEmpty := func(s string) string {
-		if s == "" {
+	// jsonView gives us the same RFC3339 / null treatment for times that
+	// --json uses, so the two outputs cannot drift apart.
+	jsonView := taskFromStore(t)
+	deref := func(p *string) string {
+		if p == nil {
 			return ""
 		}
-		return s
+		return *p
 	}
 
-	jsonView := taskFromStore(t)
 	row("id", fmt.Sprintf("%d", t.ID))
 	row("source", t.Source)
 	row("external_id", t.ExternalID)
@@ -114,19 +119,12 @@ func writeShowText(w io.Writer, t store.Task) error {
 	row("ws", t.WS)
 	row("result_summary", t.ResultSummary)
 	row("reflection", t.Reflection)
-	row("created_at", timeOrEmpty(stringFromPtr(jsonView.CreatedAt)))
-	row("updated_at", timeOrEmpty(stringFromPtr(jsonView.UpdatedAt)))
-	row("started_at", timeOrEmpty(stringFromPtr(jsonView.StartedAt)))
-	row("completed_at", timeOrEmpty(stringFromPtr(jsonView.CompletedAt)))
+	row("created_at", deref(jsonView.CreatedAt))
+	row("updated_at", deref(jsonView.UpdatedAt))
+	row("started_at", deref(jsonView.StartedAt))
+	row("completed_at", deref(jsonView.CompletedAt))
 
 	return tw.Flush()
-}
-
-func stringFromPtr(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
 }
 
 func writeShowJSON(w io.Writer, t store.Task) error {
