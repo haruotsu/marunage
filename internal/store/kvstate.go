@@ -11,9 +11,13 @@
 //   - Set is implemented as a single SQL UPSERT (`INSERT ... ON CONFLICT
 //     DO UPDATE`). One statement is atomic in SQLite, so a crash between
 //     "key exists?" and "write" is impossible by construction.
-//   - Errors are typed (ErrKVNotFound, ErrKVKeyRequired) so callers can
-//     distinguish "no checkpoint yet" (first run) from programmer error
-//     without parsing strings.
+//   - CompareAndSwap is a single conditional UPDATE; the WHERE clause
+//     checks both the key and the expected current value, so two callers
+//     racing to advance the same checkpoint cannot both succeed.
+//   - Errors are typed (ErrKVNotFound, ErrKVKeyRequired, ErrKVStaleValue)
+//     so callers can distinguish "no checkpoint yet" (first run), "drift"
+//     (concurrent advance), and "programmer error" without parsing
+//     strings.
 //
 // The kv_state schema (migrations/0001_init.sql) is intentionally minimal:
 // (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL).
@@ -41,6 +45,7 @@ import (
 var (
 	ErrKVNotFound    = errors.New("store: kv_state key not found")
 	ErrKVKeyRequired = errors.New("store: kv_state key is required")
+	ErrKVStaleValue  = errors.New("store: kv_state CompareAndSwap saw a stale value")
 )
 
 // KVStateRepo is the read/write gateway to the kv_state table. Mirrors
@@ -167,4 +172,54 @@ func (r *KVStateRepo) Delete(ctx context.Context, key string) error {
 		return ErrKVNotFound
 	}
 	return nil
+}
+
+// CompareAndSwap atomically updates value to newValue only when the row's
+// current value still equals expected. Returns ErrKVStaleValue when the
+// precondition fails (another writer raced ahead) and ErrKVNotFound when
+// the key is missing entirely.
+//
+// This is the primitive Discovery uses to advance a checkpoint without a
+// regression: two concurrent runs that both observed checkpoint=v1 must
+// not both advance it to (potentially different) v2 / v3 values; whichever
+// loses the race sees ErrKVStaleValue and re-reads.
+//
+// Implemented as a single conditional UPDATE so the precondition check
+// and the write happen in one statement — same atomicity argument as Set.
+// Distinguishing "missing" from "stale" requires a follow-up SELECT only
+// in the rare RowsAffected==0 branch.
+func (r *KVStateRepo) CompareAndSwap(ctx context.Context, key, expected, newValue string) error {
+	if key == "" {
+		return ErrKVKeyRequired
+	}
+	now := formatTime(r.now().UTC())
+	const q = `UPDATE kv_state
+		SET value = ?, updated_at = ?
+		WHERE key = ? AND value = ?`
+	res, err := r.db.ExecContext(ctx, q, newValue, now, key, expected)
+	if err != nil {
+		return fmt.Errorf("kv_state cas: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("kv_state cas rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+
+	// RowsAffected == 0 has two causes: the key does not exist, or the
+	// expected value did not match. Distinguish so the caller can choose
+	// re-Set vs. retry.
+	var probe string
+	err = r.db.QueryRowContext(ctx,
+		`SELECT value FROM kv_state WHERE key = ?`, key,
+	).Scan(&probe)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrKVNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("kv_state cas probe: %w", err)
+	}
+	return ErrKVStaleValue
 }
