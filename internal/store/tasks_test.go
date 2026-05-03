@@ -44,6 +44,14 @@ import (
 //      to status='running' would miss)
 //  25. AcquireLock(id, k) twice on the same row leaves lock_key=k
 //      (idempotent self-acquire for crash-recovery flows)
+//  26. SetWorkspace with empty string clears the ws column (reaper /
+//      clean flow contract from the SetWorkspace doc comment)
+//  27. List with a non-matching filter returns a zero-length result, not
+//      garbage (PR-20 / PR-60 iterate against this)
+//  28. List tie-breaks on id when priority and created_at match (the
+//      dispatch query plan ends with `id` for this reason)
+//  29. List rejects oversized Statuses / Sources filters as a DoS guard
+//      against an unbounded IN (?, ?, ...) expansion
 
 // repoFixture wires a TaskRepo to a fresh on-disk SQLite plus a deterministic
 // clock so every test below can pin timestamps without sleeping.
@@ -674,5 +682,95 @@ func TestTaskRepoAcquireLockIdempotentSelfAcquire(t *testing.T) {
 	}
 	if got.LockKey != "k1" {
 		t.Errorf("lock_key after self re-acquire = %q; want %q", got.LockKey, "k1")
+	}
+}
+
+// 26. SetWorkspace with empty string clears the column. The doc comment
+//     on SetWorkspace promises this for reaper / clean flows; without a
+//     test the contract would silently regress.
+func TestTaskRepoSetWorkspaceEmptyClearsColumn(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "ws"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetWorkspace(f.ctx, id, "workspace:1"); err != nil {
+		t.Fatalf("SetWorkspace set: %v", err)
+	}
+	if err := f.repo.SetWorkspace(f.ctx, id, ""); err != nil {
+		t.Fatalf("SetWorkspace clear: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "" {
+		t.Errorf("WS after empty SetWorkspace = %q; want empty", got.WS)
+	}
+}
+
+// 27. List with a non-matching filter returns a zero-length slice. PR-20
+//     `marunage list` iterates over this with `for _, t := range list`
+//     so "no matches" must be observably empty, not garbage.
+func TestTaskRepoListReturnsZeroLengthOnNoMatch(t *testing.T) {
+	f := newRepoFixture(t)
+	seedListFixture(t, f)
+	got, err := f.repo.List(f.ctx, store.ListFilter{
+		Statuses: []string{store.StatusFailed},
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("List(failed) length = %d; want 0", len(got))
+	}
+}
+
+// 28. List tie-breaks on id when priority and created_at are identical.
+//     Without the trailing `id ASC` in the ORDER BY (and the matching
+//     trailing column in idx_tasks_dispatch), two rows inserted at the
+//     same instant could swap order between calls, breaking dispatch
+//     determinism. The clock is intentionally NOT advanced here so both
+//     created_at values are identical.
+func TestTaskRepoListTieBreaksById(t *testing.T) {
+	f := newRepoFixture(t)
+	a, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "a", Priority: 5})
+	if err != nil {
+		t.Fatalf("Insert a: %v", err)
+	}
+	b, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "b", Priority: 5})
+	if err != nil {
+		t.Fatalf("Insert b: %v", err)
+	}
+	got, err := f.repo.List(f.ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List returned %d rows; want 2", len(got))
+	}
+	if got[0].ID != a || got[1].ID != b {
+		t.Errorf("tie-break by id: got [%d, %d]; want [%d, %d]",
+			got[0].ID, got[1].ID, a, b)
+	}
+}
+
+// 29. List rejects oversized Statuses / Sources filters. Without an
+//     upper bound, an unbounded IN (?, ?, ...) expansion grows linearly
+//     with the caller-controlled slice length and could exceed
+//     SQLITE_MAX_VARIABLE_NUMBER (32766 by default) or simply waste
+//     memory. CLI flags accepting `--status` repeatedly could trigger
+//     either failure mode if not capped here.
+func TestTaskRepoListRejectsOversizedFilter(t *testing.T) {
+	f := newRepoFixture(t)
+	huge := make([]string, 100)
+	for i := range huge {
+		huge[i] = "x"
+	}
+	if _, err := f.repo.List(f.ctx, store.ListFilter{Statuses: huge}); err == nil {
+		t.Errorf("oversized Statuses filter must error")
+	}
+	if _, err := f.repo.List(f.ctx, store.ListFilter{Sources: huge}); err == nil {
+		t.Errorf("oversized Sources filter must error")
 	}
 }

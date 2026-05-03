@@ -394,6 +394,14 @@ type ListFilter struct {
 	Limit    int
 }
 
+// maxFilterValues caps Statuses / Sources slice length so a caller (or a
+// CLI flag accepting repeated `--status`) cannot blow past
+// SQLITE_MAX_VARIABLE_NUMBER (32766 by default) or balloon memory by
+// expanding an unbounded IN (?, ?, ...) clause. The Status enum is six
+// values and Sources realistically tops out in the dozens; 64 leaves
+// headroom for both without enabling abuse.
+const maxFilterValues = 64
+
 // List returns rows matching f, ordered the same way the dispatcher
 // scans the queue: priority DESC, created_at ASC, id ASC. PR-42 calls
 // this with Statuses=[pending] and Limit=N to pick the next batch; PR-60
@@ -404,6 +412,15 @@ type ListFilter struct {
 // result set they produce is the right answer, and the CHECK constraint
 // in 0001_init.sql means a writer cannot persist them anyway.
 func (r *TaskRepo) List(ctx context.Context, f ListFilter) ([]Task, error) {
+	if len(f.Statuses) > maxFilterValues {
+		return nil, fmt.Errorf("store: Statuses filter too large (%d > %d)",
+			len(f.Statuses), maxFilterValues)
+	}
+	if len(f.Sources) > maxFilterValues {
+		return nil, fmt.Errorf("store: Sources filter too large (%d > %d)",
+			len(f.Sources), maxFilterValues)
+	}
+
 	var (
 		clauses []string
 		args    []any
