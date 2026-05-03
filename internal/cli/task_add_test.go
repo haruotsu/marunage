@@ -60,6 +60,55 @@ func (f *fakeTaskRepo) Get(_ context.Context, id int64) (store.Task, error) {
 	return t, nil
 }
 
+// fakeAllowedTransitions mirrors store.allowedTransitions so the in-memory
+// fake exhibits the same policy the real repo would. Keeping the matrix
+// duplicated (rather than depending on an exported helper from store) is
+// the cost of the test-only seam; the store-side TestTaskRepoTransitionStatus*
+// suites pin the canonical truth.
+var fakeAllowedTransitions = map[string]map[string]bool{
+	store.StatusPending: {
+		store.StatusDone:   true,
+		store.StatusFailed: true,
+	},
+	store.StatusRunning: {
+		store.StatusDone:   true,
+		store.StatusFailed: true,
+	},
+	store.StatusWaitingHuman: {
+		store.StatusDone:   true,
+		store.StatusFailed: true,
+	},
+	store.StatusDone:    {store.StatusPending: true},
+	store.StatusFailed:  {store.StatusPending: true},
+	store.StatusSkipped: {store.StatusPending: true},
+}
+
+func (f *fakeTaskRepo) TransitionStatus(_ context.Context, id int64, newStatus string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.rows[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	allowed, ok := fakeAllowedTransitions[row.Status]
+	if !ok || !allowed[newStatus] {
+		return store.ErrInvalidTransition
+	}
+	row.Status = newStatus
+	f.rows[id] = row
+	return nil
+}
+
+func (f *fakeTaskRepo) Delete(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.rows[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(f.rows, id)
+	return nil
+}
+
 func (f *fakeTaskRepo) List(_ context.Context, filter store.ListFilter) ([]store.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
