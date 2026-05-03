@@ -85,6 +85,15 @@ var (
 	ErrSourceRequired      = errors.New("store: Source is required")
 	ErrTitleRequired       = errors.New("store: Title is required")
 	ErrLockKeyRequired     = errors.New("store: lockKey is required")
+	// ErrInvalidTransition is returned when a status-changing helper is
+	// called from a state it does not service.
+	ErrInvalidTransition = errors.New("store: status transition is not allowed from the current state")
+	// ErrReasonRequired is returned when a reason-recording helper gets
+	// an empty string; the Web UI / Slack DM has nothing to show then.
+	ErrReasonRequired = errors.New("store: reason is required")
+	// ErrDeadlineRequired guards bulk expiry helpers from a zero time.Time
+	// silently expiring nothing.
+	ErrDeadlineRequired = errors.New("store: deadline is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -375,6 +384,85 @@ func (r *TaskRepo) ReleaseLock(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// EscalateToHuman flips a row from running (or already waiting_human)
+// into waiting_human and records why. Allowed source states are running
+// and waiting_human only — idempotent re-call refreshes the reason, and
+// any other state returns ErrInvalidTransition so a stale dispatcher
+// cannot reanimate a terminal row.
+//
+// reason is stored verbatim for audit; downstream display layers
+// (Slack DM / Web UI) own sanitisation of newlines / control chars.
+//
+// Atomicity follows AcquireLock: a single UPDATE with a status guard
+// does the conflict check + the write, and a follow-up SELECT
+// distinguishes ErrNotFound from ErrInvalidTransition when
+// RowsAffected reports zero.
+func (r *TaskRepo) EscalateToHuman(ctx context.Context, id int64, reason string) error {
+	if reason == "" {
+		return ErrReasonRequired
+	}
+
+	const q = `
+		UPDATE tasks
+		   SET status = ?, judgment_reason = ?
+		 WHERE id = ?
+		   AND status IN ('running', 'waiting_human')`
+	res, err := r.db.ExecContext(ctx, q, StatusWaitingHuman, reason, id)
+	if err != nil {
+		return fmt.Errorf("escalate to human: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("escalate to human rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+
+	// RowsAffected == 0: either id is missing, or current status falls
+	// outside {running, waiting_human}. Probe to give the caller the
+	// precise sentinel — same disambiguation pattern AcquireLock uses.
+	var current string
+	err = r.db.QueryRowContext(ctx,
+		"SELECT status FROM tasks WHERE id = ?", id,
+	).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("escalate to human probe: %w", err)
+	}
+	return fmt.Errorf("%w: cannot escalate from %q", ErrInvalidTransition, current)
+}
+
+// ExpireWaitingHuman flips every waiting_human row whose updated_at is
+// strictly before deadline into failed, and returns the affected count.
+// The caller computes deadline as `now - human_wait_timeout` and calls
+// this on each tick.
+//
+// Strict less-than is intentional: a row that landed in waiting_human at
+// exactly `deadline` has not yet passed the timeout window. judgment_reason
+// is preserved so the post-mortem in `marunage review` can still see why
+// the row was escalated. ErrDeadlineRequired guards against a zero
+// time.Time silently expiring nothing.
+func (r *TaskRepo) ExpireWaitingHuman(ctx context.Context, deadline time.Time) (int64, error) {
+	if deadline.IsZero() {
+		return 0, ErrDeadlineRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ? WHERE status = ? AND updated_at < ?",
+		StatusFailed, StatusWaitingHuman, formatTime(deadline.UTC()),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("expire waiting_human: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("expire waiting_human rows: %w", err)
+	}
+	return n, nil
 }
 
 // SetWorkspace records the cmux ws reference for a dispatched task. It is

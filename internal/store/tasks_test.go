@@ -782,3 +782,329 @@ func TestTaskRepoListRejectsOversizedFilter(t *testing.T) {
 		t.Errorf("oversized Sources filter must error")
 	}
 }
+
+// Test list for PR-41 (権限モード) — store-side helpers consumed by PR-42:
+//
+//  30. EscalateToHuman: running -> waiting_human stamps the new status and
+//      overwrites judgment_reason; updated_at advances.
+//  31. EscalateToHuman: waiting_human -> waiting_human is idempotent (the
+//      same prompt re-firing must not be an error) and refreshes
+//      judgment_reason so the latest reason wins.
+//  32. EscalateToHuman: pending / done / failed / skipped reject with
+//      ErrInvalidTransition. The escalation path is reserved for cmux
+//      sessions that are actually mid-flight (running) or already paused
+//      for a human (waiting_human); end-state rows must not be reanimated
+//      by a stale dispatcher.
+//  33. EscalateToHuman: empty reason -> ErrReasonRequired. Escalation is
+//      meaningless without a reason for the human to read in the Web UI /
+//      Slack DM, so silently accepting "" would make audit logs useless.
+//  34. EscalateToHuman: missing id -> ErrNotFound (atomic guard + probe
+//      pattern, same as AcquireLock — distinguishes "row absent" from
+//      "transition forbidden").
+
+//  30. EscalateToHuman from running: status flips, judgment_reason is
+//     overwritten with the supplied reason, and the AFTER UPDATE trigger
+//     bumps updated_at past the seeded old timestamp.
+func TestTaskRepoEscalateToHumanFromRunning(t *testing.T) {
+	f := newRepoFixture(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:         "manual",
+		Title:          "needs human",
+		Status:         store.StatusRunning,
+		JudgmentReason: "phase1: markdown source bypass",
+		CreatedAt:      old,
+		UpdatedAt:      old,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	const reason = "auto-accept did not match: Bash(rm -rf /tmp/x)"
+	if err := f.repo.EscalateToHuman(f.ctx, id, reason); err != nil {
+		t.Fatalf("EscalateToHuman: %v", err)
+	}
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusWaitingHuman {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusWaitingHuman)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q (overwrite)", got.JudgmentReason, reason)
+	}
+	if !got.UpdatedAt.After(old) {
+		t.Errorf("updated_at did not advance past seeded old time: got %v", got.UpdatedAt)
+	}
+}
+
+//  31. EscalateToHuman is idempotent on waiting_human and refreshes the
+//     reason. Same prompt firing twice must not error.
+func TestTaskRepoEscalateToHumanIdempotentOnWaitingHuman(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:         "manual",
+		Title:          "already paused",
+		Status:         store.StatusWaitingHuman,
+		JudgmentReason: "first reason",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.EscalateToHuman(f.ctx, id, "second reason"); err != nil {
+		t.Fatalf("EscalateToHuman idempotent re-call: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.JudgmentReason != "second reason" {
+		t.Errorf("judgment_reason = %q; want refreshed %q", got.JudgmentReason, "second reason")
+	}
+	if got.Status != store.StatusWaitingHuman {
+		t.Errorf("status = %q; want stay %q", got.Status, store.StatusWaitingHuman)
+	}
+}
+
+//  32. EscalateToHuman rejects every status outside {running, waiting_human}
+//     with ErrInvalidTransition, leaving the row untouched.
+func TestTaskRepoEscalateToHumanRejectsInvalidSources(t *testing.T) {
+	cases := []struct {
+		name string
+		from string
+	}{
+		{"pending", store.StatusPending},
+		{"done", store.StatusDone},
+		{"failed", store.StatusFailed},
+		{"skipped", store.StatusSkipped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepoFixture(t)
+			id, err := f.repo.Insert(f.ctx, store.Task{
+				Source:         "manual",
+				Title:          "no escalation from " + tc.from,
+				Status:         tc.from,
+				JudgmentReason: "untouched",
+			})
+			if err != nil {
+				t.Fatalf("Insert: %v", err)
+			}
+
+			err = f.repo.EscalateToHuman(f.ctx, id, "should be rejected")
+			if !errors.Is(err, store.ErrInvalidTransition) {
+				t.Fatalf("EscalateToHuman from %q: err = %v; want ErrInvalidTransition", tc.from, err)
+			}
+
+			got, err := f.repo.Get(f.ctx, id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != tc.from {
+				t.Errorf("status changed despite rejected escalation: got %q; want %q", got.Status, tc.from)
+			}
+			if got.JudgmentReason != "untouched" {
+				t.Errorf("judgment_reason changed despite rejected escalation: got %q", got.JudgmentReason)
+			}
+		})
+	}
+}
+
+//  33. EscalateToHuman rejects an empty reason. The Web UI / Slack DM has
+//     nothing to show otherwise.
+func TestTaskRepoEscalateToHumanRejectsEmptyReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "needs reason",
+		Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.EscalateToHuman(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("EscalateToHuman empty reason: err = %v; want ErrReasonRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("status changed despite rejected escalate: got %q; want %q", got.Status, store.StatusRunning)
+	}
+}
+
+//  34. EscalateToHuman on missing id returns ErrNotFound, distinct from
+//     ErrInvalidTransition. Same atomic-update + probe pattern as
+//     AcquireLock.
+func TestTaskRepoEscalateToHumanMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.EscalateToHuman(f.ctx, 99999, "phantom")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("EscalateToHuman(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// Test list for PR-41 ④ ExpireWaitingHuman:
+//
+//  35. Rows in waiting_human whose updated_at is strictly before deadline
+//      flip to failed; returns the number of rows actually transitioned.
+//  36. Rows in waiting_human whose updated_at >= deadline are left
+//      untouched (boundary is exclusive — "older than" deadline only).
+//  37. Rows in any other status are never touched, even if their
+//      updated_at is older than deadline (the reaper has its own paths
+//      for running / pending; this helper is the human-wait path only).
+//  38. Empty result returns (0, nil) — not an error, so the loop / daemon
+//      can call ExpireWaitingHuman every tick without log spam.
+//  39. Zero deadline returns ErrDeadlineRequired without touching any row
+//      — a missing or zero-value deadline would otherwise expire nothing
+//      (epoch is the smallest representable time) AND silently mask a
+//      caller bug. Fail loudly instead.
+//  40. judgment_reason is preserved on expiry. The reason that caused
+//      escalation must remain visible after the human window elapses, so
+//      the post-mortem in `marunage review` can see why this row landed
+//      on the human queue in the first place. (Verified inline inside
+//      #35-#37 rather than as a standalone test, so the preservation
+//      assertion shares the same fixture as the row that did flip.)
+
+// 35-37 (and 40 inline). ExpireWaitingHuman flips only the right rows.
+func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
+	f := newRepoFixture(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	fresh := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	deadline := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// expired waiting_human
+	expired, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "expired", Status: store.StatusWaitingHuman,
+		JudgmentReason: "auto-accept failed: Bash(rm -rf /)",
+		CreatedAt:      old, UpdatedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("Insert expired: %v", err)
+	}
+	// On-deadline waiting_human. updated_at == deadline lands on the
+	// boundary. The SQL guard is `updated_at < ?`, so this row must NOT
+	// flip. Without this row the test passes even if `<` is mutated to
+	// `<=`, because `fresh` (2030) is far enough in the future that any
+	// off-by-one would still leave it on the safe side. Pin the boundary
+	// directly so a future SQL edit cannot silently relax the contract.
+	onDeadlineID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "on-deadline", Status: store.StatusWaitingHuman,
+		CreatedAt: deadline, UpdatedAt: deadline,
+	})
+	if err != nil {
+		t.Fatalf("Insert on-deadline: %v", err)
+	}
+	// fresh waiting_human well past the deadline.
+	freshID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "fresh", Status: store.StatusWaitingHuman,
+		CreatedAt: fresh, UpdatedAt: fresh,
+	})
+	if err != nil {
+		t.Fatalf("Insert fresh: %v", err)
+	}
+	// running (must stay; reaper handles running paths separately)
+	runningID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "running", Status: store.StatusRunning,
+		CreatedAt: old, UpdatedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("Insert running: %v", err)
+	}
+	// pending (must stay)
+	pendingID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "pending", Status: store.StatusPending,
+		CreatedAt: old, UpdatedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("Insert pending: %v", err)
+	}
+
+	n, err := f.repo.ExpireWaitingHuman(f.ctx, deadline)
+	if err != nil {
+		t.Fatalf("ExpireWaitingHuman: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("affected = %d; want 1 (only the expired row, not the on-deadline boundary)", n)
+	}
+
+	got, err := f.repo.Get(f.ctx, expired)
+	if err != nil {
+		t.Fatalf("Get expired: %v", err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("expired status = %q; want %q", got.Status, store.StatusFailed)
+	}
+	// 40. judgment_reason preserved on the row that did flip.
+	if got.JudgmentReason != "auto-accept failed: Bash(rm -rf /)" {
+		t.Errorf("judgment_reason after expiry = %q; want preserved", got.JudgmentReason)
+	}
+
+	for _, c := range []struct {
+		id   int64
+		want string
+		name string
+	}{
+		{onDeadlineID, store.StatusWaitingHuman, "on-deadline waiting_human (boundary is exclusive)"},
+		{freshID, store.StatusWaitingHuman, "fresh waiting_human"},
+		{runningID, store.StatusRunning, "running"},
+		{pendingID, store.StatusPending, "pending"},
+	} {
+		got, err := f.repo.Get(f.ctx, c.id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", c.name, err)
+		}
+		if got.Status != c.want {
+			t.Errorf("%s status = %q; want %q (untouched by ExpireWaitingHuman)", c.name, got.Status, c.want)
+		}
+	}
+}
+
+// 38. ExpireWaitingHuman returns (0, nil) when nothing matches.
+func TestTaskRepoExpireWaitingHumanNoMatchesIsNotAnError(t *testing.T) {
+	f := newRepoFixture(t)
+	deadline := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	n, err := f.repo.ExpireWaitingHuman(f.ctx, deadline)
+	if err != nil {
+		t.Fatalf("ExpireWaitingHuman empty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("affected on empty table = %d; want 0", n)
+	}
+}
+
+//  39. Zero deadline rejects with ErrDeadlineRequired. Without this guard
+//     a caller that forgets to compute (now - human_wait_timeout) would
+//     pass time.Time{} (epoch), which would silently expire nothing and
+//     mask the bug forever.
+func TestTaskRepoExpireWaitingHumanZeroDeadlineRejected(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "must survive", Status: store.StatusWaitingHuman,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	n, err := f.repo.ExpireWaitingHuman(f.ctx, time.Time{})
+	if !errors.Is(err, store.ErrDeadlineRequired) {
+		t.Fatalf("ExpireWaitingHuman zero deadline: err = %v; want ErrDeadlineRequired", err)
+	}
+	if n != 0 {
+		t.Errorf("affected on rejected call = %d; want 0", n)
+	}
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusWaitingHuman {
+		t.Errorf("row touched despite rejected call: status = %q", got.Status)
+	}
+}
