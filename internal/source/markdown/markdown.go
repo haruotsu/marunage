@@ -34,7 +34,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 )
@@ -142,13 +141,6 @@ func WithCheckpointer(c Checkpointer) Option {
 // Tests use this to pin checkpoint values without sleeping.
 func WithClock(now func() time.Time) Option {
 	return func(p *Plugin) { p.now = now }
-}
-
-// withIDGen overrides the ExternalID generator. Lower-cased because
-// only tests need it; production code always uses the crypto/rand
-// default. Renaming to capital W if a future caller needs it.
-func withIDGen(gen func() (string, error)) Option {
-	return func(p *Plugin) { p.idGen = gen }
 }
 
 // New constructs a Plugin with the given options. Defaults (clock,
@@ -569,17 +561,4 @@ func containsNewline(s string) bool {
 		}
 	}
 	return false
-}
-
-// stableSortTasksByPathLine keeps List output deterministic when callers
-// pass overlapping files (rare, but we sort defensively rather than
-// relying on map iteration order anywhere). Currently only used in
-// tests; exported as an unexported helper so a future feature can reuse it.
-func stableSortTasksByPathLine(tasks []Task) {
-	sort.SliceStable(tasks, func(i, j int) bool {
-		if tasks[i].SourcePath != tasks[j].SourcePath {
-			return tasks[i].SourcePath < tasks[j].SourcePath
-		}
-		return tasks[i].LineNumber < tasks[j].LineNumber
-	})
 }
