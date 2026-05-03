@@ -3,9 +3,11 @@ package secrets_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/secrets"
@@ -221,6 +223,87 @@ func TestAgeBackendProbeAlwaysSucceeds(t *testing.T) {
 	}
 	if got := store.Backend(); got != "age" {
 		t.Errorf("Backend() = %q; want %q", got, "age")
+	}
+}
+
+// TestAgeBackendConcurrentSetsDoNotLoseUpdates exposes the lost-update
+// hazard surfaced by review: with only the passphrase() lock held, two
+// goroutines doing Set("a", ...) and Set("b", ...) both load the same
+// vault snapshot, both mutate locally, and the second saveVault wins —
+// silently dropping the first key. Without serialising the full
+// load → mutate → save sequence, this race is reachable from any
+// dispatch path that fans out source-plugin token writes.
+//
+// The test launches N concurrent Sets against a pre-existing vault and
+// asserts that List shows every key afterwards.
+func TestAgeBackendConcurrentSetsDoNotLoseUpdates(t *testing.T) {
+	store, _ := openAgeStore(t)
+
+	// Seed the vault so isNew=false for every concurrent Set; the race
+	// we are pinning is the loadVault/saveVault sequence, not the
+	// first-time-creation prompt path.
+	if err := store.Set("seed", "v"); err != nil {
+		t.Fatalf("seed Set: %v", err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("k%02d", i)
+			if err := store.Set(key, fmt.Sprintf("v%02d", i)); err != nil {
+				t.Errorf("concurrent Set %s: %v", key, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	keys, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := n + 1 // n concurrent + the seed
+	if len(keys) != want {
+		t.Errorf("List len = %d (%v); want %d (lost update under concurrent Set)", len(keys), keys, want)
+	}
+	// And every value should still be readable.
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("k%02d", i)
+		got, ok, err := store.Get(key)
+		if err != nil || !ok || got != fmt.Sprintf("v%02d", i) {
+			t.Errorf("Get %s: ok=%v got=%q err=%v (concurrent Set lost the value)", key, ok, got, err)
+		}
+	}
+}
+
+// TestAgeBackendAuditDoesNotEmitOnFailedSet mirrors the file-backend
+// audit guarantee from audit_test.go: when validateName rejects a Set
+// before any disk I/O, the audit log must not record a phantom mutation
+// — otherwise audit.log diverges from on-disk reality. Reviewer flagged
+// this as a missing parity test for the age backend.
+func TestAgeBackendAuditDoesNotEmitOnFailedSet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "audit-fail-passphrase")
+	secrets.ResetPassphraseCacheForTest()
+
+	rec := &recordingAuditor{}
+	store, err := secrets.OpenWithAuditor(
+		secrets.Config{Backend: "age", HomeDir: home},
+		rec,
+	)
+	if err != nil {
+		t.Fatalf("OpenWithAuditor(age): %v", err)
+	}
+
+	// "../escape" is rejected by validateName before any age operation.
+	if err := store.Set("../escape", "tok"); err == nil {
+		t.Fatal("Set with bad name = nil; want validation error")
+	}
+	if len(rec.events) != 0 {
+		t.Errorf("audit fired for failed Set: %+v", rec.events)
 	}
 }
 
