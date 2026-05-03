@@ -538,6 +538,103 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 	return nil
 }
 
+// judgmentReasonSeparator is the canonical join token between the prior
+// judgment_reason and any newly appended note. Centralised so the SQL
+// CASE expression in AppendJudgmentReason and the dispatcher's in-Go
+// concatenation in dispatch.markFailed cannot drift apart — a future
+// `marunage review` parser that splits on this token reads from a
+// single source of truth.
+const judgmentReasonSeparator = "; "
+
+// AppendJudgmentReason concatenates suffix onto judgment_reason for the
+// given row. Empty existing reason → suffix becomes the whole value;
+// non-empty existing reason → joined with judgmentReasonSeparator so
+// the post-mortem in `marunage review` still sees the prior triage
+// trail. Status is NOT touched: the helper exists for the PR-44 reaper
+// "stuck warn" path, which records a heads-up without auto-failing the
+// row.
+//
+// Atomicity: implemented as a single UPDATE that derives the new value
+// inside SQLite (CASE WHEN judgment_reason IS NULL OR ” THEN ? ELSE
+// judgment_reason || '; ' || ? END), so a concurrent writer cannot lose
+// the prior content via a Get-then-Update race the way an in-process
+// helper would.
+//
+// Errors:
+//   - ErrReasonRequired : suffix is empty
+//   - ErrNotFound       : id does not exist
+func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix string) error {
+	if suffix == "" {
+		return ErrReasonRequired
+	}
+	const q = `
+		UPDATE tasks
+		   SET judgment_reason = CASE
+		       WHEN judgment_reason IS NULL OR judgment_reason = '' THEN ?
+		       ELSE judgment_reason || ? || ?
+		   END
+		 WHERE id = ?`
+	res, err := r.db.ExecContext(ctx, q, suffix, judgmentReasonSeparator, suffix, id)
+	if err != nil {
+		return fmt.Errorf("append judgment_reason: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("append judgment_reason rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkFailedFromRunningWithReason is the status-guarded sibling of
+// MarkFailedWithReason: it transitions a row to failed only if the
+// current status is running, and returns ErrInvalidTransition otherwise.
+// The reaper (PR-44) uses this so a row another writer (the atomic
+// sentinel PR-43, a manual `marunage done`) has just moved past
+// running cannot be silently overwritten by reaper's stale snapshot.
+//
+// Atomicity: a single UPDATE with a status guard does the conflict
+// check + the write. A follow-up SELECT distinguishes ErrNotFound from
+// ErrInvalidTransition when RowsAffected reports zero — same
+// disambiguation pattern AcquireLock and EscalateToHuman use.
+//
+// Errors:
+//   - ErrReasonRequired   : reason is empty
+//   - ErrNotFound         : id does not exist
+//   - ErrInvalidTransition: row is not in running
+func (r *TaskRepo) MarkFailedFromRunningWithReason(ctx context.Context, id int64, reason string) error {
+	if reason == "" {
+		return ErrReasonRequired
+	}
+	const q = `
+		UPDATE tasks
+		   SET status = ?, judgment_reason = ?
+		 WHERE id = ?
+		   AND status = ?`
+	res, err := r.db.ExecContext(ctx, q, StatusFailed, reason, id, StatusRunning)
+	if err != nil {
+		return fmt.Errorf("mark failed from running: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark failed from running rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	var current string
+	err = r.db.QueryRowContext(ctx, "SELECT status FROM tasks WHERE id = ?", id).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mark failed from running probe: %w", err)
+	}
+	return fmt.Errorf("%w: cannot mark failed from %q", ErrInvalidTransition, current)
+}
+
 // SetWorkspace records the cmux ws reference for a dispatched task. It is
 // the immediate "claim" PR-42 writes after `cmux new-workspace` returns so
 // a parallel dispatch loop iteration cannot pick the same row twice.

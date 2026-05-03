@@ -95,6 +95,12 @@ func (f *fakeCmux) Send(_ context.Context, ws cmux.Workspace, text string) error
 	return nil
 }
 
+// ListWorkspaces is a no-op stub: PR-42 dispatch never calls it. Present
+// only so *fakeCmux satisfies cmux.Client after PR-44 added the method.
+func (f *fakeCmux) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
+	return nil, nil
+}
+
 // dispatchFixture wires a real on-disk SQLite store, a fake cmux client,
 // and a Dispatcher with a deterministic clock so tests can assert exact
 // started_at values.

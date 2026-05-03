@@ -1247,3 +1247,167 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("MarkFailedWithReason(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// AppendJudgmentReason test list (PR-44 reaper helper):
+//
+//   47. Empty existing judgment_reason: row gets exactly the suffix.
+//   48. Non-empty existing reason: suffix joined with "; " separator so
+//       the post-mortem in `marunage review` keeps the prior triage
+//       trail intact.
+//   49. Empty suffix is rejected with ErrReasonRequired.
+//   50. Missing id returns ErrNotFound.
+
+// 47. Empty existing judgment_reason: row gets exactly the suffix.
+func TestTaskRepoAppendJudgmentReasonOnEmpty(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no prior note", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const suffix = "[reaper] stuck running over 24h"
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, suffix); err != nil {
+		t.Fatalf("AppendJudgmentReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.JudgmentReason != suffix {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, suffix)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("status = %q; want running (append must not transition)", got.Status)
+	}
+}
+
+// 48. Non-empty existing reason: "; "-joined append preserves prior content.
+func TestTaskRepoAppendJudgmentReasonPreservesExisting(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "had a note", Status: store.StatusRunning,
+		JudgmentReason: "operator note",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const suffix = "[reaper] stuck running over 24h"
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, suffix); err != nil {
+		t.Fatalf("AppendJudgmentReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := "operator note; " + suffix
+	if got.JudgmentReason != want {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, want)
+	}
+}
+
+// 49. Empty suffix is rejected with ErrReasonRequired.
+func TestTaskRepoAppendJudgmentReasonRejectsEmptySuffix(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "x", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("AppendJudgmentReason(empty): err = %v; want ErrReasonRequired", err)
+	}
+}
+
+// 50. Missing id returns ErrNotFound.
+func TestTaskRepoAppendJudgmentReasonMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.AppendJudgmentReason(f.ctx, 9999, "x")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AppendJudgmentReason(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// MarkFailedFromRunningWithReason test list (PR-44 reaper helper):
+//
+//   51. Running row flips to failed with reason recorded (happy path).
+//   52. Already-done row is left untouched and ErrInvalidTransition is
+//       returned — pinning that the reaper cannot overwrite a row a
+//       concurrent atomic sentinel (PR-43) has just moved past running.
+//   53. Empty reason rejected with ErrReasonRequired.
+//   54. Missing id returns ErrNotFound.
+
+// 51. Running row → failed; reason stored verbatim.
+func TestTaskRepoMarkFailedFromRunningWithReasonHappyPath(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "running row", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const reason = "workspace disappeared (reaper)"
+	if err := f.repo.MarkFailedFromRunningWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkFailedFromRunningWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("status = %q; want failed", got.Status)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, reason)
+	}
+}
+
+// 52. Done row is NOT overwritten — the helper exists precisely to make
+// reaper's failed transition safe against a concurrent done writer.
+func TestTaskRepoMarkFailedFromRunningWithReasonRefusesNonRunning(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "already done", Status: store.StatusDone,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	err = f.repo.MarkFailedFromRunningWithReason(f.ctx, id, "should be skipped")
+	if !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("err = %v; want ErrInvalidTransition", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want done (untouched)", got.Status)
+	}
+	if got.JudgmentReason != "" {
+		t.Errorf("judgment_reason = %q; want empty (untouched)", got.JudgmentReason)
+	}
+}
+
+// 53. Empty reason rejected.
+func TestTaskRepoMarkFailedFromRunningWithReasonRejectsEmptyReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "x", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkFailedFromRunningWithReason(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("err = %v; want ErrReasonRequired", err)
+	}
+}
+
+// 54. Missing id returns ErrNotFound.
+func TestTaskRepoMarkFailedFromRunningWithReasonMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.MarkFailedFromRunningWithReason(f.ctx, 9999, "x")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v; want ErrNotFound", err)
+	}
+}

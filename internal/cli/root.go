@@ -79,6 +79,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskRenderCmd(&configPath))
 	root.AddCommand(newTaskExportCmd(&configPath))
 	root.AddCommand(newTaskCleanCmd(&configPath))
+	root.AddCommand(newReaperCmd(&configPath))
 
 	return root
 }

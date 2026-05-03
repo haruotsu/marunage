@@ -34,6 +34,10 @@ func TestDefaultConfig(t *testing.T) {
 	if c.Execution.HumanWaitTimeout != "30m" {
 		t.Errorf("Execution.HumanWaitTimeout = %q; want %q", c.Execution.HumanWaitTimeout, "30m")
 	}
+	if c.Execution.ReaperStuckThreshold != "24h" {
+		t.Errorf("Execution.ReaperStuckThreshold = %q; want %q",
+			c.Execution.ReaperStuckThreshold, "24h")
+	}
 	if c.Reflection.Enabled {
 		t.Errorf("Reflection.Enabled = true; want false (cost-conscious default)")
 	}
@@ -111,6 +115,16 @@ func TestValidate(t *testing.T) {
 			name:    "execution.human_wait_timeout must parse as duration",
 			mutate:  func(c *Config) { c.Execution.HumanWaitTimeout = "not-a-duration" },
 			wantErr: "execution.human_wait_timeout",
+		},
+		{
+			name:    "execution.reaper_stuck_threshold must parse as duration",
+			mutate:  func(c *Config) { c.Execution.ReaperStuckThreshold = "soon" },
+			wantErr: "execution.reaper_stuck_threshold",
+		},
+		{
+			name:    "execution.reaper_stuck_threshold rejects empty",
+			mutate:  func(c *Config) { c.Execution.ReaperStuckThreshold = "" },
+			wantErr: "execution.reaper_stuck_threshold",
 		},
 		{
 			name:    "discovery.interval must parse as duration",
