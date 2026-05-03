@@ -90,11 +90,11 @@ func TestFileSecretsProbe_PassOnPATH(t *testing.T) {
 
 func TestFileSecretsProbe_KeyringHeuristic(t *testing.T) {
 	cases := []struct {
-		name    string
-		goos    string
-		runner  Runner
-		envBus  string
-		want    bool
+		name   string
+		goos   string
+		runner Runner
+		envBus string
+		want   bool
 	}{
 		{"darwin always", "darwin", nil, "", true},
 		{"windows always", "windows", nil, "", true},
