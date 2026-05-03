@@ -131,6 +131,25 @@ func Open(cfg Config) (Store, error) {
 	return openWithFactories(cfg, defaultFactories())
 }
 
+// OpenWithAuditor is Open plus an Auditor that receives one AuditEvent
+// per Set / Delete. Pass internal/logging.AuditLog (or any other
+// config.Auditor) so secrets mutations land in audit.log alongside the
+// existing config.* events. Get / List intentionally do not audit -
+// reads are the hot path and would drown the log.
+//
+// Passing a nil Auditor degrades to NopAuditor so callers in early CLI
+// glue can wire OpenWithAuditor unconditionally.
+func OpenWithAuditor(cfg Config, auditor config.Auditor) (Store, error) {
+	store, err := Open(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if auditor == nil {
+		auditor = config.NopAuditor{}
+	}
+	return &auditingStore{inner: store, auditor: auditor}, nil
+}
+
 // openWithFactories is the testable core of Open: tests pass in fakes
 // for individual backends to drive the auto-select algorithm without
 // hitting the real OS keychain.
