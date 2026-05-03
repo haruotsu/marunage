@@ -359,6 +359,67 @@ func TestKVStateValueRequired(t *testing.T) {
 	}
 }
 
+// TestDispatchQueryUsesIndex pins the contract spelled out in the
+// 0001_init.sql comment: PR-42 dispatch runs `WHERE status='pending' ORDER
+// BY priority DESC, created_at ASC LIMIT N`, and idx_tasks_dispatch must
+// serve both the WHERE and the ORDER BY out of one structure (no SCAN, no
+// temporary sort). EXPLAIN QUERY PLAN is the cheapest signal that survives
+// a future migration accidentally renaming or dropping the index.
+func TestDispatchQueryUsesIndex(t *testing.T) {
+	db := openTempDB(t)
+
+	plan := explainQueryPlan(t, db, `SELECT id FROM tasks
+        WHERE status='pending'
+        ORDER BY priority DESC, created_at ASC
+        LIMIT 10`)
+	if !strings.Contains(plan, "idx_tasks_dispatch") {
+		t.Errorf("dispatch query plan must reference idx_tasks_dispatch; got:\n%s", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+		t.Errorf("dispatch query must not require a temporary sort; got:\n%s", plan)
+	}
+}
+
+// TestLockKeyProbeUsesIndex pins the soft-lock probe (PR-42) "is any task
+// holding this lock_key?" against idx_tasks_lock_key. The partial index is
+// the whole point — without it, the probe would scan the table on every
+// dispatch, defeating the locking model.
+func TestLockKeyProbeUsesIndex(t *testing.T) {
+	db := openTempDB(t)
+
+	plan := explainQueryPlan(t, db, `SELECT id FROM tasks WHERE lock_key=?`, "deploy:prod")
+	if !strings.Contains(plan, "idx_tasks_lock_key") {
+		t.Errorf("lock_key probe must reference idx_tasks_lock_key; got:\n%s", plan)
+	}
+}
+
+// explainQueryPlan returns the concatenated `detail` column from
+// EXPLAIN QUERY PLAN, which is what humans (and these tests) read to see
+// whether SQLite chose an index or a SCAN.
+func explainQueryPlan(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan row: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("plan rows.Err: %v", err)
+	}
+	return plan.String()
+}
+
 // TestUpdatedAtAutoBumps verifies the AFTER UPDATE trigger that keeps
 // updated_at honest even when callers forget to set it. This eliminates the
 // "I edited the row but the list view still shows yesterday" failure mode
