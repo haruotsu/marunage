@@ -1,8 +1,10 @@
 package secrets_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/secrets"
@@ -127,6 +129,97 @@ func TestAgeBackendListAlphaSorted(t *testing.T) {
 		if got[i] != name {
 			t.Errorf("List[%d] = %q; want %q (full got = %v)", i, got[i], name, got)
 		}
+	}
+}
+
+// TestAgeBackendFilePermsAndFormat pins two facts about the on-disk
+// vault that defense-in-depth depends on:
+//
+//   - the file is mode 0600 (otherwise a wider umask would let other
+//     users read the ciphertext, and age's scrypt is the only thing
+//     standing between them and the cleartext);
+//   - the file starts with the canonical "age-encryption.org/v1"
+//     header so a corrupt or accidentally-truncated write fails fast
+//     rather than producing a "looks like JSON" file.
+//
+// Both invariants are easier to lose than to keep — a refactor that
+// drops the explicit Chmod, or one that switches encryption libraries,
+// would silently regress here without this test.
+func TestAgeBackendFilePermsAndFormat(t *testing.T) {
+	store, home := openAgeStore(t)
+	if err := store.Set("gmail", "tok"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	path := filepath.Join(home, ".marunage", "secrets.age")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat secrets.age: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("secrets.age perm = %o; want 0600 (tokens live here)", perm)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read secrets.age: %v", err)
+	}
+	if !bytes.HasPrefix(body, []byte("age-encryption.org/v1")) {
+		t.Errorf("secrets.age does not start with age v1 header; got prefix = %q", string(body[:min(len(body), 32)]))
+	}
+}
+
+// TestAgeBackendPassphraseRequiredWithoutTTYOrEnv pins the headless-
+// failure mode: when MARUNAGE_AGE_PASSPHRASE is unset AND no TTY is
+// attached, the backend must fail with ErrPassphraseRequired rather
+// than blocking on a read that would never succeed. This is the
+// failure mode `marunage setup` translates into "set
+// MARUNAGE_AGE_PASSPHRASE or run from a TTY".
+func TestAgeBackendPassphraseRequiredWithoutTTYOrEnv(t *testing.T) {
+	home := t.TempDir()
+	// Explicitly clear any inherited passphrase env so the test
+	// reflects a stock CI environment.
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "")
+	secrets.ResetPassphraseCacheForTest()
+
+	// Inject a "no TTY" prompter that mimics the production code path
+	// when stdin is not a terminal.
+	restore := secrets.SetTTYPassphrasePrompterForTest(func(_ bool) (string, error) {
+		return "", secrets.ErrPassphraseRequired
+	})
+	defer restore()
+
+	store, err := secrets.Open(secrets.Config{Backend: "age", HomeDir: home})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	err = store.Set("gmail", "tok")
+	if err == nil {
+		t.Fatal("Set without env or TTY = nil; want ErrPassphraseRequired")
+	}
+	if !errors.Is(err, secrets.ErrPassphraseRequired) {
+		t.Errorf("Set error = %v; want errors.Is(..., ErrPassphraseRequired)", err)
+	}
+}
+
+// TestAgeBackendProbeAlwaysSucceeds pins the auto-select integration:
+// unlike pass (which needs the `pass` binary) or keyring (which needs
+// a desktop session), age has zero environmental requirements at
+// construction time — the passphrase is acquired lazily on first
+// Set/Get. So newAgeBackend must never return ErrUnsupported, or the
+// auto-select chain would skip past it on every workstation.
+func TestAgeBackendProbeAlwaysSucceeds(t *testing.T) {
+	home := t.TempDir()
+	// No env, no TTY override: even in the stock environment the probe
+	// must succeed so the backend lands in the auto-select chain.
+	store, err := secrets.Open(secrets.Config{Backend: "age", HomeDir: home})
+	if err != nil {
+		t.Fatalf("Open(age) failed at construction time: %v; "+
+			"newAgeBackend must defer passphrase acquisition until first use", err)
+	}
+	if got := store.Backend(); got != "age" {
+		t.Errorf("Backend() = %q; want %q", got, "age")
 	}
 }
 
