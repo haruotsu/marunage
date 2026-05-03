@@ -267,61 +267,65 @@ func (r *TaskRepo) UpdateStatus(ctx context.Context, id int64, newStatus string)
 }
 
 // AcquireLock claims lockKey for the row with the given id, blocking
-// when another running task already holds the same key (docs/
-// requirement.md "lock_key でのソフトロック取得 / 解放"). It is "soft"
-// because the conflict probe checks status='running': as soon as the
-// holder transitions to done / failed / skipped the next AcquireLock for
-// the same key succeeds without an explicit ReleaseLock.
+// when another pending or running task already holds the same key
+// (docs/requirement.md "lock_key でのソフトロック取得 / 解放" + "同じ
+// `lock_key` のタスクは順次実行される"). It is "soft" because a holder
+// in done / failed / skipped is ignored: the next AcquireLock for the
+// same key succeeds without an explicit ReleaseLock.
 //
-// Atomicity: the row probe, conflict probe, and UPDATE all run inside a
-// single transaction so a concurrent dispatcher cannot squeeze between
-// the probe and the write. The store-wide SetMaxOpenConns(1) gives this
-// transaction full writer serialisation per process; cross-process races
-// fall back on SQLite's busy_timeout.
+// Why pending counts as a conflict: the typical dispatcher pattern is
+// "AcquireLock; UpdateStatus(running)". If the probe only looked at
+// status='running', two callers could both observe "no running holder",
+// both succeed, and the second silently overwrite the first claim.
+//
+// Atomicity: implemented as a single UPDATE with a NOT EXISTS guard so
+// the conflict check and the write happen in one statement. SQLite
+// statements are atomic across processes too, so this does not depend
+// on SetMaxOpenConns(1) the way a probe-then-update pair would.
+//
+// Self re-acquire is intentionally idempotent: calling AcquireLock(id,
+// k) twice on the same row leaves lock_key=k. The dispatcher's crash-
+// recovery path relies on this.
 func (r *TaskRepo) AcquireLock(ctx context.Context, id int64, lockKey string) error {
 	if lockKey == "" {
 		return fmt.Errorf("store: lockKey is required")
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	const q = `
+		UPDATE tasks SET lock_key = ?
+		WHERE id = ?
+		  AND NOT EXISTS (
+		      SELECT 1 FROM tasks
+		      WHERE lock_key = ?
+		        AND status IN ('pending', 'running')
+		        AND id != ?
+		  )`
+	res, err := r.db.ExecContext(ctx, q, lockKey, id, lockKey, id)
 	if err != nil {
-		return fmt.Errorf("acquire lock begin: %w", err)
+		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("acquire lock rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
 
+	// RowsAffected == 0 has two causes: the row does not exist, or the
+	// NOT EXISTS guard fired. Distinguish so the caller knows whether to
+	// retry (lock contention) or give up (stale id).
 	var probe int64
-	if err := tx.QueryRowContext(ctx,
+	err = r.db.QueryRowContext(ctx,
 		"SELECT id FROM tasks WHERE id = ?", id,
-	).Scan(&probe); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		return fmt.Errorf("acquire lock probe row: %w", err)
+	).Scan(&probe)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
 	}
-
-	var conflict int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT id FROM tasks WHERE lock_key = ? AND status = ? AND id != ? LIMIT 1",
-		lockKey, StatusRunning, id,
-	).Scan(&conflict)
-	switch {
-	case err == nil:
-		return ErrLockHeld
-	case errors.Is(err, sql.ErrNoRows):
-		// no conflict, fall through to claim
-	default:
-		return fmt.Errorf("acquire lock probe key: %w", err)
+	if err != nil {
+		return fmt.Errorf("acquire lock probe: %w", err)
 	}
-
-	if _, err := tx.ExecContext(ctx,
-		"UPDATE tasks SET lock_key = ? WHERE id = ?", lockKey, id,
-	); err != nil {
-		return fmt.Errorf("acquire lock write: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("acquire lock commit: %w", err)
-	}
-	return nil
+	return ErrLockHeld
 }
 
 // ReleaseLock clears lock_key on a row. Soft locks are normally released

@@ -616,3 +616,57 @@ func TestTaskRepoAcquireLockMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("AcquireLock(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// 24. AcquireLock blocks when another *pending* row already holds the same
+//     lock_key, not just when there is a running holder. Without this, a
+//     dispatcher pattern of "AcquireLock; UpdateStatus(running)" lets two
+//     callers both observe "no running holder", both succeed, and the
+//     second silently overwrites the first claim — exactly the
+//     "two callers think they hold the same lock_key" race the
+//     security review flagged.
+func TestTaskRepoAcquireLockBlockedByPendingHolder(t *testing.T) {
+	f := newRepoFixture(t)
+
+	holderID, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "holder"})
+	if err != nil {
+		t.Fatalf("Insert holder: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, holderID, "k1"); err != nil {
+		t.Fatalf("holder AcquireLock: %v", err)
+	}
+	// holder is still pending here — never transitioned to running.
+
+	laterID, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "later"})
+	if err != nil {
+		t.Fatalf("Insert later: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, laterID, "k1"); !errors.Is(err, store.ErrLockHeld) {
+		t.Fatalf("later AcquireLock(pending holder): err = %v; want ErrLockHeld", err)
+	}
+}
+
+// 25. AcquireLock is idempotent for the same (id, lockKey): a retry after
+//     a transient error must succeed without complaint and leave lock_key
+//     untouched. The dispatcher relies on this for crash-recovery /
+//     re-claim flows.
+func TestTaskRepoAcquireLockIdempotentSelfAcquire(t *testing.T) {
+	f := newRepoFixture(t)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "retry"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, id, "k1"); err != nil {
+		t.Fatalf("AcquireLock #1: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, id, "k1"); err != nil {
+		t.Fatalf("AcquireLock #2 (idempotent retry): %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LockKey != "k1" {
+		t.Errorf("lock_key after self re-acquire = %q; want %q", got.LockKey, "k1")
+	}
+}
