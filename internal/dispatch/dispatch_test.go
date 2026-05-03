@@ -1282,9 +1282,9 @@ type stubStore struct{}
 func (stubStore) List(context.Context, store.ListFilter) ([]store.Task, error) {
 	return nil, nil
 }
-func (stubStore) Get(context.Context, int64) (store.Task, error)            { return store.Task{}, nil }
-func (stubStore) AcquireLock(context.Context, int64, string) error          { return nil }
-func (stubStore) ReleaseLock(context.Context, int64) error                  { return nil }
+func (stubStore) Get(context.Context, int64) (store.Task, error)   { return store.Task{}, nil }
+func (stubStore) AcquireLock(context.Context, int64, string) error { return nil }
+func (stubStore) ReleaseLock(context.Context, int64) error         { return nil }
 func (stubStore) ClaimWorkspace(context.Context, int64, string) (bool, error) {
 	return true, nil
 }
