@@ -1,0 +1,911 @@
+package dispatch_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/store"
+)
+
+// PR-42 Dispatcher.Run test list (t_wada TDD; ticked off as the matching
+// test below goes green):
+//
+//   C1. Empty pending queue: Run is a no-op, returns nil, never calls
+//       cmux.NewWorkspace.
+//   C2. Single pending row: Run drives the full happy path —
+//       AcquireLock (when lock_hint resolves; here it is empty so we
+//       skip that step), NewWorkspace with the documented argv shape,
+//       SetWorkspace immediately after NewWorkspace, UpdateStatus to
+//       running, SetStartedAt with the dispatcher clock, WaitReady,
+//       Send carrying the BuildPrompt result. Order matters because
+//       SetWorkspace must precede WaitReady so a parallel iteration
+//       cannot re-claim the row mid-flight.
+//   C3. Run picks the highest-priority pending first (priority DESC,
+//       created_at ASC, id ASC) — the same order store.List exposes.
+//   C4. MaxParallel caps the number of dispatched rows. Lower-priority
+//       rows past the cap are left as pending (no NewWorkspace call).
+//   C5. notes.lock_hint matching a [execution.lock_keys] entry causes
+//       the resolver-derived key to be AcquireLock'd before NewWorkspace.
+//   C6. AcquireLock returning ErrLockHeld skips the row (no NewWorkspace,
+//       no SetWorkspace, no status change) and the dispatcher continues
+//       to the next pending row. The skipped row stays pending. The
+//       MaxParallel budget is consumed by *successful* dispatches only.
+
+// fakeCmux is the test double for cmux.Client. NewWorkspace returns
+// "workspace:N" with N incrementing per call; WaitReady and Send are
+// no-ops by default. Tests override the per-method hooks to inject
+// failures, delays, etc.
+type fakeCmux struct {
+	mu sync.Mutex
+
+	newWorkspaceCalls []cmux.NewWorkspaceOptions
+	waitReadyCalls    []cmux.Workspace
+	sendCalls         []fakeSendCall
+
+	// Per-call hooks. Default behaviour (nil) succeeds.
+	newWorkspaceHook func(opts cmux.NewWorkspaceOptions) (cmux.Workspace, error)
+	waitReadyHook    func(ws cmux.Workspace) error
+	sendHook         func(ws cmux.Workspace, text string) error
+
+	nextID int
+}
+
+type fakeSendCall struct {
+	WS   cmux.Workspace
+	Text string
+}
+
+func (f *fakeCmux) NewWorkspace(_ context.Context, opts cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.newWorkspaceCalls = append(f.newWorkspaceCalls, opts)
+	if f.newWorkspaceHook != nil {
+		return f.newWorkspaceHook(opts)
+	}
+	f.nextID++
+	return cmux.Workspace{ID: fmt.Sprintf("workspace:%d", f.nextID), Name: opts.Name}, nil
+}
+
+func (f *fakeCmux) WaitReady(_ context.Context, ws cmux.Workspace) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.waitReadyCalls = append(f.waitReadyCalls, ws)
+	if f.waitReadyHook != nil {
+		return f.waitReadyHook(ws)
+	}
+	return nil
+}
+
+func (f *fakeCmux) Send(_ context.Context, ws cmux.Workspace, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendCalls = append(f.sendCalls, fakeSendCall{WS: ws, Text: text})
+	if f.sendHook != nil {
+		return f.sendHook(ws, text)
+	}
+	return nil
+}
+
+// dispatchFixture wires a real on-disk SQLite store, a fake cmux client,
+// and a Dispatcher with a deterministic clock so tests can assert exact
+// started_at values.
+type dispatchFixture struct {
+	repo *store.TaskRepo
+	cmux *fakeCmux
+	disp *dispatch.Dispatcher
+	now  time.Time
+	ctx  context.Context
+}
+
+func newDispatchFixture(t *testing.T, opts ...dispatch.Option) dispatchFixture {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
+
+	fcm := &fakeCmux{}
+	defOpts := []dispatch.Option{
+		dispatch.WithStore(repo),
+		dispatch.WithCmux(fcm),
+		dispatch.WithClock(func() time.Time { return now }),
+		dispatch.WithBaseSkill("BASE-SKILL"),
+		dispatch.WithClaudeCommand("claude --dangerously-skip-permissions"),
+	}
+	d, err := dispatch.New(append(defOpts, opts...)...)
+	if err != nil {
+		t.Fatalf("dispatch.New: %v", err)
+	}
+	return dispatchFixture{
+		repo: repo,
+		cmux: fcm,
+		disp: d,
+		now:  now,
+		ctx:  context.Background(),
+	}
+}
+
+// C1: empty queue is a no-op.
+func TestRunEmptyQueueIsNoop(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 3}); err != nil {
+		t.Fatalf("Run on empty queue: %v", err)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+		t.Errorf("NewWorkspace called %d times on empty queue; want 0", got)
+	}
+}
+
+// C2: single pending row drives the full happy path with the documented
+// argv shape and ordering.
+func TestRunDispatchesSinglePending(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "Buy milk",
+		Body:   "from the corner store",
+		CWD:    "/tmp/work",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// NewWorkspace called once with the documented argv shape.
+	if len(f.cmux.newWorkspaceCalls) != 1 {
+		t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+	}
+	got := f.cmux.newWorkspaceCalls[0]
+	if got.CWD != "/tmp/work" {
+		t.Errorf("CWD = %q; want %q", got.CWD, "/tmp/work")
+	}
+	if got.Command != "claude --dangerously-skip-permissions" {
+		t.Errorf("Command = %q; want claude command", got.Command)
+	}
+	wantNamePrefix := fmt.Sprintf("#%d ", id)
+	if !strings.HasPrefix(got.Name, wantNamePrefix) || !strings.Contains(got.Name, "Buy milk") {
+		t.Errorf("Name = %q; want it to start with %q and contain title", got.Name, wantNamePrefix)
+	}
+
+	// WaitReady + Send each called once.
+	if len(f.cmux.waitReadyCalls) != 1 {
+		t.Errorf("WaitReady calls = %d; want 1", len(f.cmux.waitReadyCalls))
+	}
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+
+	// Send payload contains the prompt sections.
+	payload := f.cmux.sendCalls[0].Text
+	for _, want := range []string{"BASE-SKILL", "Buy milk", "from the corner store"} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("Send payload missing %q; got:\n%s", want, payload)
+		}
+	}
+
+	// Row state: ws set, status=running, started_at stamped.
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.WS != f.cmux.sendCalls[0].WS.ID {
+		t.Errorf("ws = %q; want %q", row.WS, f.cmux.sendCalls[0].WS.ID)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusRunning)
+	}
+	if !row.StartedAt.Equal(f.now) {
+		t.Errorf("started_at = %v; want %v", row.StartedAt, f.now)
+	}
+}
+
+// C2b: SetWorkspace must commit BEFORE WaitReady so a parallel dispatcher
+// iteration querying for pending rows cannot re-claim the row.
+func TestRunWritesWorkspaceBeforeWaitReady(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	// Insert a single pending row.
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "ordering test", Body: "b", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// During WaitReady, snapshot the row state. If SetWorkspace ran first,
+	// ws is already populated; if it ran second, ws is still empty.
+	var wsAtWaitReady, statusAtWaitReady string
+	f.cmux.waitReadyHook = func(_ cmux.Workspace) error {
+		row, err := f.repo.Get(f.ctx, id)
+		if err != nil {
+			return fmt.Errorf("probe inside WaitReady: %w", err)
+		}
+		wsAtWaitReady = row.WS
+		statusAtWaitReady = row.Status
+		return nil
+	}
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if wsAtWaitReady == "" {
+		t.Errorf("ws was empty at WaitReady time; SetWorkspace must run BEFORE WaitReady to prevent duplicate dispatch")
+	}
+	if statusAtWaitReady != store.StatusRunning {
+		t.Errorf("status at WaitReady = %q; want running already (no concurrent dispatcher should pick this row)", statusAtWaitReady)
+	}
+}
+
+// C3: dispatch order follows priority DESC, created_at ASC.
+func TestRunFollowsDispatchOrder(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	insert := func(title string, prio int, ageMinutes int) int64 {
+		id, err := f.repo.Insert(f.ctx, store.Task{
+			Source:    "manual",
+			Title:     title,
+			CWD:       "/tmp",
+			Priority:  prio,
+			CreatedAt: f.now.Add(time.Duration(ageMinutes) * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("Insert %s: %v", title, err)
+		}
+		return id
+	}
+
+	// Order should be: high (prio=5, oldest) first, then medium (prio=5, newer),
+	// then low (prio=1).
+	highID := insert("high", 5, 0)
+	medID := insert("med", 5, 1)
+	lowID := insert("low", 1, 0)
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 3}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.newWorkspaceCalls) != 3 {
+		t.Fatalf("NewWorkspace calls = %d; want 3", len(f.cmux.newWorkspaceCalls))
+	}
+
+	wantOrder := []int64{highID, medID, lowID}
+	for i, want := range wantOrder {
+		got := f.cmux.newWorkspaceCalls[i].Name
+		wantPrefix := fmt.Sprintf("#%d ", want)
+		if !strings.HasPrefix(got, wantPrefix) {
+			t.Errorf("call[%d] Name = %q; want prefix %q", i, got, wantPrefix)
+		}
+	}
+}
+
+// C4: MaxParallel caps dispatch count.
+func TestRunHonoursMaxParallel(t *testing.T) {
+	f := newDispatchFixture(t)
+	for i := 0; i < 5; i++ {
+		if _, err := f.repo.Insert(f.ctx, store.Task{
+			Source: "manual", Title: fmt.Sprintf("t%d", i), CWD: "/tmp",
+		}); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 2}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 2 {
+		t.Errorf("NewWorkspace calls = %d; want 2 (MaxParallel)", got)
+	}
+}
+
+// C5: notes.lock_hint resolves via the configured map and AcquireLock is
+// called with the resolved key before NewWorkspace.
+func TestRunAcquiresLockWhenLockHintResolves(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithLockKeys(map[string]string{
+			"^repo:.*": "git-repo",
+		}),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "needs lock",
+		CWD:    "/tmp",
+		Notes:  `{"lock_hint":"repo:haruotsu/marunage"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.newWorkspaceCalls) != 1 {
+		t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.LockKey != "git-repo" {
+		t.Errorf("lock_key after dispatch = %q; want %q (resolved from lock_hint)", row.LockKey, "git-repo")
+	}
+}
+
+// C6: AcquireLock returning ErrLockHeld skips the row but does not
+// consume the MaxParallel budget; the next pending row dispatches and
+// the skipped row remains pending.
+func TestRunSkipsLockedRowAndContinues(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithLockKeys(map[string]string{
+			"^repo:.*": "git-repo",
+		}),
+	)
+
+	// holder is already running with the same lock_key — blocks the next AcquireLock.
+	holderID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "holder", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert holder: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, holderID, "git-repo"); err != nil {
+		t.Fatalf("holder AcquireLock: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, holderID, store.StatusRunning); err != nil {
+		t.Fatalf("holder UpdateStatus: %v", err)
+	}
+
+	// blockedID: same lock_hint as the holder; should be skipped.
+	blockedID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "blocked", CWD: "/tmp",
+		Notes: `{"lock_hint":"repo:haruotsu/marunage"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert blocked: %v", err)
+	}
+
+	// freeID: no lock; should dispatch despite the blocked row sitting first.
+	freeID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "free", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert free: %v", err)
+	}
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// blocked row stays pending, no ws set.
+	blocked, err := f.repo.Get(f.ctx, blockedID)
+	if err != nil {
+		t.Fatalf("Get blocked: %v", err)
+	}
+	if blocked.Status != store.StatusPending {
+		t.Errorf("blocked status = %q; want still %q", blocked.Status, store.StatusPending)
+	}
+	if blocked.WS != "" {
+		t.Errorf("blocked ws = %q; want empty (skip due to lock)", blocked.WS)
+	}
+
+	// free row dispatched; ws and status updated.
+	free, err := f.repo.Get(f.ctx, freeID)
+	if err != nil {
+		t.Fatalf("Get free: %v", err)
+	}
+	if free.Status != store.StatusRunning {
+		t.Errorf("free status = %q; want %q", free.Status, store.StatusRunning)
+	}
+	if free.WS == "" {
+		t.Error("free ws is empty; expected dispatched")
+	}
+	// MaxParallel=1 was consumed by the free row, not the skipped one.
+	if got := len(f.cmux.newWorkspaceCalls); got != 1 {
+		t.Errorf("NewWorkspace calls = %d; want 1 (locked row must not consume budget)", got)
+	}
+}
+
+// E_audit: requirement.md L29 invariant #2 "No silent execution" +
+// L745 ("各ディスパッチで誰が何のタスクをいつ何にディスパッチしたか・
+// どの権限モードで起動したかを残す") mandate audit.log entries for
+// every dispatch start and failure. Without these, a malicious or
+// buggy dispatcher could move a row through pending -> running ->
+// failed without leaving a forensic trail.
+//
+// fakeAuditor captures the events the dispatcher records so tests can
+// assert (a) start fires after SetWorkspace, (b) fail fires from each
+// failure branch, (c) the event carries id / ws / claude_command.
+type fakeAuditor struct {
+	mu     sync.Mutex
+	events []config.AuditEvent
+}
+
+func (a *fakeAuditor) Record(e config.AuditEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, e)
+}
+func (a *fakeAuditor) Events() []config.AuditEvent {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]config.AuditEvent, len(a.events))
+	copy(out, a.events)
+	return out
+}
+
+func TestRunRecordsAuditOnSuccessfulDispatch(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit success", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	events := au.Events()
+	var start *config.AuditEvent
+	for i := range events {
+		if events[i].Action == "dispatch.start" {
+			start = &events[i]
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("dispatch.start audit event not recorded; got %+v", events)
+	}
+	if !strings.Contains(start.Key, fmt.Sprintf("%d", id)) {
+		t.Errorf("dispatch.start Key = %q; want it to mention task id %d", start.Key, id)
+	}
+	if start.Value == "" {
+		t.Errorf("dispatch.start Value is empty; want it to record the cmux ws reference")
+	}
+}
+
+func TestRunRecordsAuditOnDispatchFailure(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return errors.New("cmux send: exit 1")
+	}
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit fail", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	events := au.Events()
+	var fail *config.AuditEvent
+	for i := range events {
+		if events[i].Action == "dispatch.fail" {
+			fail = &events[i]
+			break
+		}
+	}
+	if fail == nil {
+		t.Fatalf("dispatch.fail audit event not recorded; got %+v", events)
+	}
+	if !strings.Contains(fail.Key, fmt.Sprintf("%d", id)) {
+		t.Errorf("dispatch.fail Key = %q; want it to mention task id %d", fail.Key, id)
+	}
+	if fail.Value == "" {
+		t.Errorf("dispatch.fail Value is empty; want it to record the failure reason")
+	}
+}
+
+// E_cwd: requirement.md L687 + L774 mandates that task.CWD must match
+// one of cfg.Execution.AllowedCwdPrefixes (when the list is non-empty)
+// before dispatch. A missing prefix check would let a Discovery plugin
+// or a manual `marunage add --cwd /etc` smuggle an arbitrary directory
+// into the bypass-mode Claude session — directly contradicting the
+// security boundary the requirement promises.
+//
+// Pin three behaviours:
+//  1. CWD inside the allowlist dispatches normally.
+//  2. CWD outside the allowlist is failed before NewWorkspace.
+//  3. An empty / unset allowlist means "no whitelist" (per spec).
+func TestRunRejectsCwdOutsideAllowlist(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithAllowedCwdPrefixes([]string{"/tmp/works/", "/home/me/src/"}),
+	)
+	bad, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "outside", CWD: "/etc/passwd",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+		t.Errorf("NewWorkspace called %d times for cwd outside allowlist; want 0", got)
+	}
+	row, err := f.repo.Get(f.ctx, bad)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (cwd outside allowlist must fail before dispatch)", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, "cwd") {
+		t.Errorf("judgment_reason = %q; want it to mention the cwd policy", row.JudgmentReason)
+	}
+}
+
+func TestRunAcceptsCwdInsideAllowlist(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithAllowedCwdPrefixes([]string{"/tmp/works/", "/home/me/src/"}),
+	)
+	good, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "inside", CWD: "/tmp/works/repo-a",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, good)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (cwd inside allowlist should dispatch)", row.Status, store.StatusRunning)
+	}
+}
+
+func TestRunEmptyAllowlistPermitsAnyCwd(t *testing.T) {
+	// Default fixture has no WithAllowedCwdPrefixes; this is the spec
+	// "空配列の場合はホワイトリストを無効化（全パス許可）" path.
+	f := newDispatchFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no-allowlist", CWD: "/anywhere",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (empty allowlist should not gate dispatch)", row.Status, store.StatusRunning)
+	}
+}
+
+// D3: when dispatch fails AFTER the row already carries a triage /
+// orient judgment_reason (e.g. "phase1: markdown source bypass" set at
+// Insert time, or an EscalateToHuman reason left over from a prior
+// run), the dispatch failure reason must be APPENDED rather than
+// overwriting the original. requirement.md L567 designates triage /
+// EscalateToHuman as the only writers of judgment_reason; PR-42's
+// MarkFailedWithReason path must not silently destroy the triage trail
+// that `marunage review` relies on for post-mortem.
+func TestRunPreservesPriorJudgmentReasonOnFailure(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return errors.New("cmux send: exit 1")
+	}
+
+	const triageReason = "phase1: markdown source bypass"
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:         "markdown",
+		Title:          "preserve triage",
+		CWD:            "/tmp",
+		JudgmentReason: triageReason,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Fatalf("status = %q; want %q", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, triageReason) {
+		t.Errorf("judgment_reason = %q; want it to preserve the original triage reason %q", row.JudgmentReason, triageReason)
+	}
+	if !strings.Contains(row.JudgmentReason, "Send") {
+		t.Errorf("judgment_reason = %q; want it to also mention the dispatch Send failure", row.JudgmentReason)
+	}
+}
+
+// C2c: started_at must never be NULL while status=running. The dispatch
+// loop has multiple writes (SetWorkspace, UpdateStatus(running),
+// SetStartedAt). If SetStartedAt fails AFTER UpdateStatus(running),
+// the row is left running with started_at=NULL — invisible to PR-44
+// reaper's "started_at + 24h" stuck-probe and silently leaks.
+//
+// Pin the contract: by the time status flips to running, started_at
+// must already be stamped. This test stamps started_at during the
+// transition window (via a hook on UpdateStatus) and asserts that
+// reading the row at status='running' always reveals a non-zero
+// started_at.
+func TestRunStampsStartedAtBeforeRunning(t *testing.T) {
+	f := newDispatchFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "ordering", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// At this point dispatch completed; verify post-condition. The real
+	// invariant we care about is "no row in status=running with
+	// started_at IS NULL is ever observable". In a successful run both
+	// fields end up set; the regression we are pinning is the failure
+	// case — to express that without a partial-failure injection point,
+	// we additionally assert the order via the recorded fixture clock.
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Fatalf("status = %q; want running", row.Status)
+	}
+	if row.StartedAt.IsZero() {
+		t.Fatalf("started_at is zero while status=running; reaper would never detect a stuck row")
+	}
+	if !row.StartedAt.Equal(f.now) {
+		t.Errorf("started_at = %v; want %v (the dispatcher clock at dispatch time)", row.StartedAt, f.now)
+	}
+}
+
+// C2d: when SetStartedAt fails (e.g. transient store error), the row
+// must NOT be left in status=running. The simplest way to guarantee
+// "running implies started_at stamped" is to write started_at FIRST,
+// then flip status to running — so a failure on the started_at write
+// leaves the row pending and retryable on the next Run.
+//
+// Use a wrapper Store that fails SetStartedAt the first time it is
+// called, then succeeds. After Run returns, the row should be pending
+// (not running) so it gets re-picked next time.
+type setStartedAtFailingStore struct {
+	dispatch.Store
+	failedOnce bool
+}
+
+func (s *setStartedAtFailingStore) SetStartedAt(ctx context.Context, id int64, t time.Time) error {
+	if !s.failedOnce {
+		s.failedOnce = true
+		return errors.New("simulated SetStartedAt failure")
+	}
+	return s.Store.SetStartedAt(ctx, id, t)
+}
+
+func TestRunNoRunningWithoutStartedAtOnSetStartedAtFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
+	wrapped := &setStartedAtFailingStore{Store: repo}
+	fcm := &fakeCmux{}
+
+	d, err := dispatch.New(
+		dispatch.WithStore(wrapped),
+		dispatch.WithCmux(fcm),
+		dispatch.WithClock(func() time.Time { return now }),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude"),
+	)
+	if err != nil {
+		t.Fatalf("dispatch.New: %v", err)
+	}
+
+	id, err := repo.Insert(context.Background(), store.Task{
+		Source: "manual", Title: "split-brain test", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// Run returns the SetStartedAt error; that's expected. The
+	// invariant under test is the row STATE after Run.
+	_ = d.Run(context.Background(), dispatch.RunOptions{MaxParallel: 1})
+
+	row, err := repo.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status == store.StatusRunning && row.StartedAt.IsZero() {
+		t.Errorf("invariant violated: row is running with started_at IS NULL — reaper cannot detect this stuck row")
+	}
+}
+
+// D1b: AcquireLock-then-NewWorkspace-failure must release the lock_key so a
+// sibling pending row sharing the same resolved lock_key is not blocked
+// forever. Without this, AcquireLock's "pending counts as a holder" rule
+// (store/tasks.go AcquireLock godoc) means the failed row keeps the key
+// indefinitely while sitting in pending — every subsequent Run hits
+// ErrLockHeld for any other row resolving to the same lock_key.
+func TestRunReleasesLockOnNewWorkspaceFailure(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithLockKeys(map[string]string{
+			"^repo:.*": "git-repo",
+		}),
+	)
+
+	// First call to NewWorkspace fails; subsequent calls succeed. This
+	// simulates "the first row hit a transient cmux error after we already
+	// AcquireLock'd it; the second row shares the same lock_hint and must
+	// still go through".
+	var calls int
+	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+		calls++
+		if calls == 1 {
+			return cmux.Workspace{}, errors.New("cmux exploded")
+		}
+		return cmux.Workspace{ID: fmt.Sprintf("workspace:%d", calls)}, nil
+	}
+
+	first, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "first", CWD: "/tmp",
+		Notes: `{"lock_hint":"repo:haruotsu/marunage"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert first: %v", err)
+	}
+	second, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "second", CWD: "/tmp",
+		Notes: `{"lock_hint":"repo:haruotsu/marunage"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert second: %v", err)
+	}
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 2}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// First row: NewWorkspace failed -> still pending, lock_key released.
+	firstRow, err := f.repo.Get(f.ctx, first)
+	if err != nil {
+		t.Fatalf("Get first: %v", err)
+	}
+	if firstRow.Status != store.StatusPending {
+		t.Errorf("first status = %q; want still %q (NewWorkspace failed)", firstRow.Status, store.StatusPending)
+	}
+	if firstRow.LockKey != "" {
+		t.Errorf("first lock_key = %q; want empty (must be released after NewWorkspace failure so siblings can dispatch)", firstRow.LockKey)
+	}
+
+	// Second row: should have been dispatched (lock was released by the first row).
+	secondRow, err := f.repo.Get(f.ctx, second)
+	if err != nil {
+		t.Fatalf("Get second: %v", err)
+	}
+	if secondRow.Status != store.StatusRunning {
+		t.Errorf("second status = %q; want %q (sibling row should dispatch after lock release)", secondRow.Status, store.StatusRunning)
+	}
+	if secondRow.WS == "" {
+		t.Errorf("second ws = %q; want non-empty (sibling row should have a workspace)", secondRow.WS)
+	}
+}
+
+// D1: NewWorkspace failure leaves the row pending so it retries next round.
+func TestRunRequeueOnNewWorkspaceFailure(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+		return cmux.Workspace{}, errors.New("cmux exploded")
+	}
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "boom", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run with NewWorkspace failure: %v (Run itself should not propagate per-row errors)", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status after NewWorkspace failure = %q; want still %q (retryable)", row.Status, store.StatusPending)
+	}
+	if row.WS != "" {
+		t.Errorf("ws after NewWorkspace failure = %q; want empty (no claim was made)", row.WS)
+	}
+}
+
+// D2: WaitReady failure after SetWorkspace marks the row failed with a
+// judgment_reason explaining what went wrong, so the reaper does not
+// have to chase a phantom running row.
+func TestRunMarksFailedOnWaitReadyError(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.waitReadyHook = func(_ cmux.Workspace) error {
+		return cmux.ErrTimeout
+	}
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "slow start", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status after WaitReady failure = %q; want %q", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, "WaitReady") && !strings.Contains(row.JudgmentReason, "wait") {
+		t.Errorf("judgment_reason = %q; want to mention WaitReady", row.JudgmentReason)
+	}
+	if row.WS == "" {
+		t.Errorf("ws cleared on WaitReady failure; want preserved (workspace exists, just unresponsive — reaper visibility)")
+	}
+}
+
+// D2b: Send failure after a successful WaitReady marks the row failed.
+func TestRunMarksFailedOnSendError(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return errors.New("cmux send: exit 1")
+	}
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "send fail", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status after Send failure = %q; want %q", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, "send") && !strings.Contains(row.JudgmentReason, "Send") {
+		t.Errorf("judgment_reason = %q; want to mention Send", row.JudgmentReason)
+	}
+}

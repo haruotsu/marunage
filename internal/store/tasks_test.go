@@ -1108,3 +1108,142 @@ func TestTaskRepoExpireWaitingHumanZeroDeadlineRejected(t *testing.T) {
 		t.Errorf("row touched despite rejected call: status = %q", got.Status)
 	}
 }
+
+// Test list for PR-42 (dispatch) lifecycle helpers added to this repo:
+//
+//  41. SetStartedAt stamps started_at on the row. PR-42 calls this when
+//      claiming pending -> running. The package godoc on UpdateStatus
+//      explicitly defers the timestamp write to a future caller-owned
+//      helper; this is that helper.
+//  42. SetStartedAt with zero time is rejected so a caller that forgets
+//      to fill in the clock cannot silently leave started_at NULL after
+//      a successful dispatch. The reaper relies on started_at to detect
+//      24h-stuck rows; an unstamped row would never trip the timeout.
+//  43. SetStartedAt on a missing id returns ErrNotFound (mirrors the
+//      other write helpers).
+//  44. MarkFailedWithReason flips status -> failed and records reason
+//      into judgment_reason for any source state. Unlike the
+//      TransitionStatus matrix this is the dispatcher's "the workspace
+//      came up but Send/WaitReady failed" path: the row is in running
+//      with a ws reference, and we want to fail it loud rather than
+//      leave a phantom for the reaper to find on its next cycle.
+//  45. MarkFailedWithReason rejects empty reason — the post-mortem in
+//      `marunage review` has nothing to show otherwise.
+//  46. MarkFailedWithReason on missing id returns ErrNotFound.
+
+// 41. SetStartedAt stamps started_at and bumps updated_at via the
+// AFTER UPDATE trigger.
+func TestTaskRepoSetStartedAtStampsTimestamp(t *testing.T) {
+	f := newRepoFixture(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:    "manual",
+		Title:     "dispatch me",
+		CreatedAt: old,
+		UpdatedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	startedAt := time.Date(2026, 5, 3, 12, 34, 56, 789_000_000, time.UTC)
+	if err := f.repo.SetStartedAt(f.ctx, id, startedAt); err != nil {
+		t.Fatalf("SetStartedAt: %v", err)
+	}
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.StartedAt.Equal(startedAt) {
+		t.Errorf("StartedAt = %v; want %v", got.StartedAt, startedAt)
+	}
+	if !got.UpdatedAt.After(old) {
+		t.Errorf("updated_at did not advance past seeded old time: got %v", got.UpdatedAt)
+	}
+}
+
+// 42. Zero time.Time would silently leave started_at NULL after a
+// successful dispatch, defeating the reaper's 24h timeout probe.
+func TestTaskRepoSetStartedAtRejectsZeroTime(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "t"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetStartedAt(f.ctx, id, time.Time{}); err == nil {
+		t.Fatal("SetStartedAt(zero time) returned nil; want error")
+	}
+}
+
+// 43. SetStartedAt on a missing id returns ErrNotFound.
+func TestTaskRepoSetStartedAtMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	startedAt := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	if err := f.repo.SetStartedAt(f.ctx, 99999, startedAt); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetStartedAt(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 44. MarkFailedWithReason flips any non-terminal source state to failed
+// and writes reason into judgment_reason. Exercise the realistic call
+// site: a row that we already moved to running but whose Send / WaitReady
+// then failed.
+func TestTaskRepoMarkFailedWithReasonFromRunning(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "send failed",
+		Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	const reason = "cmux send: exit 1"
+	if err := f.repo.MarkFailedWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkFailedWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusFailed)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, reason)
+	}
+}
+
+// 45. Empty reason rejects with ErrReasonRequired (same sentinel as
+// EscalateToHuman, since the audit-trail concern is identical).
+func TestTaskRepoMarkFailedWithReasonRejectsEmptyReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no reason", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkFailedWithReason(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("MarkFailedWithReason(empty reason): err = %v; want ErrReasonRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("row touched despite rejected call: status = %q", got.Status)
+	}
+}
+
+// 46. MarkFailedWithReason on missing id returns ErrNotFound.
+func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.MarkFailedWithReason(f.ctx, 99999, "phantom")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkFailedWithReason(missing): err = %v; want ErrNotFound", err)
+	}
+}
