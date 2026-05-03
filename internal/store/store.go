@@ -7,7 +7,20 @@
 //     テーブル (SQLite, WAL mode)").
 //   - The schema in migrations/ is applied automatically on Open and
 //     versioned via PRAGMA user_version so future PRs (PR-12 kv_state
-//     additions, later column adds) drop in as 0002_*.sql etc.
+//     repository helpers, later column adds) drop in as 0002_*.sql etc.
+//   - tasks.db / tasks.db-wal / tasks.db-shm are chmoded to 0600 so the
+//     Gmail / Slack content that lands in tasks.body / notes is not
+//     readable by other local users.
+//   - Writers are serialised via SetMaxOpenConns(1). SQLite in WAL mode
+//     supports many concurrent readers but only one writer, and letting
+//     database/sql open a second writer just to surface SQLITE_BUSY (or
+//     reorder under busy_timeout) is worse than queueing here.
+//
+// Timestamp convention: TEXT columns hold ISO8601 UTC with millisecond
+// precision (`YYYY-MM-DDTHH:MM:SS.sssZ`) so lexicographic ORDER BY matches
+// chronological order. The 0001_init.sql trigger uses
+// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') which produces the same shape; Go
+// callers should use time.UTC().Format("2006-01-02T15:04:05.000Z").
 //
 // PR-10 only ships Open + the migration runner. Repository helpers
 // (Insert/Get/List/UpdateStatus/SetWorkspace and the kv_state CRUD) land in
@@ -17,12 +30,15 @@ package store
 import (
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -34,7 +50,8 @@ var migrationsFS embed.FS
 // Open opens (or creates) the SQLite database at path, applies any pending
 // migrations, and returns the *sql.DB. The parent directory is created with
 // 0700 because tasks.db can carry sensitive task bodies fetched from Gmail /
-// Slack.
+// Slack; the DB file itself plus its -wal / -shm sidecars are then chmoded
+// to 0600 so they do not inherit the user umask.
 //
 // The DSN turns on WAL once for the file plus per-connection foreign_keys,
 // synchronous=NORMAL (the documented WAL pairing), and a 5s busy_timeout so
@@ -48,6 +65,11 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
+	// Serialise writers (single connection). WAL allows concurrent reads
+	// transparently through this same connection; the busy_timeout in the
+	// DSN handles the rare cases where a read momentarily blocks a write.
+	db.SetMaxOpenConns(1)
+
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite %s: %w", path, err)
@@ -56,19 +78,47 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := tightenPerms(path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
-// buildDSN composes the modernc.org/sqlite DSN. Keeping it in its own
-// function makes the pragma list reviewable in one place and lets tests
-// build the same URL if they ever need to open a second handle.
+// tightenPerms sets the SQLite file plus its WAL/SHM sidecars to 0600.
+// It is called after migrate() so the WAL/SHM files have been materialised
+// by the migration writes; missing sidecars are tolerated (SQLite may have
+// already checkpointed).
+func tightenPerms(path string) error {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		p := path + suffix
+		if err := os.Chmod(p, 0o600); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("chmod %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// buildDSN composes the modernc.org/sqlite DSN. Path is escaped so a path
+// that happens to contain `?` / `#` / a space (macOS "iCloud Drive" etc.)
+// does not collide with the query string. Pragmas are listed in their own
+// function so the set is reviewable in one place.
 func buildDSN(path string) string {
 	q := url.Values{}
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "foreign_keys(ON)")
 	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_pragma", "busy_timeout(5000)")
-	return "file:" + path + "?" + q.Encode()
+
+	u := url.URL{
+		Scheme:   "file",
+		Opaque:   path,
+		RawQuery: q.Encode(),
+	}
+	return u.String()
 }
 
 // migrate applies every embedded migration whose version is greater than
@@ -103,9 +153,13 @@ type migration struct {
 	body    string
 }
 
+// migrationName matches NNNN_<description>.sql where description is
+// alphanumeric / underscore / hyphen. Sscanf would also accept malformed
+// names like "0001init.sql"; the regex pins the convention.
+var migrationName = regexp.MustCompile(`^(\d+)_[A-Za-z0-9_-]+\.sql$`)
+
 // loadMigrations enumerates the embedded migrations directory and returns
-// the entries sorted by version. Filenames must match NNNN_<description>.sql
-// so the version is parseable from the name.
+// the entries sorted by version.
 func loadMigrations() ([]migration, error) {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
@@ -117,9 +171,13 @@ func loadMigrations() ([]migration, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
 			continue
 		}
-		var v int
-		if _, err := fmt.Sscanf(e.Name(), "%d_", &v); err != nil || v <= 0 {
-			return nil, fmt.Errorf("migration %q: filename must start with a positive version (e.g. 0001_init.sql)", e.Name())
+		match := migrationName.FindStringSubmatch(e.Name())
+		if match == nil {
+			return nil, fmt.Errorf("migration %q: filename must match NNNN_<description>.sql", e.Name())
+		}
+		v, err := strconv.Atoi(match[1])
+		if err != nil || v <= 0 {
+			return nil, fmt.Errorf("migration %q: version must be a positive integer", e.Name())
 		}
 		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
 		if err != nil {
@@ -137,6 +195,12 @@ func loadMigrations() ([]migration, error) {
 	return out, nil
 }
 
+// applyMigration executes the entire migration body as a single Exec inside
+// one transaction. The contract for migration files is "1 file = 1
+// transaction; statements are separated by `;` and handed to the driver
+// verbatim", so multi-statement files (CREATE TABLE plus indices plus
+// triggers) work out of the box. The user_version bump is part of the same
+// transaction so a crash mid-apply leaves the DB at the prior version.
 func applyMigration(db *sql.DB, m migration) error {
 	tx, err := db.Begin()
 	if err != nil {
