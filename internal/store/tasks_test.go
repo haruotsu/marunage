@@ -782,3 +782,170 @@ func TestTaskRepoListRejectsOversizedFilter(t *testing.T) {
 		t.Errorf("oversized Sources filter must error")
 	}
 }
+
+// Test list for PR-41 (権限モード) — store-side helpers consumed by PR-42:
+//
+//  30. EscalateToHuman: running -> waiting_human stamps the new status and
+//      overwrites judgment_reason; updated_at advances.
+//  31. EscalateToHuman: waiting_human -> waiting_human is idempotent (the
+//      same prompt re-firing must not be an error) and refreshes
+//      judgment_reason so the latest reason wins.
+//  32. EscalateToHuman: pending / done / failed / skipped reject with
+//      ErrInvalidTransition. The escalation path is reserved for cmux
+//      sessions that are actually mid-flight (running) or already paused
+//      for a human (waiting_human); end-state rows must not be reanimated
+//      by a stale dispatcher.
+//  33. EscalateToHuman: empty reason -> ErrReasonRequired. Escalation is
+//      meaningless without a reason for the human to read in the Web UI /
+//      Slack DM, so silently accepting "" would make audit logs useless.
+//  34. EscalateToHuman: missing id -> ErrNotFound (atomic guard + probe
+//      pattern, same as AcquireLock — distinguishes "row absent" from
+//      "transition forbidden").
+
+//  30. EscalateToHuman from running: status flips, judgment_reason is
+//      overwritten with the supplied reason, and the AFTER UPDATE trigger
+//      bumps updated_at past the seeded old timestamp.
+func TestTaskRepoEscalateToHumanFromRunning(t *testing.T) {
+	f := newRepoFixture(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:         "manual",
+		Title:          "needs human",
+		Status:         store.StatusRunning,
+		JudgmentReason: "phase1: markdown source bypass",
+		CreatedAt:      old,
+		UpdatedAt:      old,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	const reason = "auto-accept did not match: Bash(rm -rf /tmp/x)"
+	if err := f.repo.EscalateToHuman(f.ctx, id, reason); err != nil {
+		t.Fatalf("EscalateToHuman: %v", err)
+	}
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusWaitingHuman {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusWaitingHuman)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q (overwrite)", got.JudgmentReason, reason)
+	}
+	if !got.UpdatedAt.After(old) {
+		t.Errorf("updated_at did not advance past seeded old time: got %v", got.UpdatedAt)
+	}
+}
+
+//  31. EscalateToHuman is idempotent on waiting_human and refreshes the
+//      reason. Same prompt firing twice must not error.
+func TestTaskRepoEscalateToHumanIdempotentOnWaitingHuman(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:         "manual",
+		Title:          "already paused",
+		Status:         store.StatusWaitingHuman,
+		JudgmentReason: "first reason",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.EscalateToHuman(f.ctx, id, "second reason"); err != nil {
+		t.Fatalf("EscalateToHuman idempotent re-call: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.JudgmentReason != "second reason" {
+		t.Errorf("judgment_reason = %q; want refreshed %q", got.JudgmentReason, "second reason")
+	}
+	if got.Status != store.StatusWaitingHuman {
+		t.Errorf("status = %q; want stay %q", got.Status, store.StatusWaitingHuman)
+	}
+}
+
+//  32. EscalateToHuman rejects every status outside {running, waiting_human}
+//      with ErrInvalidTransition, leaving the row untouched.
+func TestTaskRepoEscalateToHumanRejectsInvalidSources(t *testing.T) {
+	cases := []struct {
+		name string
+		from string
+	}{
+		{"pending", store.StatusPending},
+		{"done", store.StatusDone},
+		{"failed", store.StatusFailed},
+		{"skipped", store.StatusSkipped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepoFixture(t)
+			id, err := f.repo.Insert(f.ctx, store.Task{
+				Source:         "manual",
+				Title:          "no escalation from " + tc.from,
+				Status:         tc.from,
+				JudgmentReason: "untouched",
+			})
+			if err != nil {
+				t.Fatalf("Insert: %v", err)
+			}
+
+			err = f.repo.EscalateToHuman(f.ctx, id, "should be rejected")
+			if !errors.Is(err, store.ErrInvalidTransition) {
+				t.Fatalf("EscalateToHuman from %q: err = %v; want ErrInvalidTransition", tc.from, err)
+			}
+
+			got, err := f.repo.Get(f.ctx, id)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Status != tc.from {
+				t.Errorf("status changed despite rejected escalation: got %q; want %q", got.Status, tc.from)
+			}
+			if got.JudgmentReason != "untouched" {
+				t.Errorf("judgment_reason changed despite rejected escalation: got %q", got.JudgmentReason)
+			}
+		})
+	}
+}
+
+//  33. EscalateToHuman rejects an empty reason. The Web UI / Slack DM has
+//      nothing to show otherwise.
+func TestTaskRepoEscalateToHumanRejectsEmptyReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "needs reason",
+		Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.EscalateToHuman(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("EscalateToHuman empty reason: err = %v; want ErrReasonRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("status changed despite rejected escalate: got %q; want %q", got.Status, store.StatusRunning)
+	}
+}
+
+//  34. EscalateToHuman on missing id returns ErrNotFound, distinct from
+//      ErrInvalidTransition. Same atomic-update + probe pattern as
+//      AcquireLock.
+func TestTaskRepoEscalateToHumanMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.EscalateToHuman(f.ctx, 99999, "phantom")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("EscalateToHuman(missing): err = %v; want ErrNotFound", err)
+	}
+}
