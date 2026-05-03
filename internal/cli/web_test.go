@@ -22,9 +22,9 @@ func TestWeb_FactoryReceivesEffectiveAddress(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "10.0.0.1", 8080)
 
 	var captured WebFactoryOptions
-	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, error) {
+	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
 		captured = opts
-		return immediateExitWebRunner{}, nil
+		return immediateExitWebRunner{}, nil, nil
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -45,9 +45,9 @@ func TestWeb_DefaultsFromConfig(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "10.0.0.1", 8080)
 
 	var captured WebFactoryOptions
-	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, error) {
+	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
 		captured = opts
-		return immediateExitWebRunner{}, nil
+		return immediateExitWebRunner{}, nil, nil
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -67,9 +67,9 @@ func TestWeb_RemoteBindsToAllInterfaces(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 
 	var captured WebFactoryOptions
-	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, error) {
+	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
 		captured = opts
-		return immediateExitWebRunner{}, nil
+		return immediateExitWebRunner{}, nil, nil
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -114,9 +114,9 @@ remote = true
 	}
 
 	var captured WebFactoryOptions
-	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, error) {
+	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
 		captured = opts
-		return immediateExitWebRunner{}, nil
+		return immediateExitWebRunner{}, nil, nil
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -141,8 +141,8 @@ remote = true
 func TestWeb_RemotePrintsAuthlessWarning(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 
-	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, error) {
-		return immediateExitWebRunner{}, nil
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, nil, nil
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -165,8 +165,8 @@ func TestWeb_RemotePrintsAuthlessWarning(t *testing.T) {
 func TestWeb_NonRemoteDoesNotWarn(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 
-	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, error) {
-		return immediateExitWebRunner{}, nil
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, nil, nil
 	})
 
 	var stdout, stderr bytes.Buffer
@@ -185,12 +185,14 @@ func TestWeb_NonRemoteDoesNotWarn(t *testing.T) {
 // surfaces here rather than in production.  The other tests inject a
 // stub factory and would silently miss any breakage of the real path.
 func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 	addr := freeLoopbackAddr(t)
 
-	runner, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr})
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
 	}
+	t.Cleanup(func() { _ = closer() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -262,14 +264,88 @@ func TestWeb_StubRemoved(t *testing.T) {
 	}
 }
 
+// TestWeb_DaemonLogReceivesAccessRecord pins the brief's "各リクエ
+// ストのログを daemon.log に JSON Lines" requirement: production
+// wiring must open daemon.log next to config.toml and append one
+// JSON-Lines record per request.  Without this assertion the
+// AccessLogger seam exists in web.Options but the binary never
+// writes anything to disk.
+func TestWeb_DaemonLogReceivesAccessRecord(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+	addr := freeLoopbackAddr(t)
+
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
+		Addr:       addr,
+		ConfigPath: cfgPath,
+	})
+	if err != nil {
+		t.Fatalf("productionWebFactory: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runErr := make(chan error, 1)
+	go func() { runErr <- runner.Run(ctx) }()
+
+	if err := pollHealthz(t, "http://"+addr+"/healthz", 3*time.Second); err != nil {
+		cancel()
+		<-runErr
+		t.Fatalf("server never became ready: %v", err)
+	}
+	cancel()
+	if err := <-runErr; err != nil {
+		t.Fatalf("runner: %v", err)
+	}
+	// Closer flushes the rotating writer.
+	if err := closer(); err != nil {
+		t.Fatalf("closer: %v", err)
+	}
+
+	logPath := filepath.Join(filepath.Dir(cfgPath), "logs", "daemon.log")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", logPath, err)
+	}
+	if !bytes.Contains(body, []byte("/healthz")) {
+		t.Errorf("daemon.log missing /healthz access record\ncontent:\n%s", body)
+	}
+	if !bytes.Contains(body, []byte(`"status":200`)) {
+		t.Errorf("daemon.log missing JSON status field; not a JSON Lines record?\ncontent:\n%s", body)
+	}
+}
+
+// TestWeb_FactoryCloserAlwaysRuns pins the resource-cleanup
+// invariant: whatever the factory returned (file handles, the
+// listener) must be released even if the runner errors out.  The
+// brief calls for the dispatcher's (runner, closer, err) shape so
+// listener / log-file leaks are not possible after a partial start.
+func TestWeb_FactoryCloserAlwaysRuns(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	closed := false
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, func() error { closed = true; return nil }, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
+	}
+	if !closed {
+		t.Fatalf("factory closer never invoked; runner-side resources can leak")
+	}
+}
+
 // TestWeb_FactoryError_ExitsNonZero pins that a factory failure
 // (e.g. invalid bind address) bubbles up as a non-zero exit code with
 // the failure message on stderr.
 func TestWeb_FactoryError_ExitsNonZero(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 
-	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, error) {
-		return nil, fmt.Errorf("factory: bind would fail")
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return nil, nil, fmt.Errorf("factory: bind would fail")
 	})
 
 	var stdout, stderr bytes.Buffer
