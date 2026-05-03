@@ -66,9 +66,10 @@ func NewCSRF(source TokenSource) (*CSRF, error) {
 // Middleware wraps next with the double-submit check.
 func (c *CSRF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secure := r.TLS != nil
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
-			if err := c.ensureCookie(w, r); err != nil {
+			if err := c.ensureCookie(w, r, secure); err != nil {
 				http.Error(w, "csrf: token issue failed", http.StatusInternalServerError)
 				return
 			}
@@ -109,7 +110,7 @@ func (c *CSRF) TokenFor(w http.ResponseWriter, r *http.Request) (string, error) 
 	if cookie, err := r.Cookie(CSRFCookieName); err == nil && cookie.Value != "" {
 		return cookie.Value, nil
 	}
-	if err := c.ensureCookie(w, r); err != nil {
+	if err := c.ensureCookie(w, r, r.TLS != nil); err != nil {
 		return "", err
 	}
 	cookie, err := r.Cookie(CSRFCookieName)
@@ -119,13 +120,13 @@ func (c *CSRF) TokenFor(w http.ResponseWriter, r *http.Request) (string, error) 
 	return cookie.Value, nil
 }
 
-func (c *CSRF) ensureCookie(w http.ResponseWriter, r *http.Request) error {
+func (c *CSRF) ensureCookie(w http.ResponseWriter, r *http.Request, secure bool) error {
 	if cookie, err := r.Cookie(CSRFCookieName); err == nil && cookie.Value != "" {
 		// Re-set the cookie on the response so subsequent handlers
 		// (and TokenFor) can read it back via r.Cookie before the
 		// browser round-trip — required by tests that issue a single
 		// request and then inspect the recorder.
-		http.SetCookie(w, newCSRFCookie(cookie.Value))
+		http.SetCookie(w, newCSRFCookie(cookie.Value, secure))
 		return nil
 	}
 	token, err := c.source()
@@ -133,16 +134,23 @@ func (c *CSRF) ensureCookie(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	r.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: token})
-	http.SetCookie(w, newCSRFCookie(token))
+	http.SetCookie(w, newCSRFCookie(token, secure))
 	return nil
 }
 
-func newCSRFCookie(value string) *http.Cookie {
+// newCSRFCookie tracks the request's TLS state via secure: setting the
+// flag on a plain-HTTP response would make the browser refuse the
+// cookie entirely (breaking local dev), while leaving it off on a
+// TLS response lets a downgraded session leak the token in cleartext.
+// The middleware passes r.TLS != nil so the cookie always matches the
+// transport that issued it.
+func newCSRFCookie(value string, secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: false, // readable by JS so HTMX/fetch can echo it
 		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 	}
 }

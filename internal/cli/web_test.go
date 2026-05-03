@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,53 @@ func TestWeb_RemoteBindsToAllInterfaces(t *testing.T) {
 	}
 	if !captured.Remote {
 		t.Errorf("Remote = false; want true")
+	}
+}
+
+// TestWeb_RemotePrintsAuthlessWarning pins the operator-awareness
+// contract: --remote opts out of the loopback default but the binary
+// currently ships no auth, so the command must print a loud warning
+// to stderr before listening.  Without this guard an operator could
+// expose the dashboard to the world unaware that auth lands in a
+// later PR.
+func TestWeb_RemotePrintsAuthlessWarning(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, error) {
+		return immediateExitWebRunner{}, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web", "--remote"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
+	}
+	combined := stderr.String()
+	if !strings.Contains(combined, "WARNING") {
+		t.Errorf("stderr missing WARNING marker for --remote; got %q", combined)
+	}
+	if !strings.Contains(combined, "no authentication") {
+		t.Errorf("stderr missing 'no authentication' notice; got %q", combined)
+	}
+}
+
+// TestWeb_NonRemoteDoesNotWarn pins the negative side: the loopback
+// default must not emit the scary banner, otherwise the warning loses
+// its signal value.
+func TestWeb_NonRemoteDoesNotWarn(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, error) {
+		return immediateExitWebRunner{}, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "WARNING") {
+		t.Errorf("stderr unexpectedly carries WARNING for loopback bind; got %q", stderr.String())
 	}
 }
 
