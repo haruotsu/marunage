@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -84,5 +87,56 @@ func TestReaper_RegisteredOnRoot(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "reaper") {
 		t.Errorf("--help output missing 'reaper' line:\n%s", stdout.String())
+	}
+}
+
+// G5 (silent fallback regression): when audit.log open fails, the
+// production factory must NOT swallow the error completely — it logs
+// a slog warning so a long-running daemon does not silently lose its
+// audit trail (requirement.md invariant #2 "No silent execution").
+// We pin this by setting core.db_path to a location whose audit.log
+// directory is a *file* (not a directory), forcing MkdirAll to fail,
+// then asserting the slog default handler emitted a warning.
+func TestReaper_LogsAuditOpenFailure(t *testing.T) {
+	// Build a config whose audit.log path is doomed: place a regular
+	// file where the "logs" directory should be. logging.NewAuditLog
+	// will MkdirAll that path and fail because a non-directory blocks.
+	dir := t.TempDir()
+	dbDir := filepath.Join(dir, "marunage")
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+		t.Fatalf("mkdir dbDir: %v", err)
+	}
+	// Block the "logs" path by creating a file with that exact name.
+	if err := os.WriteFile(filepath.Join(dbDir, "logs"), []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	configPath := filepath.Join(dir, "config.toml")
+	body := "" +
+		"[core]\n" +
+		"db_path = \"" + filepath.Join(dbDir, "tasks.db") + "\"\n" +
+		"max_parallel = 1\n" +
+		"default_cwd = \"/tmp\"\n" +
+		"log_level = \"info\"\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Capture slog output via a buffer-backed handler.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	r, closer, err := productionReaperFactory(context.Background(), configPath)
+	if err != nil {
+		t.Fatalf("productionReaperFactory: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+	if r == nil {
+		t.Fatalf("returned reaper is nil")
+	}
+	if !strings.Contains(buf.String(), "audit") {
+		t.Errorf("slog output did not mention audit; got:\n%s", buf.String())
 	}
 }
