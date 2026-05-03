@@ -1247,3 +1247,148 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("MarkFailedWithReason(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// PR-43 store additions (atomic done + completed_at).
+//
+//  S1. MarkDoneWithSummary on a row stamps status=done, result_summary=<text>,
+//      completed_at=<time> in a single UPDATE so a concurrent reader cannot
+//      observe a row in done with completed_at IS NULL (the post-mortem
+//      "when did this finish" view depends on the pair).
+//  S2. MarkDoneWithSummary on a missing id returns ErrNotFound so a stale id
+//      in the watcher's cached list does not silently no-op.
+//  S3. MarkDoneWithSummary accepts an empty summary — Claude may produce no
+//      final text, and the watcher still wants to record the done transition.
+//  S4. MarkDoneWithSummary with zero time.Time returns ErrCompletedAtRequired
+//      so a forgotten clock injection fails loud rather than writing NULL.
+//  S5. SetCompletedAt stamps completed_at on a row; missing id returns
+//      ErrNotFound; zero time returns ErrCompletedAtRequired.
+//  S6. MarkDoneWithSummary writes the canonical millisecond ISO8601 layout
+//      Get round-trips (so list ORDER BY completed_at sorts chronologically).
+
+func TestTaskRepoMarkDoneWithSummaryStampsAllFields(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "completion test",
+		Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	const summary = "Done. PR opened: https://example.com/pr/1"
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, summary, completedAt); err != nil {
+		t.Fatalf("MarkDoneWithSummary: %v", err)
+	}
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusDone)
+	}
+	if got.ResultSummary != summary {
+		t.Errorf("result_summary = %q; want %q", got.ResultSummary, summary)
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("completed_at = %v; want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	err := f.repo.MarkDoneWithSummary(f.ctx, 99999, "irrelevant", completedAt)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkDoneWithSummary(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryAcceptsEmptySummary(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no summary", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, "", completedAt); err != nil {
+		t.Fatalf("MarkDoneWithSummary(empty summary): %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusDone)
+	}
+	if got.ResultSummary != "" {
+		t.Errorf("result_summary = %q; want empty", got.ResultSummary)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryRejectsZeroCompletedAt(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "needs completed_at", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, "ok", time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
+		t.Fatalf("MarkDoneWithSummary(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("row touched despite rejected call: status = %q", got.Status)
+	}
+}
+
+func TestTaskRepoSetCompletedAtRoundTrip(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "set completed_at",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	completedAt := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	if err := f.repo.SetCompletedAt(f.ctx, id, completedAt); err != nil {
+		t.Fatalf("SetCompletedAt: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("completed_at = %v; want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestTaskRepoSetCompletedAtMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	completedAt := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	if err := f.repo.SetCompletedAt(f.ctx, 99999, completedAt); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetCompletedAt(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+func TestTaskRepoSetCompletedAtRejectsZeroTime(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "zero time",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetCompletedAt(f.ctx, id, time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
+		t.Fatalf("SetCompletedAt(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+}
