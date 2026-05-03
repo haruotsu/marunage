@@ -151,6 +151,72 @@ func TestKVStateRepoDeleteEmptyKeyValidates(t *testing.T) {
 	}
 }
 
+//  8. CompareAndSwap with matching expected swaps the value atomically.
+//     This is the primitive Discovery uses to advance a checkpoint without
+//     racing a concurrent re-run that already moved past it.
+func TestKVStateRepoCompareAndSwapMatching(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Set(f.ctx, "k", "v1"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.repo.CompareAndSwap(f.ctx, "k", "v1", "v2"); err != nil {
+		t.Fatalf("CompareAndSwap: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "v2" {
+		t.Errorf("value after CAS = %q; want %q", got, "v2")
+	}
+}
+
+//  9. CompareAndSwap with a mismatching expected returns ErrKVStaleValue and
+//     leaves the value untouched. Without this, two concurrent advances of
+//     the same checkpoint could regress (newer caller's CAS overwrites an
+//     even-newer value the first caller already committed).
+func TestKVStateRepoCompareAndSwapMismatch(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Set(f.ctx, "k", "actual"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	err := f.repo.CompareAndSwap(f.ctx, "k", "stale", "new")
+	if !errors.Is(err, store.ErrKVStaleValue) {
+		t.Fatalf("CompareAndSwap(stale): err = %v; want ErrKVStaleValue", err)
+	}
+	got, err := f.repo.Get(f.ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "actual" {
+		t.Errorf("value after stale CAS = %q; want unchanged %q", got, "actual")
+	}
+}
+
+//  10. CompareAndSwap on a missing key returns ErrKVNotFound. Distinguishing
+//     "key gone" from "value drifted" lets callers decide whether to re-Set
+//     from scratch or back off and retry.
+func TestKVStateRepoCompareAndSwapMissingReturnsErrKVNotFound(t *testing.T) {
+	f := newKVFixture(t)
+
+	err := f.repo.CompareAndSwap(f.ctx, "ghost", "x", "y")
+	if !errors.Is(err, store.ErrKVNotFound) {
+		t.Fatalf("CompareAndSwap(missing): err = %v; want ErrKVNotFound", err)
+	}
+}
+
+// 11. CompareAndSwap with an empty key validates loudly at the boundary.
+func TestKVStateRepoCompareAndSwapEmptyKeyValidates(t *testing.T) {
+	f := newKVFixture(t)
+
+	err := f.repo.CompareAndSwap(f.ctx, "", "x", "y")
+	if !errors.Is(err, store.ErrKVKeyRequired) {
+		t.Fatalf("CompareAndSwap(empty key): err = %v; want ErrKVKeyRequired", err)
+	}
+}
+
 //  12. WithKVClock pins updated_at so tests do not have to sleep for the
 //     trigger / wall clock to advance.
 func TestKVStateRepoWithClockPinsUpdatedAt(t *testing.T) {
