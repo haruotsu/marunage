@@ -637,7 +637,7 @@ type raceLatchStore struct {
 func (s *raceLatchStore) MarkFailedFromRunningWithReason(ctx context.Context, id int64, reason string) error {
 	if id == s.flipID && !s.flipped {
 		s.flipped = true
-		if err := s.TaskRepo.UpdateStatus(ctx, id, store.StatusDone); err != nil {
+		if err := s.UpdateStatus(ctx, id, store.StatusDone); err != nil {
 			s.t.Fatalf("race latch UpdateStatus(done): %v", err)
 		}
 	}
