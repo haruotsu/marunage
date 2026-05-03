@@ -595,10 +595,20 @@ func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix st
 // sentinel PR-43, a manual `marunage done`) has just moved past
 // running cannot be silently overwritten by reaper's stale snapshot.
 //
+// reason is appended to any existing judgment_reason (joined with
+// judgmentReasonSeparator) rather than overwriting it. requirement.md
+// L567 reserves judgment_reason writes outside of EscalateToHuman to
+// the "append-only" rule so the prior triage trail `marunage review`
+// reads for post-mortem survives reaper's failed transition. The
+// dispatcher's markFailed (PR-42) follows the same convention via Go-
+// side concatenation; here we use a SQL CASE expression so the read +
+// write happen in one atomic UPDATE.
+//
 // Atomicity: a single UPDATE with a status guard does the conflict
-// check + the write. A follow-up SELECT distinguishes ErrNotFound from
-// ErrInvalidTransition when RowsAffected reports zero — same
-// disambiguation pattern AcquireLock and EscalateToHuman use.
+// check + the write + the reason concatenation. A follow-up SELECT
+// distinguishes ErrNotFound from ErrInvalidTransition when
+// RowsAffected reports zero — same disambiguation pattern AcquireLock
+// and EscalateToHuman use.
 //
 // Errors:
 //   - ErrReasonRequired   : reason is empty
@@ -610,10 +620,17 @@ func (r *TaskRepo) MarkFailedFromRunningWithReason(ctx context.Context, id int64
 	}
 	const q = `
 		UPDATE tasks
-		   SET status = ?, judgment_reason = ?
+		   SET status = ?,
+		       judgment_reason = CASE
+		           WHEN judgment_reason IS NULL OR judgment_reason = '' THEN ?
+		           ELSE judgment_reason || ? || ?
+		       END
 		 WHERE id = ?
 		   AND status = ?`
-	res, err := r.db.ExecContext(ctx, q, StatusFailed, reason, id, StatusRunning)
+	res, err := r.db.ExecContext(ctx, q,
+		StatusFailed,
+		reason, judgmentReasonSeparator, reason,
+		id, StatusRunning)
 	if err != nil {
 		return fmt.Errorf("mark failed from running: %w", err)
 	}
