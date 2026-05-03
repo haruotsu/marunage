@@ -104,9 +104,10 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// newAccessLogger wraps next with a single-line access log.  PR-62
-// uses the package-level discard logger by default; CLI wiring will
-// inject the real daemon.log writer.
+// newAccessLogger wraps next with a single-line access log.  When
+// logger is nil — the default for unit tests — the wrapper is
+// elided entirely so test runs stay quiet; the CLI wires the real
+// daemon.log-backed AccessLogger via Options.AccessLogger.
 func newAccessLogger(next http.Handler, logger AccessLogger) http.Handler {
 	if logger == nil {
 		return next
@@ -124,14 +125,17 @@ func newAccessLogger(next http.Handler, logger AccessLogger) http.Handler {
 	})
 }
 
-// AccessRecord is one row of the JSON-Lines access log.  Kept simple
-// on purpose: structured logging integration with internal/logging
-// lands when PR-63's dashboard needs richer context.
+// AccessRecord is one row of access-log data the AccessLogger
+// implementation is free to format.  The CLI's slogAccessLogger
+// emits these as JSON Lines into daemon.log via slog with explicit
+// per-field keys (so the wire format is owned by the logger, not by
+// struct tags here).  Kept minimal on purpose: PR-63 can grow it
+// when the dashboard needs richer context.
 type AccessRecord struct {
-	Method   string        `json:"method"`
-	Path     string        `json:"path"`
-	Status   int           `json:"status"`
-	Duration time.Duration `json:"duration_ns"`
+	Method   string
+	Path     string
+	Status   int
+	Duration time.Duration
 }
 
 // AccessLogger is the narrow seam the server uses for request logging.

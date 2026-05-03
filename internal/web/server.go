@@ -116,12 +116,7 @@ func (s *Server) Routes() http.Handler {
 // which is the normal shutdown signal) lets the CLI surface real
 // listen failures — bind-address-in-use is the obvious example.
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
-	httpSrv := &http.Server{
-		Handler:           s.Routes(),
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		IdleTimeout:       idleTimeout,
-	}
+	httpSrv := s.newHTTPServer()
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.Serve(listener) }()
@@ -148,18 +143,14 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	return nil
 }
 
-// httpServerSettings is the snapshot the timeout regression test
-// inspects.  Keeping it as a separate small struct (rather than
-// exporting fields on *http.Server) avoids leaking the full server
-// surface to tests.
-type httpServerSettings struct {
-	ReadHeaderTimeout time.Duration
-	ReadTimeout       time.Duration
-	IdleTimeout       time.Duration
-}
-
-func serverHTTPSettingsForTest() httpServerSettings {
-	return httpServerSettings{
+// newHTTPServer assembles the *http.Server Serve runs in production.
+// Factoring the build out (rather than inlining inside Serve) lets
+// the timeout regression test assert on the concrete Server fields
+// — a refactor that silently drops one of the timeout assignments
+// here will be caught by the test reading those exact fields.
+func (s *Server) newHTTPServer() *http.Server {
+	return &http.Server{
+		Handler:           s.Routes(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		IdleTimeout:       idleTimeout,
