@@ -22,6 +22,15 @@ type Event struct {
 // stall without dropping every burst.
 const subscriberBuffer = 16
 
+// defaultMaxSubscribers caps the total number of in-flight SSE
+// subscribers a single Hub will admit.  --remote mode currently has
+// no auth, so an unbounded subscriber count would let any reachable
+// client spawn a goroutine + 16-event buffer per connection until the
+// process exhausts file descriptors.  64 is generous for a
+// single-operator marunage instance and conservative for a
+// shared-network deployment.
+const defaultMaxSubscribers = 64
+
 // Subscription is the handle returned by Hub.Subscribe.  Consumers
 // read from C; the hub owns the channel's lifetime so callers must
 // hand it back via Hub.Unsubscribe rather than closing C themselves.
@@ -33,21 +42,41 @@ type Subscription struct {
 // produces heartbeat pings via the SSE handler; PR-91 will start
 // publishing dispatch / discovery events through the same surface.
 type Hub struct {
-	mu   sync.Mutex
-	subs map[*Subscription]struct{}
+	mu      sync.Mutex
+	subs    map[*Subscription]struct{}
+	maxSubs int
 }
 
-// NewHub returns an empty hub ready to accept subscribers.
+// NewHub returns an empty hub ready to accept subscribers, capped at
+// defaultMaxSubscribers.
 func NewHub() *Hub {
-	return &Hub{subs: make(map[*Subscription]struct{})}
+	return NewHubWithCap(defaultMaxSubscribers)
 }
 
-// Subscribe registers a new subscriber and returns the handle.  The
-// caller must Unsubscribe when done — typically via defer in the SSE
-// handler.
+// NewHubWithCap is the test seam: lets the regression test pin the
+// cap without depending on the package-level default.  Production
+// callers should use NewHub.
+func NewHubWithCap(maxSubs int) *Hub {
+	if maxSubs <= 0 {
+		maxSubs = defaultMaxSubscribers
+	}
+	return &Hub{
+		subs:    make(map[*Subscription]struct{}),
+		maxSubs: maxSubs,
+	}
+}
+
+// Subscribe registers a new subscriber and returns the handle.  When
+// the hub already holds maxSubs connections the call returns nil so
+// the SSE handler can refuse the request with 503; the caller MUST
+// nil-check the return value.
 func (h *Hub) Subscribe() *Subscription {
-	sub := &Subscription{C: make(chan Event, subscriberBuffer)}
 	h.mu.Lock()
+	if len(h.subs) >= h.maxSubs {
+		h.mu.Unlock()
+		return nil
+	}
+	sub := &Subscription{C: make(chan Event, subscriberBuffer)}
 	h.subs[sub] = struct{}{}
 	h.mu.Unlock()
 	return sub
@@ -117,6 +146,13 @@ func NewSSEHandler(hub *Hub, opts SSEOptions) http.Handler {
 		w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
 
 		sub := hub.Subscribe()
+		if sub == nil {
+			// Hub at capacity: drop the connection cleanly with 503
+			// + Retry-After so well-behaved clients back off.
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, "sse: subscriber capacity reached", http.StatusServiceUnavailable)
+			return
+		}
 		defer hub.Unsubscribe(sub)
 
 		// Send an immediate ping so the test (and a real client) can

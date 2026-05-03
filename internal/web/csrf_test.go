@@ -2,6 +2,7 @@ package web
 
 import (
 	"crypto/tls"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -191,6 +192,42 @@ func TestCSRF_PostAcceptsFormField(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+}
+
+// TestCSRF_DoesNotParseNonFormBodyWhenRejecting pins the middleware
+// behaviour when a request lacks the CSRF header and the Content-Type
+// is NOT form-encoded: the middleware must reject (no token found)
+// without calling ParseForm, since ParseForm on application/json
+// silently consumes (and discards) the JSON body.  Without this
+// guard, a future JSON POST that fails CSRF would have its body
+// drained even before any application logic could log it for
+// diagnostics.
+func TestCSRF_DoesNotParseNonFormBodyWhenRejecting(t *testing.T) {
+	csrf, err := NewCSRF(testTokenSource)
+	if err != nil {
+		t.Fatalf("NewCSRF: %v", err)
+	}
+	const payload = `{"hello":"world"}`
+	body := strings.NewReader(payload)
+	h := csrf.Middleware(http.HandlerFunc(okHandler))
+
+	// Cookie present but header / form field both absent — middleware
+	// must reject without touching the body.
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "cookie-token"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403", rec.Code)
+	}
+	// Body bytes should still be readable post-middleware.  ParseForm
+	// would have drained them.
+	remaining, _ := io.ReadAll(body)
+	if string(remaining) != payload && body.Len() == 0 {
+		t.Errorf("non-form body was consumed by CSRF middleware (remaining=%q, len=%d); ParseForm should be gated on Content-Type", remaining, body.Len())
 	}
 }
 
