@@ -53,7 +53,6 @@ const defaultMode = "bypass"
 type Result struct {
 	ConfigPath    string
 	ConfigCreated bool
-	DirsCreated   []string
 }
 
 // ResolveMode applies the same defaulting + whitelist check Run does,
@@ -87,8 +86,7 @@ func Run(opts Options) (Result, error) {
 	cfgPath := filepath.Join(root, "config.toml")
 
 	dirs := []string{root, filepath.Join(root, "logs"), filepath.Join(root, "sources")}
-	created, err := ensureDirs(dirs)
-	if err != nil {
+	if err := ensureDirs(dirs); err != nil {
 		return Result{}, err
 	}
 
@@ -110,7 +108,6 @@ func Run(opts Options) (Result, error) {
 	return Result{
 		ConfigPath:    cfgPath,
 		ConfigCreated: cfgCreated,
-		DirsCreated:   created,
 	}, nil
 }
 
@@ -123,27 +120,16 @@ func contains(set []string, v string) bool {
 	return false
 }
 
-// ensureDirs MkdirAlls each path with 0700 and returns the subset that did
-// not previously exist. The "did not exist" list lets the CLI surface
-// idempotency in its message ("created logs/, sources/") without a second
-// stat round-trip.
-func ensureDirs(paths []string) ([]string, error) {
-	var created []string
+// ensureDirs MkdirAlls each path with 0700, idempotently. MkdirAll is
+// already a no-op on existing directories; we wrap it only to translate
+// errors into the package's "init: ..." vocabulary.
+func ensureDirs(paths []string) error {
 	for _, p := range paths {
-		_, err := os.Stat(p)
-		switch {
-		case err == nil:
-			// Already there; nothing to record.
-		case errors.Is(err, fs.ErrNotExist):
-			created = append(created, p)
-		default:
-			return nil, fmt.Errorf("stat %s: %w", p, err)
-		}
 		if err := os.MkdirAll(p, 0o700); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", p, err)
+			return fmt.Errorf("mkdir %s: %w", p, err)
 		}
 	}
-	return created, nil
+	return nil
 }
 
 // ensureConfig writes the default config.toml only when the file does not
