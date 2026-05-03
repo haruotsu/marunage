@@ -75,6 +75,13 @@ type Config struct {
 	// means "use the user's HOME". Tests pass a t.TempDir() here so they
 	// never touch ~/.marunage.
 	HomeDir string
+	// AgePassphraseEnv lets a deployment override the env var name the
+	// age backend consults before falling back to a TTY prompt. Empty
+	// means "use AgePassphraseEnvDefault" (MARUNAGE_AGE_PASSPHRASE).
+	// Configurable so a Docker image that already exports a
+	// site-specific secret name does not have to rename its env at
+	// runtime.
+	AgePassphraseEnv string
 }
 
 // ErrUnsupported is returned by backends that are recognised by name but
