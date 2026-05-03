@@ -450,23 +450,35 @@ func TestTaskStatus_WatchHonoursIntervalFlag(t *testing.T) {
 		Status: store.StatusRunning, WS: "workspace:1",
 	}
 
+	// factoryCalled fires the moment the SUT asks for a ticker, which
+	// is exactly when the interval becomes observable. Closing the
+	// channel doubles as a happens-before barrier for the seen read.
 	var seen time.Duration
+	factoryCalled := make(chan struct{})
 	tickC := make(chan time.Time)
 	withStatusTicker(t, func(d time.Duration) (<-chan time.Time, func()) {
 		seen = d
+		close(factoryCalled)
 		return tickC, func() {}
 	})
 
-	// Run in a goroutine so we can cancel via ctrl-c equivalent: cobra
-	// surfaces the parent context, but Execute runs synchronously and
-	// blocks. We sidestep that by using a context that expires fast
-	// and asserting on the captured duration.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	withStatusContext(t, ctx)
 
-	var stdout, stderr bytes.Buffer
-	_ = Execute([]string{"status", "--watch", "--interval", "750ms"}, &stdout, &stderr)
+	done := make(chan int, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		done <- Execute([]string{"status", "--watch", "--interval", "750ms"}, &stdout, &stderr)
+	}()
+
+	select {
+	case <-factoryCalled:
+	case <-time.After(time.Second):
+		t.Fatal("ticker factory was not called within 1s")
+	}
+	cancel()
+	<-done
 
 	if seen != 750*time.Millisecond {
 		t.Errorf("ticker interval = %v; want 750ms", seen)
