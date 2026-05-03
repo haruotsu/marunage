@@ -1,0 +1,404 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/haruotsu/marunage/internal/store"
+)
+
+// fakeWorkspaceLister is the test seam for PR-22 `marunage clean`. Tests
+// install one via withWorkspaceListerFactory so the SUT never calls a real
+// cmux. The default productionWorkspaceListerFactory is exercised in a
+// dedicated test rather than from every clean test.
+type fakeWorkspaceLister struct {
+	ids []string
+	err error
+}
+
+func (f *fakeWorkspaceLister) ListWorkspaceIDs(_ context.Context) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]string(nil), f.ids...), nil
+}
+
+// installFakeWorkspaceLister registers a fresh fake as the active
+// workspaceLister factory, mirroring installFakeRepo / installFakeMirror.
+func installFakeWorkspaceLister(t *testing.T, alive ...string) *fakeWorkspaceLister {
+	t.Helper()
+	lister := &fakeWorkspaceLister{ids: alive}
+	withWorkspaceListerFactory(t, func(_ context.Context, _ string) (workspaceLister, error) {
+		return lister, nil
+	})
+	return lister
+}
+
+// 11. No flags = dry-run = no DB mutations. The orphan reference must
+// stay on the row so a subsequent --apply pass can still clean it.
+// The verb assertion ("would clear" + "pass --apply") is what
+// distinguishes dry-run from --apply in the prose; pinning both the
+// state (WS unchanged) and the prose (verb hint) catches a flipped
+// `apply` boolean as well as a missing SetWorkspace call.
+func TestTaskClean_DryRunIsDefault(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:9"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean exit=%d; stderr=%q", code, stderr.String())
+	}
+	if got := repo.rows[1].WS; got != "workspace:9" {
+		t.Errorf("dry-run mutated WS: got %q; want %q", got, "workspace:9")
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "would clear") {
+		t.Errorf("dry-run output should pin the dry-run verb 'would clear'; got %q", out)
+	}
+	if !strings.Contains(out, "--apply") {
+		t.Errorf("dry-run output should hint at --apply; got %q", out)
+	}
+}
+
+// 12. Dry-run reports each orphan ws so the operator can inspect before
+// running --apply. Pinning both the id and the ws marker keeps a future
+// "compact the report" rewrite from accidentally hiding one of them.
+func TestTaskClean_DryRunReportsOrphanWorkspaceReferences(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[7] = store.Task{ID: 7, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:99"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean exit=%d; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "7") {
+		t.Errorf("output should mention task id 7; got %q", out)
+	}
+	if !strings.Contains(out, "workspace:99") {
+		t.Errorf("output should mention orphan ws; got %q", out)
+	}
+}
+
+// 13. Tasks without a ws are not orphan candidates and must not appear
+// in the report.
+func TestTaskClean_DryRunIgnoresTasksWithoutWS(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "no-ws", Status: store.StatusPending}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean exit=%d; stderr=%q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "no-ws") {
+		t.Errorf("task without WS should not appear; got %q", stdout.String())
+	}
+}
+
+// 14. ws references that DO exist in cmux are alive — not orphan — and
+// must not be reported.
+func TestTaskClean_DryRunIgnoresAliveWorkspaces(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t, "workspace:1", "workspace:2")
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "alive", Status: store.StatusRunning, WS: "workspace:1"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean exit=%d; stderr=%q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "alive") {
+		t.Errorf("alive task should not appear; got %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "workspace:1") {
+		t.Errorf("alive ws should not appear; got %q", stdout.String())
+	}
+}
+
+// 15. --apply clears the orphan ws reference via SetWorkspace(id, "").
+// The local row's WS becomes empty so the next clean run finds nothing.
+func TestTaskClean_ApplyClearsOrphanWorkspaceReferences(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[7] = store.Task{ID: 7, Source: "manual", Title: "orphan", Status: store.StatusFailed, WS: "workspace:99"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean --apply exit=%d; stderr=%q", code, stderr.String())
+	}
+	if got := repo.rows[7].WS; got != "" {
+		t.Errorf("--apply did not clear WS: got %q; want empty", got)
+	}
+}
+
+// 16. --apply must not touch tasks whose ws still exists in cmux.
+func TestTaskClean_ApplyDoesNotTouchAliveWorkspaces(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t, "workspace:1")
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "alive", Status: store.StatusRunning, WS: "workspace:1"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean --apply exit=%d; stderr=%q", code, stderr.String())
+	}
+	if got := repo.rows[1].WS; got != "workspace:1" {
+		t.Errorf("--apply mutated alive WS: got %q; want %q", got, "workspace:1")
+	}
+}
+
+// 17. --apply prints a count summary so a script can grep the result
+// without parsing per-row lines. Pinning the literal "Cleared 2 orphan"
+// (rather than just substring "2", which the per-row "task #2: ..."
+// line would also satisfy) keeps an applied=1 mutation from sneaking
+// through.
+func TestTaskClean_ApplyReportsClearedCount(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "a", Status: store.StatusFailed, WS: "workspace:91"}
+	repo.rows[2] = store.Task{ID: 2, Source: "manual", Title: "b", Status: store.StatusFailed, WS: "workspace:92"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean --apply exit=%d; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Cleared 2 orphan") {
+		t.Errorf("output should pin the summary 'Cleared 2 orphan'; got %q", out)
+	}
+}
+
+// 17b. Dry-run with multiple orphans must report ALL of them, not just
+// the first. Without this the orphan-collection loop could regress to
+// "break after first match" and the per-id test would still pass.
+func TestTaskClean_DryRunReportsAllOrphans(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "a", Status: store.StatusFailed, WS: "workspace:91"}
+	repo.rows[2] = store.Task{ID: 2, Source: "manual", Title: "b", Status: store.StatusFailed, WS: "workspace:92"}
+	repo.rows[3] = store.Task{ID: 3, Source: "manual", Title: "c", Status: store.StatusFailed, WS: "workspace:93"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean exit=%d; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, ws := range []string{"workspace:91", "workspace:92", "workspace:93"} {
+		if !strings.Contains(out, ws) {
+			t.Errorf("dry-run output missing orphan %q; got %q", ws, out)
+		}
+	}
+}
+
+// 17c. SetWorkspace failure during --apply surfaces a non-zero exit and
+// the diagnostic carries the offending task id so an operator can
+// re-run after fixing the underlying cause. The failing-on-id seam is
+// the "real" bug pattern (one row's row gone missing between the
+// initial List and the targeted SetWorkspace) so the test exercises
+// exactly that race.
+func TestTaskClean_ApplyPropagatesSetWorkspaceFailure(t *testing.T) {
+	base := newFakeTaskRepo()
+	base.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:91"}
+	wrap := &setWorkspaceFailingRepo{taskRepo: base, failOnID: 1, err: errors.New("disk full")}
+	withTaskRepoFactory(t, func(_ context.Context, _ string) (taskRepo, func() error, error) {
+		return wrap, func() error { return nil }, nil
+	})
+	installFakeWorkspaceLister(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit when SetWorkspace fails; stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "1") {
+		t.Errorf("stderr should mention failing task id 1; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "disk full") {
+		t.Errorf("stderr should surface the underlying error; got %q", stderr.String())
+	}
+}
+
+// setWorkspaceFailingRepo is the test wrapper that lets exactly one
+// SetWorkspace call fail. Embedding fakeTaskRepo through the taskRepo
+// interface keeps every other method delegated as-is so unrelated CLI
+// paths still see a normal repo.
+type setWorkspaceFailingRepo struct {
+	taskRepo
+	failOnID int64
+	err      error
+}
+
+func (r *setWorkspaceFailingRepo) SetWorkspace(ctx context.Context, id int64, ws string) error {
+	if id == r.failOnID {
+		return r.err
+	}
+	return r.taskRepo.SetWorkspace(ctx, id, ws)
+}
+
+// 18. Repo open errors propagate.
+func TestTaskClean_PropagatesRepoErrors(t *testing.T) {
+	withTaskRepoFactory(t, func(_ context.Context, _ string) (taskRepo, func() error, error) {
+		return nil, nil, errBoom
+	})
+	installFakeWorkspaceLister(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+// 19. cmux lister errors propagate. Pinning the wrap prefix and the
+// underlying message keeps a future "swallow lister failures and treat
+// all rows as alive" shortcut from silently regressing the orphan
+// detection — and keeps the operator-facing diagnostic intact.
+func TestTaskClean_PropagatesWorkspaceListerErrors(t *testing.T) {
+	repo := installFakeRepo(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:1"}
+	withWorkspaceListerFactory(t, func(_ context.Context, _ string) (workspaceLister, error) {
+		return &fakeWorkspaceLister{err: errors.New("cmux down")}, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "list workspaces") {
+		t.Errorf("stderr should pin the 'list workspaces' wrap; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cmux down") {
+		t.Errorf("stderr should surface the underlying error; got %q", stderr.String())
+	}
+}
+
+// 19b. If the lister factory itself fails (e.g. config malformed) the
+// failure must surface with the "workspace lister:" wrap so the
+// operator distinguishes a setup error from a runtime cmux failure.
+func TestTaskClean_PropagatesWorkspaceListerFactoryError(t *testing.T) {
+	installFakeRepo(t)
+	withWorkspaceListerFactory(t, func(_ context.Context, _ string) (workspaceLister, error) {
+		return nil, errors.New("bad config")
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "workspace lister") {
+		t.Errorf("stderr should pin the 'workspace lister' wrap; got %q", stderr.String())
+	}
+}
+
+// 20. --json emits a structured report so CI / scripts can parse without
+// touching the human prose. Pinning each value (dry_run=true,
+// applied=0, orphans[0].id=3, orphans[0].ws=workspace:8) catches a
+// flipped DryRun symbol or a swapped (id, ws) field assignment in the
+// report builder.
+func TestTaskClean_JSONFlagOutputsStructuredReport(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[3] = store.Task{ID: 3, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:8"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean --json exit=%d; stderr=%q", code, stderr.String())
+	}
+	var got struct {
+		Orphans []struct {
+			ID int64  `json:"id"`
+			WS string `json:"ws"`
+		} `json:"orphans"`
+		Applied int  `json:"applied"`
+		DryRun  bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout.String())
+	}
+	if !got.DryRun {
+		t.Errorf("dry_run = %v; want true (no --apply was passed)", got.DryRun)
+	}
+	if got.Applied != 0 {
+		t.Errorf("applied = %d; want 0 in dry-run", got.Applied)
+	}
+	if len(got.Orphans) != 1 {
+		t.Fatalf("orphans len = %d; want 1", len(got.Orphans))
+	}
+	if got.Orphans[0].ID != 3 || got.Orphans[0].WS != "workspace:8" {
+		t.Errorf("orphans[0] = %+v; want {id:3 ws:workspace:8}", got.Orphans[0])
+	}
+}
+
+// 20b. --json --apply flips dry_run to false and surfaces the applied
+// count. Same pinning rationale as 20: keep the symbol stable.
+func TestTaskClean_JSONApplyReportsDryRunFalse(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[5] = store.Task{ID: 5, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:5"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean --apply --json exit=%d; stderr=%q", code, stderr.String())
+	}
+	var got struct {
+		Applied int  `json:"applied"`
+		DryRun  bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout.String())
+	}
+	if got.DryRun {
+		t.Errorf("dry_run = %v; want false under --apply", got.DryRun)
+	}
+	if got.Applied != 1 {
+		t.Errorf("applied = %d; want 1", got.Applied)
+	}
+}
+
+// productionWorkspaceListerFactory must hand back something non-nil when
+// no test hook is installed, mirroring the productionMirrorFactory
+// contract. The exact type / behaviour is opaque to this test — it pins
+// only the "no panic on cold call" invariant.
+func TestWorkspaceLister_ProductionFactoryReturnsNonNil(t *testing.T) {
+	l, err := productionWorkspaceListerFactory(context.Background(), "")
+	if err != nil {
+		t.Fatalf("productionWorkspaceListerFactory: %v", err)
+	}
+	if l == nil {
+		t.Fatal("productionWorkspaceListerFactory returned nil")
+	}
+}
+
+// withWorkspaceListerFactory's hook must be respected by
+// activeWorkspaceListerFactory, and the factory must restore the
+// previous hook after the test (mirrors withMirrorFactory).
+func TestWorkspaceLister_TestHookIsRespected(t *testing.T) {
+	want := &fakeWorkspaceLister{ids: []string{"workspace:1"}}
+	withWorkspaceListerFactory(t, func(_ context.Context, _ string) (workspaceLister, error) {
+		return want, nil
+	})
+	got, err := activeWorkspaceListerFactory()(context.Background(), "")
+	if err != nil {
+		t.Fatalf("activeWorkspaceListerFactory: %v", err)
+	}
+	if got != want {
+		t.Errorf("activeWorkspaceListerFactory returned %v; want injected fake", got)
+	}
+}
