@@ -90,8 +90,12 @@ func (d PermissionDecision) String() string {
 }
 
 // Permission policy strings recognised by WithOnUnknownPermission.
-// Mirrors config.allowedOnUnknownPermissions; the validation here is a
-// defence-in-depth against a CLI / test that bypasses Config.Validate.
+// The string values mirror config.toml's
+// execution.on_unknown_permission enum; validation defers to
+// config.IsValidOnUnknownPermission so a future enum addition (or
+// rename) lives in one place. The empty string ("") is the
+// "dispatcher-was-not-configured" sentinel and is accepted here even
+// though config rejects it — see WithOnUnknownPermission godoc.
 const (
 	policyEscalate = "escalate"
 	policyFail     = "fail"
@@ -99,11 +103,10 @@ const (
 )
 
 func validPermissionPolicy(p string) bool {
-	switch p {
-	case "", policyEscalate, policyFail, policyRetry:
+	if p == "" {
 		return true
 	}
-	return false
+	return config.IsValidOnUnknownPermission(p)
 }
 
 // SourceSkillFunc resolves the source-specific prompt skill (the
