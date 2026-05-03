@@ -141,6 +141,16 @@ func newWebCmd(configPath *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
+			if effectiveRemote {
+				// Loud, multi-line stderr banner: --remote opens
+				// the dashboard to the network without auth (auth
+				// itself ships in a later PR).  Operators must see
+				// this before the listener starts so they can abort
+				// if they meant to bind loopback.
+				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --remote binds 0.0.0.0 with no authentication.")
+				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: anyone reachable on this network can read the dashboard and SSE stream.")
+				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: front this with a TLS-terminating reverse proxy + auth before exposing publicly.")
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "marunage web listening on http://%s\n", addr)
 			return runner.Run(ctx)
 		},
