@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -447,5 +448,73 @@ func TestUpdatedAtAutoBumps(t *testing.T) {
 	}
 	if updatedAt == "2026-05-03T00:00:00.000Z" {
 		t.Errorf("updated_at unchanged after UPDATE: %q (trigger must bump it)", updatedAt)
+	}
+}
+
+// TestUpdatedAtRespectsExplicitOverride pins the trigger's WHEN clause
+// (`NEW.updated_at = OLD.updated_at`): if a caller deliberately sets
+// updated_at — tests, import flows reconstructing history, the dispatcher
+// pinning the row at the start of a run — the trigger must not trample
+// that value with strftime('now'). Without this test, removing the WHEN
+// clause "to simplify" would silently destroy explicit timestamps.
+func TestUpdatedAtRespectsExplicitOverride(t *testing.T) {
+	db := openTempDB(t)
+
+	res, err := db.Exec(
+		`INSERT INTO tasks(source, title, created_at, updated_at) VALUES (?,?,?,?)`,
+		"manual", "explicit override",
+		"2026-05-03T00:00:00.000Z", "2026-05-03T00:00:00.000Z",
+	)
+	if err != nil {
+		t.Fatalf("seed INSERT: %v", err)
+	}
+	id, _ := res.LastInsertId()
+
+	const explicit = "2099-01-01T00:00:00.000Z"
+	if _, err := db.Exec(
+		`UPDATE tasks SET status='done', updated_at=? WHERE id=?`, explicit, id,
+	); err != nil {
+		t.Fatalf("UPDATE with explicit updated_at: %v", err)
+	}
+
+	var got string
+	if err := db.QueryRow(`SELECT updated_at FROM tasks WHERE id=?`, id).Scan(&got); err != nil {
+		t.Fatalf("SELECT updated_at: %v", err)
+	}
+	if got != explicit {
+		t.Errorf("explicit updated_at was overwritten by trigger: got %q; want %q", got, explicit)
+	}
+}
+
+// TestUpdatedAtFormatIsISO8601Millis pins the timestamp shape the package
+// godoc promises: `YYYY-MM-DDTHH:MM:SS.sssZ`. Lexicographic ORDER BY
+// matches chronological order only as long as the trigger's strftime
+// format string stays in sync with the column convention; if either
+// drifts, ad-hoc CLI sorts and PR-42's "next dispatch candidate" probe
+// would silently misorder rows.
+func TestUpdatedAtFormatIsISO8601Millis(t *testing.T) {
+	db := openTempDB(t)
+
+	res, err := db.Exec(
+		`INSERT INTO tasks(source, title, created_at, updated_at) VALUES (?,?,?,?)`,
+		"manual", "format check",
+		"2026-05-03T00:00:00.000Z", "2026-05-03T00:00:00.000Z",
+	)
+	if err != nil {
+		t.Fatalf("seed INSERT: %v", err)
+	}
+	id, _ := res.LastInsertId()
+
+	if _, err := db.Exec(`UPDATE tasks SET status='done' WHERE id=?`, id); err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+
+	var got string
+	if err := db.QueryRow(`SELECT updated_at FROM tasks WHERE id=?`, id).Scan(&got); err != nil {
+		t.Fatalf("SELECT updated_at: %v", err)
+	}
+	iso8601Millis := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
+	if !iso8601Millis.MatchString(got) {
+		t.Errorf("trigger produced %q; want YYYY-MM-DDTHH:MM:SS.sssZ", got)
 	}
 }
