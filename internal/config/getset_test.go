@@ -49,6 +49,36 @@ func TestGetUnknownKey(t *testing.T) {
 	}
 }
 
+// TestGetSetMapFieldDirectsToEdit pins the contract that map-typed config
+// keys (e.g. execution.lock_keys) cannot be edited via Get/Set and that the
+// error tells the user to reach for `marunage config edit` instead of leaking
+// the reflect kind name.
+func TestGetSetMapFieldDirectsToEdit(t *testing.T) {
+	c := Default()
+
+	_, gerr := Get(c, "execution.lock_keys")
+	if gerr == nil {
+		t.Fatal("Get(execution.lock_keys) = nil; want error")
+	}
+	if !strings.Contains(gerr.Error(), "execution.lock_keys") {
+		t.Errorf("Get err = %v; want mention of the key", gerr)
+	}
+	if !strings.Contains(gerr.Error(), "marunage config edit") {
+		t.Errorf("Get err = %v; want guidance to use 'marunage config edit'", gerr)
+	}
+
+	serr := Set(&c, "execution.lock_keys", "^repo:.*=git-repo")
+	if serr == nil {
+		t.Fatal("Set(execution.lock_keys) = nil; want error")
+	}
+	if !strings.Contains(serr.Error(), "execution.lock_keys") {
+		t.Errorf("Set err = %v; want mention of the key", serr)
+	}
+	if !strings.Contains(serr.Error(), "marunage config edit") {
+		t.Errorf("Set err = %v; want guidance to use 'marunage config edit'", serr)
+	}
+}
+
 func TestSet(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -137,15 +167,35 @@ func TestSetPermissionModeDerivesClaudeCommand(t *testing.T) {
 
 // TestSetPermissionModeCustomKeepsCommand: switching to "custom" must NOT
 // overwrite the existing claude_command, otherwise users lose their hand-
-// written command on every mode flip.
+// written command on every mode flip. Drives the contract through Set so the
+// CLI path (where users only have Set/Get) is exercised end-to-end.
 func TestSetPermissionModeCustomKeepsCommand(t *testing.T) {
 	c := Default()
-	c.Execution.ClaudeCommand = "claude --my-flag"
+	if err := Set(&c, "execution.claude_command", "claude --my-flag"); err != nil {
+		t.Fatalf("Set claude_command = %v", err)
+	}
 	if err := Set(&c, "execution.permission_mode", "custom"); err != nil {
 		t.Fatalf("Set permission_mode custom = %v", err)
 	}
 	if c.Execution.ClaudeCommand != "claude --my-flag" {
 		t.Errorf("ClaudeCommand = %q; want preserved %q", c.Execution.ClaudeCommand, "claude --my-flag")
+	}
+}
+
+// TestSetPermissionModeCustomRejectsEmptyCommand: flipping into custom mode
+// without a user-supplied claude_command must fail validation, and the error
+// must name execution.claude_command so the user knows which key to fix.
+func TestSetPermissionModeCustomRejectsEmptyCommand(t *testing.T) {
+	c := Default()
+	if err := Set(&c, "execution.claude_command", ""); err != nil {
+		t.Fatalf("Set claude_command \"\" under bypass = %v; want nil", err)
+	}
+	err := Set(&c, "execution.permission_mode", "custom")
+	if err == nil {
+		t.Fatal("Set permission_mode=custom with empty command = nil; want error")
+	}
+	if !strings.Contains(err.Error(), "execution.claude_command") {
+		t.Errorf("Set err = %v; want mention of execution.claude_command", err)
 	}
 }
 

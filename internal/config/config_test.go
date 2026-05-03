@@ -118,8 +118,13 @@ func TestValidate(t *testing.T) {
 			wantErr: "discovery.interval",
 		},
 		{
-			name:    "reflection.sample_rate clamped to [0,1]",
+			name:    "reflection.sample_rate clamped to [0,1] (above)",
 			mutate:  func(c *Config) { c.Reflection.SampleRate = 1.5 },
+			wantErr: "reflection.sample_rate",
+		},
+		{
+			name:    "reflection.sample_rate clamped to [0,1] (below)",
+			mutate:  func(c *Config) { c.Reflection.SampleRate = -0.1 },
 			wantErr: "reflection.sample_rate",
 		},
 	}

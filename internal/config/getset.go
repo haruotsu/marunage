@@ -1,11 +1,18 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
 )
+
+// errMapNotEditable surfaces when the user targets a map-typed schema field
+// (e.g. execution.lock_keys) through `config get`/`config set`. The flat
+// string format cannot round-trip a map without an escape grammar, so we
+// route the user to `marunage config edit` instead of leaking reflect terms.
+var errMapNotEditable = errors.New("map fields are not editable via 'config get'/'config set'; use 'marunage config edit' instead")
 
 // Get returns the value at the dotted-path key as a flat string, suitable
 // for `marunage config get` to print to stdout. Slice values are joined
@@ -15,7 +22,11 @@ func Get(c Config, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return formatScalar(v)
+	s, err := formatScalar(v)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", key, err)
+	}
+	return s, nil
 }
 
 // Set parses value into the type of the field at key, runs Validate, and
@@ -103,6 +114,8 @@ func formatScalar(v reflect.Value) (string, error) {
 			parts[i] = v.Index(i).String()
 		}
 		return strings.Join(parts, ","), nil
+	case reflect.Map:
+		return "", errMapNotEditable
 	}
 	return "", fmt.Errorf("unsupported config value type %s", v.Kind())
 }
@@ -154,6 +167,8 @@ func assignFromString(v reflect.Value, raw string) error {
 		}
 		v.Set(out)
 		return nil
+	case reflect.Map:
+		return errMapNotEditable
 	}
 	return fmt.Errorf("unsupported config value type %s", v.Kind())
 }
