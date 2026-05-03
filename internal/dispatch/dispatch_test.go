@@ -912,6 +912,97 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 }
 
+// J1/J2: two Dispatchers sharing one store + cmux must not double-claim
+// a row. Without an atomic claim step, both dispatchers can pick the
+// same pending row, both NewWorkspace, both SetWorkspace — leaving an
+// orphan cmux workspace and corrupted ws references. The test pins the
+// safety property that PR-42b promises ("(source, external_id) UNIQUE
+// と lock_key で safety が保たれる"): every pending row is dispatched
+// AT MOST ONCE under -race.
+func TestRunConcurrentDispatchersDoNotDoubleClaim(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
+
+	// Shared cmux client. NewWorkspace returns a unique ws ID per call so
+	// duplicate dispatches are observable as duplicate IDs in the cmux
+	// call log.
+	fcm := &fakeCmux{}
+
+	const N = 10
+	var ids []int64
+	for i := 0; i < N; i++ {
+		id, err := repo.Insert(context.Background(), store.Task{
+			Source: "manual", Title: fmt.Sprintf("t%d", i), CWD: "/tmp",
+		})
+		if err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	newDisp := func() *dispatch.Dispatcher {
+		d, err := dispatch.New(
+			dispatch.WithStore(repo),
+			dispatch.WithCmux(fcm),
+			dispatch.WithClock(func() time.Time { return now }),
+			dispatch.WithBaseSkill("BASE"),
+			dispatch.WithClaudeCommand("claude"),
+		)
+		if err != nil {
+			t.Fatalf("dispatch.New: %v", err)
+		}
+		return d
+	}
+	dA, dB := newDisp(), newDisp()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = dA.Run(context.Background(), dispatch.RunOptions{MaxParallel: N})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = dB.Run(context.Background(), dispatch.RunOptions{MaxParallel: N})
+	}()
+	wg.Wait()
+
+	// Every NewWorkspace call must correspond to a distinct task — there
+	// must be no row dispatched twice.
+	if got := len(fcm.newWorkspaceCalls); got != N {
+		t.Errorf("NewWorkspace calls = %d; want %d (each row dispatched exactly once)", got, N)
+	}
+	seenName := make(map[string]int)
+	for _, c := range fcm.newWorkspaceCalls {
+		seenName[c.Name]++
+	}
+	for name, n := range seenName {
+		if n > 1 {
+			t.Errorf("workspace name %q dispatched %d times; want 1 (double-claim)", name, n)
+		}
+	}
+
+	// Every row must end in running with a non-empty ws.
+	for _, id := range ids {
+		row, err := repo.Get(context.Background(), id)
+		if err != nil {
+			t.Fatalf("Get %d: %v", id, err)
+		}
+		if row.Status != store.StatusRunning {
+			t.Errorf("row %d status = %q; want running", id, row.Status)
+		}
+		if row.WS == "" {
+			t.Errorf("row %d ws is empty after dispatch", id)
+		}
+	}
+}
+
 // I1-I8: permission.Matcher + on_unknown_permission policy.
 //
 // HandlePermissionRequest is the dispatcher-side handler for Claude
@@ -1194,6 +1285,9 @@ func (stubStore) List(context.Context, store.ListFilter) ([]store.Task, error) {
 func (stubStore) Get(context.Context, int64) (store.Task, error)            { return store.Task{}, nil }
 func (stubStore) AcquireLock(context.Context, int64, string) error          { return nil }
 func (stubStore) ReleaseLock(context.Context, int64) error                  { return nil }
+func (stubStore) ClaimWorkspace(context.Context, int64, string) (bool, error) {
+	return true, nil
+}
 func (stubStore) SetWorkspace(context.Context, int64, string) error         { return nil }
 func (stubStore) UpdateStatus(context.Context, int64, string) error         { return nil }
 func (stubStore) SetStartedAt(context.Context, int64, time.Time) error      { return nil }

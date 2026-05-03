@@ -24,6 +24,7 @@ type Store interface {
 	Get(ctx context.Context, id int64) (store.Task, error)
 	AcquireLock(ctx context.Context, id int64, lockKey string) error
 	ReleaseLock(ctx context.Context, id int64) error
+	ClaimWorkspace(ctx context.Context, id int64, ws string) (bool, error)
 	SetWorkspace(ctx context.Context, id int64, ws string) error
 	UpdateStatus(ctx context.Context, id int64, newStatus string) error
 	SetStartedAt(ctx context.Context, id int64, t time.Time) error
@@ -190,6 +191,15 @@ func WithAllowedCwdPrefixes(prefixes []string) Option {
 
 // ErrInvalidConfig signals a missing required Option at construction.
 var ErrInvalidConfig = errors.New("dispatch: missing required option")
+
+// dispatchClaimSentinel is the placeholder ws value the dispatcher
+// writes during the atomic pre-NewWorkspace claim step. The real ws
+// ID overwrites it once NewWorkspace returns; on failure the
+// dispatcher clears it. The reaper (PR-44) treats this sentinel as a
+// "stuck mid-claim" signal — a row stuck in pending with this value
+// and an old updated_at means the dispatcher crashed between
+// ClaimWorkspace and SetWorkspace, and the row should be reset.
+const dispatchClaimSentinel = "__dispatching__"
 
 // New builds a Dispatcher. Required: WithStore, WithCmux, WithBaseSkill,
 // WithClaudeCommand. Returns ErrInvalidConfig naming the missing field
@@ -458,35 +468,50 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		}
 	}
 
-	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
-		CWD:     task.CWD,
-		Command: d.claudeCommand,
-		Name:    workspaceName(task),
-	})
+	// Reserve the row with a sentinel BEFORE NewWorkspace so a concurrent
+	// dispatcher cannot also burn a cmux workspace on the same row. The
+	// claim is atomic at the SQLite level (UPDATE ... WHERE status=pending
+	// AND ws IS NULL); the loser observes claimed=false and abandons.
+	// The sentinel is replaced by the real ws ID once NewWorkspace
+	// returns.
+	claimed, err := d.store.ClaimWorkspace(ctx, task.ID, dispatchClaimSentinel)
 	if err != nil {
-		// No claim has been written yet (SetWorkspace happens AFTER
-		// NewWorkspace returns), so the row is safely retryable on the
-		// next Run. Release any lock_key we just acquired so a sibling
-		// row sharing the same resolved key is not blocked indefinitely
-		// (AcquireLock treats pending rows as holders, so without this
-		// release the failed row keeps the key while sitting in pending).
+		if lockKey != "" {
+			_ = d.store.ReleaseLock(ctx, task.ID)
+		}
+		return false, fmt.Errorf("dispatch: ClaimWorkspace id=%d: %w", task.ID, err)
+	}
+	if !claimed {
+		// Lost the race to another dispatcher. Release any lock_key we
+		// hold so a sibling row sharing the same key is not blocked.
 		if lockKey != "" {
 			_ = d.store.ReleaseLock(ctx, task.ID)
 		}
 		return false, nil
 	}
 
-	// Claim the row immediately so a parallel dispatcher iteration cannot
-	// re-pick it. Order is critical:
-	//  1. SetWorkspace BEFORE WaitReady so a concurrent List(pending)
-	//     cannot observe an unclaimed row whose cmux workspace is alive.
-	//  2. SetStartedAt BEFORE UpdateStatus(running) so the invariant
-	//     "status=running implies started_at stamped" holds. PR-44
-	//     reaper's 24h-stuck probe matches on running + started_at < now-24h;
-	//     a row left running with started_at IS NULL would be invisible
-	//     to the probe and silently leak. Doing started_at first means a
-	//     SetStartedAt failure leaves the row pending (retryable) instead
-	//     of running-and-orphaned.
+	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
+		CWD:     task.CWD,
+		Command: d.claudeCommand,
+		Name:    workspaceName(task),
+	})
+	if err != nil {
+		// Clear the sentinel so the row is safely retryable on the next
+		// Run. Release any lock_key we acquired so a sibling row
+		// sharing the same resolved key is not blocked indefinitely.
+		_ = d.store.SetWorkspace(ctx, task.ID, "")
+		if lockKey != "" {
+			_ = d.store.ReleaseLock(ctx, task.ID)
+		}
+		return false, nil
+	}
+
+	// Replace the sentinel with the real ws ID. Order from here on is
+	// critical: SetStartedAt BEFORE UpdateStatus(running) so the
+	// invariant "status=running implies started_at stamped" holds. PR-44
+	// reaper's 24h-stuck probe matches on running + started_at < now-24h;
+	// a row left running with started_at IS NULL would be invisible to
+	// the probe and silently leak.
 	if err := d.store.SetWorkspace(ctx, task.ID, ws.ID); err != nil {
 		return false, fmt.Errorf("dispatch: SetWorkspace id=%d ws=%s: %w", task.ID, ws.ID, err)
 	}

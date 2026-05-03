@@ -1247,3 +1247,104 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("MarkFailedWithReason(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// 47. ClaimWorkspace atomically attaches a ws reference to a row that is
+// still pending and has no prior claim. Returns claimed=true on first
+// success. PR-42b uses this so two concurrent dispatchers cannot both
+// SetWorkspace on the same pending row.
+func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "claim race"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if !claimed {
+		t.Errorf("claimed = false; want true on first claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws = %q; want workspace:1", got.WS)
+	}
+}
+
+// 48. A second ClaimWorkspace against the same row returns
+// claimed=false WITHOUT touching the existing ws. This is what makes
+// the dispatcher race-safe: the second dispatcher to reach the row sees
+// claimed=false, releases its own lock_key, and abandons cleanly.
+func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "second claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1"); err != nil {
+		t.Fatalf("first ClaimWorkspace: %v", err)
+	}
+
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:2")
+	if err != nil {
+		t.Fatalf("second ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false on duplicate claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws after rejected claim = %q; want preserved %q", got.WS, "workspace:1")
+	}
+}
+
+// 49. ClaimWorkspace on a row whose status is no longer pending (e.g. a
+// concurrent dispatcher already promoted it to running) returns
+// claimed=false; the row's existing ws is preserved.
+func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "post-claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false (row is already running)")
+	}
+}
+
+// 50. ClaimWorkspace on a missing id returns ErrNotFound so a stale id
+// from a buggy dispatcher fails loud rather than silently no-op.
+func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	_, err := f.repo.ClaimWorkspace(f.ctx, 99999, "workspace:1")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ClaimWorkspace(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 51. ClaimWorkspace with empty ws is rejected (a successful claim
+// would leave the row in pending with ws=NULL — defeating the purpose).
+func TestTaskRepoClaimWorkspaceRejectsEmptyWS(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "empty ws"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	_, err = f.repo.ClaimWorkspace(f.ctx, id, "")
+	if !errors.Is(err, store.ErrWSRequired) {
+		t.Fatalf("ClaimWorkspace(empty ws): err = %v; want ErrWSRequired", err)
+	}
+}
