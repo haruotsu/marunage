@@ -150,6 +150,23 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestSecretsBackendAcceptsAllDocumentedValues pins the positive side of
+// the schema constraint (Validate rejects garbage; this test asserts that
+// every documented value is also accepted). Without this, narrowing the
+// allowed set to e.g. just "auto" would slip through unnoticed because
+// the negative test only checks one rejected value.
+func TestSecretsBackendAcceptsAllDocumentedValues(t *testing.T) {
+	for _, backend := range []string{"auto", "keyring", "pass", "age", "file", "env"} {
+		t.Run(backend, func(t *testing.T) {
+			c := Default()
+			c.Secrets.Backend = backend
+			if err := c.Validate(); err != nil {
+				t.Errorf("Validate() rejected documented backend %q: %v", backend, err)
+			}
+		})
+	}
+}
+
 // TestPermissionModeDerivesClaudeCommand documents the spec rule: setting
 // permission_mode to one of the four named modes overrides claude_command.
 // custom is the only mode that lets the user keep an arbitrary command.

@@ -142,6 +142,31 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSaveRoundTripPreservesSecretsBackend pins the round-trip contract
+// for the [secrets] table introduced in PR-30: a non-default backend
+// written via Save and read back via Load must come out the way it went
+// in. Without this test, accidentally renaming the toml tag on
+// SecretsConfig.Backend would silently fall back to "auto" on the next
+// Load and override the user's explicit choice.
+func TestSaveRoundTripPreservesSecretsBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	c := Default()
+	c.Secrets.Backend = "keyring"
+
+	if err := Save(path, c, nil); err != nil {
+		t.Fatalf("Save = %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v", err)
+	}
+	if got.Secrets.Backend != "keyring" {
+		t.Errorf("round-trip Secrets.Backend = %q; want %q", got.Secrets.Backend, "keyring")
+	}
+}
+
 func TestSaveCreatesTimestampedBackup(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
