@@ -30,12 +30,22 @@ import (
 // over many entries is much cheaper than one decryption per Get. It also
 // keeps the on-disk surface to a single 0600 file, which is easier to
 // back up and reason about than a directory of per-secret ciphertexts.
+//
+// Concurrency model: every Store-interface call (Get / Set / Delete /
+// List) takes mu for its full duration so the load → mutate → save
+// sequence is serialised. Without that, two concurrent Sets both load
+// the same vault snapshot, both mutate locally, and the second
+// saveVault wins — silently dropping the first key (lost update). The
+// inner passphrase resolution and file I/O all run while mu is held.
+// Cross-process serialisation is out of scope (marunage runs as a
+// singleton daemon per user); a future multi-process deployment would
+// need flock(2) on a sibling lock file.
 type ageBackend struct {
 	path          string
 	passphraseEnv string
 
 	mu     sync.Mutex
-	cached string // process-local cache; "" until acquired
+	cached string // passphrase, "" until first prompt/env hit; protected by mu
 }
 
 // secretsAgeFileName is the on-disk filename inside ~/.marunage. Pinned
@@ -138,14 +148,17 @@ func newAgeBackend(cfg Config) (Store, error) {
 
 func (a *ageBackend) Backend() string { return "age" }
 
-// passphrase resolves the passphrase by walking the documented priority
-// chain: in-struct cache → process cache (across Opens) → env var → TTY
-// prompt. needConfirm is true only when we are about to create a brand-
-// new vault, so the user types the passphrase twice; for decryption of
-// an existing file we ask once and let age's MAC fail if it was wrong.
-func (a *ageBackend) passphrase(needConfirm bool) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+// passphraseLocked resolves the passphrase by walking the documented
+// priority chain: in-struct cache → process cache (across Opens) → env
+// var → TTY prompt. needConfirm is true only when we are about to
+// create a brand-new vault, so the user types the passphrase twice;
+// for decryption of an existing file we ask once and let age's MAC
+// fail if it was wrong.
+//
+// Caller must already hold a.mu. The "Locked" suffix is the established
+// Go idiom for "lock held on entry" so a future refactor cannot
+// accidentally re-acquire mu and deadlock.
+func (a *ageBackend) passphraseLocked(needConfirm bool) (string, error) {
 	if a.cached != "" {
 		return a.cached, nil
 	}
@@ -178,6 +191,8 @@ func (a *ageBackend) Get(name string) (string, bool, error) {
 	if err := validateName(name); err != nil {
 		return "", false, err
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if !a.fileExists() {
 		// No vault on disk yet -> the secret cannot exist. Returning
 		// without prompting for a passphrase keeps a fresh `marunage
@@ -185,7 +200,7 @@ func (a *ageBackend) Get(name string) (string, bool, error) {
 		// for.
 		return "", false, nil
 	}
-	p, err := a.passphrase(false)
+	p, err := a.passphraseLocked(false)
 	if err != nil {
 		return "", false, err
 	}
@@ -201,8 +216,13 @@ func (a *ageBackend) Set(name, value string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Re-check fileExists inside the lock so two concurrent first-time
+	// Sets cannot both take the isNew=true path and clobber each other
+	// with two different freshly-confirmed passphrases (TOCTOU).
 	isNew := !a.fileExists()
-	p, err := a.passphrase(isNew)
+	p, err := a.passphraseLocked(isNew)
 	if err != nil {
 		return err
 	}
@@ -223,10 +243,12 @@ func (a *ageBackend) Delete(name string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if !a.fileExists() {
 		return nil
 	}
-	p, err := a.passphrase(false)
+	p, err := a.passphraseLocked(false)
 	if err != nil {
 		return err
 	}
@@ -244,10 +266,12 @@ func (a *ageBackend) Delete(name string) error {
 }
 
 func (a *ageBackend) List() ([]string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if !a.fileExists() {
 		return nil, nil
 	}
-	p, err := a.passphrase(false)
+	p, err := a.passphraseLocked(false)
 	if err != nil {
 		return nil, err
 	}
