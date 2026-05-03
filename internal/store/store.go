@@ -81,6 +81,17 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite %s: %w", path, err)
 	}
+	// Tighten the DB body before migrate runs. Without this, the
+	// CREATE TABLE / INDEX / TRIGGER writes that migrate issues land in a
+	// tasks.db that is still world-readable (umask, often 0644), and a
+	// concurrent reader on the same host could read partial schema —
+	// or worse, the seed data PR-11 will start INSERTing here. The WAL /
+	// SHM sidecars are tightened after migrate because they are not
+	// materialised until a write happens.
+	if err := tightenFile(path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -92,18 +103,28 @@ func Open(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// tightenFile sets a single file to 0600. A missing file is tolerated so
+// callers can chmod sidecars (-wal / -shm) that may not yet exist.
+func tightenFile(path string) error {
+	if err := os.Chmod(path, 0o600); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
+}
+
 // tightenPerms sets the SQLite file plus its WAL/SHM sidecars to 0600.
 // It is called after migrate() so the WAL/SHM files have been materialised
 // by the migration writes; missing sidecars are tolerated (SQLite may have
-// already checkpointed).
+// already checkpointed). The DB body is also re-tightened here as cheap
+// insurance against any SQLite recovery path that recreated it during the
+// migrate step.
 func tightenPerms(path string) error {
 	for _, suffix := range []string{"", "-wal", "-shm"} {
-		p := path + suffix
-		if err := os.Chmod(p, 0o600); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return fmt.Errorf("chmod %s: %w", p, err)
+		if err := tightenFile(path + suffix); err != nil {
+			return err
 		}
 	}
 	return nil
