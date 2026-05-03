@@ -1,3 +1,7 @@
+---
+name: marunage-execute
+description: marunageがdispatchしたタスクをClaudeセッションで自律実行するための基本指示プロンプト
+---
 <!-- version: 0.1.0 -->
 # marunage-execute
 

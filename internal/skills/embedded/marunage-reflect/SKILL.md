@@ -1,3 +1,7 @@
+---
+name: marunage-reflect
+description: 完了タスクに対する第三者レビュー観点の自動レビュープロンプト（オプトイン）
+---
 <!-- version: 0.1.0 -->
 # marunage-reflect
 
