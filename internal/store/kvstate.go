@@ -146,3 +146,25 @@ func (r *KVStateRepo) Set(ctx context.Context, key, value string) error {
 	}
 	return nil
 }
+
+// Delete removes the row for key. Returns ErrKVNotFound on a missing key
+// rather than silently no-opping, so a caller cleaning up a stale
+// checkpoint sees the typo instead of believing it succeeded.
+func (r *KVStateRepo) Delete(ctx context.Context, key string) error {
+	if key == "" {
+		return ErrKVKeyRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM kv_state WHERE key = ?`, key)
+	if err != nil {
+		return fmt.Errorf("kv_state delete: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("kv_state delete rows: %w", err)
+	}
+	if n == 0 {
+		return ErrKVNotFound
+	}
+	return nil
+}

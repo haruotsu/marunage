@@ -115,6 +115,42 @@ func TestKVStateRepoSetEmptyKeyValidates(t *testing.T) {
 	}
 }
 
+//  5. Delete removes the row; the subsequent Get must return ErrKVNotFound
+//     (i.e. "no checkpoint"), not an empty string masquerading as one.
+func TestKVStateRepoDeleteRemovesRow(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Set(f.ctx, "slack_last_ts", "1700000000.000100"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.repo.Delete(f.ctx, "slack_last_ts"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := f.repo.Get(f.ctx, "slack_last_ts"); !errors.Is(err, store.ErrKVNotFound) {
+		t.Fatalf("Get after Delete: err = %v; want ErrKVNotFound", err)
+	}
+}
+
+//  6. Delete on a missing key returns ErrKVNotFound rather than silently
+//     succeeding. Same reasoning as TaskRepo.UpdateStatus on a missing id:
+//     a no-op masks a stale key in the caller.
+func TestKVStateRepoDeleteMissingReturnsErrKVNotFound(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Delete(f.ctx, "nope"); !errors.Is(err, store.ErrKVNotFound) {
+		t.Fatalf("Delete(missing): err = %v; want ErrKVNotFound", err)
+	}
+}
+
+// 7. Delete with an empty key is the same programmer-error guard as Set.
+func TestKVStateRepoDeleteEmptyKeyValidates(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Delete(f.ctx, ""); !errors.Is(err, store.ErrKVKeyRequired) {
+		t.Fatalf("Delete(empty key): err = %v; want ErrKVKeyRequired", err)
+	}
+}
+
 //  12. WithKVClock pins updated_at so tests do not have to sleep for the
 //     trigger / wall clock to advance.
 func TestKVStateRepoWithClockPinsUpdatedAt(t *testing.T) {
