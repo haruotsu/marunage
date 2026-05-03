@@ -20,6 +20,7 @@ import (
 //   - each entry carries source / external_id / title / done so PR-71's
 //     queue-materialiser can ingest the output without a second parse.
 func TestDiscoverOnce_Markdown_PrintsJSONArray(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "todo.md")
 	if err := os.WriteFile(path, []byte("- [ ] First task\n- [x] Done task\n"), 0o600); err != nil {
@@ -63,6 +64,7 @@ func TestDiscoverOnce_Markdown_PrintsJSONArray(t *testing.T) {
 // name not in the registry must produce a non-zero exit and a stderr message
 // pointing at the offending name (not a generic "not implemented").
 func TestDiscoverOnce_UnknownSource_Errors(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"discover", "--once", "--source", "telepathy"}, &stdout, &stderr)
 	if code == 0 {
@@ -79,6 +81,7 @@ func TestDiscoverOnce_UnknownSource_Errors(t *testing.T) {
 // as PR-80 lands a Gmail source. Required flags also keep the help output
 // honest about what is mandatory.
 func TestDiscoverOnce_RequiresSourceFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"discover", "--once"}, &stdout, &stderr)
 	if code == 0 {
@@ -92,6 +95,7 @@ func TestDiscoverOnce_RequiresSourceFlag(t *testing.T) {
 // future PR-71 from accidentally shipping the loop without owning the
 // flag handling.
 func TestDiscoverOnce_RequiresOnceFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"discover", "--source", "markdown"}, &stdout, &stderr)
 	if code == 0 {
@@ -106,6 +110,7 @@ func TestDiscoverOnce_RequiresOnceFlag(t *testing.T) {
 // source needs at least one --file argument. Otherwise we would happily emit
 // `[]` and the user would be left wondering why their tasks vanished.
 func TestDiscoverOnce_MarkdownRequiresFile(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"discover", "--once", "--source", "markdown"}, &stdout, &stderr)
 	if code == 0 {

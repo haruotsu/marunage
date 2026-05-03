@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"reflect"
 	"testing"
 )
 
@@ -33,11 +34,23 @@ func TestAuthStatusConstantsAreDistinct(t *testing.T) {
 // TestTaskFieldsCarryRequirementColumns mirrors the tasks-table mapping from
 // docs/requirement.md (source / external_id / title / body / notes /
 // raw_metadata) so a Discovery plugin's Task survives lossless round-trip into
-// the queue layer (PR-71). The struct literal also serves as a hand-written
-// schema check: a future PR that drops a field will fail compilation here.
+// the queue layer (PR-71). reflect.DeepEqual against a fully-populated literal
+// catches a silent field drop the moment a future PR removes one — checking
+// only Source/ExternalID would let Notes or Priority disappear unnoticed.
 func TestTaskFieldsCarryRequirementColumns(t *testing.T) {
 	t.Parallel()
 
+	want := Task{
+		Source:      "markdown",
+		ExternalID:  "abc123",
+		Title:       "demo",
+		Body:        "extra body",
+		Notes:       "indented sub",
+		Priority:    "P2",
+		SourcePath:  "/tmp/todo.md",
+		Done:        true,
+		RawMetadata: map[string]any{"line": 3},
+	}
 	got := Task{
 		Source:      "markdown",
 		ExternalID:  "abc123",
@@ -46,11 +59,40 @@ func TestTaskFieldsCarryRequirementColumns(t *testing.T) {
 		Notes:       "indented sub",
 		Priority:    "P2",
 		SourcePath:  "/tmp/todo.md",
-		Done:        false,
+		Done:        true,
 		RawMetadata: map[string]any{"line": 3},
 	}
-	if got.Source != "markdown" || got.ExternalID != "abc123" {
-		t.Fatalf("Task field mapping broken: %+v", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Task round-trip lost a field:\n got = %+v\n want = %+v", got, want)
+	}
+	// Spot-check each named field individually so a regression report
+	// names the offending column rather than dumping the whole struct.
+	if got.Source != "markdown" {
+		t.Errorf("Source = %q", got.Source)
+	}
+	if got.ExternalID != "abc123" {
+		t.Errorf("ExternalID = %q", got.ExternalID)
+	}
+	if got.Title != "demo" {
+		t.Errorf("Title = %q", got.Title)
+	}
+	if got.Body != "extra body" {
+		t.Errorf("Body = %q", got.Body)
+	}
+	if got.Notes != "indented sub" {
+		t.Errorf("Notes = %q", got.Notes)
+	}
+	if got.Priority != "P2" {
+		t.Errorf("Priority = %q", got.Priority)
+	}
+	if got.SourcePath != "/tmp/todo.md" {
+		t.Errorf("SourcePath = %q", got.SourcePath)
+	}
+	if !got.Done {
+		t.Errorf("Done = false, want true")
+	}
+	if got.RawMetadata["line"] != 3 {
+		t.Errorf("RawMetadata[line] = %v, want 3", got.RawMetadata["line"])
 	}
 }
 
