@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRoutes_Healthz pins the contract for the docs/operability check
@@ -187,7 +188,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	srv, err := NewServer(Options{
 		TokenSource:       testTokenSource,
-		HeartbeatInterval: 25_000_000, // 25ms in nanoseconds
+		HeartbeatInterval: 25 * time.Millisecond,
 		EnableTestRoutes:  true,
 	})
 	if err != nil {

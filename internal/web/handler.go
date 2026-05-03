@@ -38,28 +38,18 @@ func (r *htmlTemplateRenderer) Render(w http.ResponseWriter, name string, data a
 	return nil
 }
 
-// indexData is the typed payload the index template binds against.
-// Keeping the struct here (rather than in a templates/ package) makes
-// the contract obvious at the handler call site.
-type indexData struct {
-	CSRFToken     string
-	CSRFFieldName string
-}
-
-// newIndexHandler returns the GET / handler.  The handler issues the
+// newIndexHandler returns the GET / handler.  The handler primes the
 // CSRF cookie via TokenFor so a brand-new visitor always leaves with
-// a token cookie, then renders the dashboard placeholder.
+// a token in their cookie jar, then renders the dashboard
+// placeholder.  PR-63's dashboard will start binding template data;
+// for now there is nothing to bind, so the template gets nil.
 func newIndexHandler(renderer Renderer, csrf *CSRF) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, err := csrf.TokenFor(w, r)
-		if err != nil {
+		if _, err := csrf.TokenFor(w, r); err != nil {
 			http.Error(w, "csrf token issue failed", http.StatusInternalServerError)
 			return
 		}
-		if err := renderer.Render(w, "index.html", indexData{
-			CSRFToken:     token,
-			CSRFFieldName: CSRFFormField,
-		}); err != nil {
+		if err := renderer.Render(w, "index.html", nil); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
