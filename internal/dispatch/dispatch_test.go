@@ -1006,6 +1006,60 @@ func TestRunLeavesRowPendingWhenWorkspaceMkdirFails(t *testing.T) {
 	}
 }
 
+// F2b (audit-correctness): when MkdirAll fails the row stays pending
+// (F2's existing contract), but the failure must still leave a trace
+// in audit.log — otherwise a mis-permissioned ~/.marunage/workspaces
+// silently retries forever with no visibility, violating invariant #2
+// "No silent execution".
+func TestRunRecordsAuditOnWorkspaceMkdirFailure(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	dirs := fakeDirs{root: blocker}
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t,
+		dispatch.WithWorkspaceDirs(dirs),
+		dispatch.WithAuditor(au),
+	)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit mkdir fail", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Row stays pending (F2 contract preserved).
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status = %q; want still %q (F2 contract)", row.Status, store.StatusPending)
+	}
+
+	// But the failure is now observable in audit.log.
+	var found *config.AuditEvent
+	for i, ev := range au.Events() {
+		if ev.Action == "dispatch.fail" && strings.Contains(ev.Value, "mkdir") {
+			found = &au.Events()[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected dispatch.fail audit mentioning mkdir failure; got %+v", au.Events())
+	}
+	wantKey := fmt.Sprintf("task:%d", id)
+	if found.Key != wantKey {
+		t.Errorf("audit Key = %q; want %q", found.Key, wantKey)
+	}
+}
+
 // F3: no WithWorkspaceDirs keeps PR-42 wire format intact.
 func TestRunOmitsSentinelSectionWhenWorkspaceDirsUnset(t *testing.T) {
 	f := newDispatchFixture(t) // no WithWorkspaceDirs

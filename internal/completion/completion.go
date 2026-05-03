@@ -91,12 +91,23 @@ const (
 	maxRawDisplayBytes    = 64        // truncate rejected raw bytes before logging
 )
 
-// Audit action labels. requirement.md unwavering #2 "No silent execution"
+// Audit action labels. requirement.md invariant #2 "No silent execution"
 // requires every status transition to leave an audit trail; PR-43 owns
 // the running -> done / failed half of that ledger.
+//
+// The split between auditFail and auditTransitionFailed is deliberate:
+//   - auditFail means "the row actually moved to failed" (Claude
+//     reported a non-zero exit, parse failure, rejected sentinel).
+//   - auditTransitionFailed means "the watcher tried to transition the
+//     row but the underlying store write was rejected" — the row stays
+//     running and the next tick retries.
+//
+// Conflating the two would make every store hiccup look like a Claude
+// failure in `marunage review`, breaking forensic value.
 const (
-	auditDetect = "completion.detect"
-	auditFail   = "completion.fail"
+	auditDetect           = "completion.detect"
+	auditFail             = "completion.fail"
+	auditTransitionFailed = "completion.transition_failed"
 )
 
 // Default poll cadence. 5s matches the task spec's "周期は config 経由
@@ -292,9 +303,10 @@ func (w *Watcher) checkOne(ctx context.Context, task store.Task) {
 	summary := w.readResultSummary(dir)
 	if err := w.store.MarkDoneWithSummary(ctx, task.ID, summary, w.now()); err != nil {
 		// MarkDoneWithSummary failed mid-transition — leave the row running
-		// so the next tick can retry. We still record an audit entry so the
-		// failure is observable.
-		w.recordAudit(auditFail, task.ID,
+		// so the next tick can retry. Record under
+		// completion.transition_failed (NOT completion.fail) so the audit
+		// label matches reality: no state flipped.
+		w.recordAudit(auditTransitionFailed, task.ID,
 			fmt.Sprintf("completion: MarkDoneWithSummary failed: %v", err))
 		return
 	}
@@ -305,10 +317,14 @@ func (w *Watcher) checkOne(ctx context.Context, task store.Task) {
 // the audit entry. SetCompletedAt is best-effort (a missing stamp is
 // less harmful than losing the failed transition itself); audit.log
 // always records the reason verbatim so post-mortem can reconstruct.
+//
+// MarkFailedWithReason failure: the row did NOT transition, so the
+// audit action is auditTransitionFailed (not auditFail) — same label
+// reasoning as the MarkDoneWithSummary failure path in checkOne.
 func (w *Watcher) markFailed(ctx context.Context, id int64, reason string) {
 	if err := w.store.MarkFailedWithReason(ctx, id, reason); err != nil {
-		w.recordAudit(auditFail, id,
-			fmt.Sprintf("%s; MarkFailedWithReason failed: %v", reason, err))
+		w.recordAudit(auditTransitionFailed, id,
+			fmt.Sprintf("MarkFailedWithReason failed: %v", err))
 		return
 	}
 	// Stamp completed_at so dashboards don't render the row as "still

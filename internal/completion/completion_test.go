@@ -442,6 +442,110 @@ func TestTickIgnoresMissingWorkspaceDir(t *testing.T) {
 	}
 }
 
+// W18 (audit-correctness): when MarkDoneWithSummary fails mid-tick the
+// row stays running (next tick retries). The audit entry must NOT be
+// labelled `completion.fail` — that label is reserved for "row actually
+// flipped to failed status". Confusing labels every tick on a wedged
+// row would bloat audit.log and break invariant #2's forensic value.
+//
+// Pin the contract: a transient store failure carries a distinct
+// `completion.transition_failed` action so post-mortem can tell apart
+// "Claude exited non-zero" from "store write rejected".
+type alwaysFailMarkDoneStore struct {
+	completionStore
+}
+
+// completionStore is the minimal embedding shim so the fake can override
+// just the one method we care about while delegating List / SetCompletedAt
+// / MarkFailedWithReason to the real repo.
+type completionStore struct {
+	inner *store.TaskRepo
+}
+
+func (c completionStore) List(ctx context.Context, f store.ListFilter) ([]store.Task, error) {
+	return c.inner.List(ctx, f)
+}
+func (c completionStore) MarkDoneWithSummary(ctx context.Context, id int64, s string, t time.Time) error {
+	return c.inner.MarkDoneWithSummary(ctx, id, s, t)
+}
+func (c completionStore) MarkFailedWithReason(ctx context.Context, id int64, r string) error {
+	return c.inner.MarkFailedWithReason(ctx, id, r)
+}
+func (c completionStore) SetCompletedAt(ctx context.Context, id int64, t time.Time) error {
+	return c.inner.SetCompletedAt(ctx, id, t)
+}
+
+func (s alwaysFailMarkDoneStore) MarkDoneWithSummary(ctx context.Context, id int64, sum string, t time.Time) error {
+	return errors.New("simulated store failure")
+}
+
+func TestTickRecordsDistinctActionWhenMarkDoneFails(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
+	wrapped := alwaysFailMarkDoneStore{completionStore{inner: repo}}
+
+	root := t.TempDir()
+	dirs := dirsFunc(func(id int64) string { return filepath.Join(root, fmt.Sprintf("%d", id)) })
+	au := &fakeAuditor{}
+	w, err := completion.New(
+		completion.WithStore(wrapped),
+		completion.WithWorkspaceDirs(dirs),
+		completion.WithAuditor(au),
+		completion.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	id, err := repo.Insert(context.Background(), store.Task{
+		Source: "manual", Title: "transition fail", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	dir := dirs.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".exit_code"), []byte("0\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := w.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	row, err := repo.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want still %q (transient store failure must not flip the row)", row.Status, store.StatusRunning)
+	}
+
+	for _, ev := range au.Events() {
+		if ev.Action == "completion.fail" {
+			t.Errorf("audit recorded completion.fail for a row that did NOT transition to failed: %+v", ev)
+		}
+	}
+	var found bool
+	for _, ev := range au.Events() {
+		if ev.Action == "completion.transition_failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected at least one completion.transition_failed audit; got %+v", au.Events())
+	}
+}
+
 // W14 (security): a symlink at the sentinel path must NOT be followed.
 // Threat model: a prompt-injected Claude session writes
 // .exit_code as a symlink to ~/.marunage/secrets/gmail.json, hoping the
