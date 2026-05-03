@@ -23,6 +23,7 @@ type Config struct {
 	Reflection ReflectionConfig `toml:"reflection"`
 	Journal    JournalConfig    `toml:"journal"`
 	Notify     NotifyConfig     `toml:"notify"`
+	Web        WebConfig        `toml:"web"`
 }
 
 type CoreConfig struct {
@@ -93,6 +94,19 @@ type JournalConfig struct {
 type NotifyConfig struct {
 	OnComplete bool `toml:"on_complete"`
 	OnFailure  bool `toml:"on_failure"`
+}
+
+// WebConfig drives the `marunage web` server (PR-62).
+//
+// Bind/Port pin where the listener attaches; defaults bind to loopback so a
+// fresh install never publishes the dashboard externally without an explicit
+// opt-in (docs/requirement.md 320: "localhost bind デフォルト、外部公開は
+// オプトイン"). Remote = true is the explicit opt-in CLI surface that lets
+// the binary swap to 0.0.0.0 — authentication itself lands in a later PR.
+type WebConfig struct {
+	Bind   string `toml:"bind"`
+	Port   int    `toml:"port"`
+	Remote bool   `toml:"remote"`
 }
 
 // Allowed values per the documented schema. Centralised so Validate and the
@@ -183,6 +197,11 @@ func Default() Config {
 			OnComplete: true,
 			OnFailure:  true,
 		},
+		Web: WebConfig{
+			Bind:   "127.0.0.1",
+			Port:   7777,
+			Remote: false,
+		},
 	}
 }
 
@@ -242,6 +261,12 @@ func (c Config) Validate() error {
 	}
 	if c.Reflection.SampleRate < 0 || c.Reflection.SampleRate > 1 {
 		return fmt.Errorf("reflection.sample_rate: must be in [0,1] (got %v)", c.Reflection.SampleRate)
+	}
+	if c.Web.Bind == "" {
+		return fmt.Errorf("web.bind: must be a non-empty host or IP")
+	}
+	if c.Web.Port < 1 || c.Web.Port > 65535 {
+		return fmt.Errorf("web.port: must be in [1,65535] (got %d)", c.Web.Port)
 	}
 	return nil
 }
