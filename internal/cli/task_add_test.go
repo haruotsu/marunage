@@ -26,6 +26,10 @@ type fakeTaskRepo struct {
 	// listFilters records every ListFilter the SUT passed in, so tests
 	// can assert filter wiring without driving a real query plan.
 	listFilters []store.ListFilter
+	// listErr, when non-nil, is returned from List instead of the row
+	// projection. Used to drive "the SUT must not write half-state when
+	// the read fails" assertions (PR-60 view.md atomicity).
+	listErr error
 }
 
 func newFakeTaskRepo() *fakeTaskRepo {
@@ -129,6 +133,9 @@ func (f *fakeTaskRepo) List(_ context.Context, filter store.ListFilter) ([]store
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listFilters = append(f.listFilters, filter)
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 
 	out := make([]store.Task, 0, len(f.rows))
 	for _, t := range f.rows {

@@ -76,6 +76,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskPromoteCmd(&configPath))
 	root.AddCommand(newTaskReopenCmd(&configPath))
 	root.AddCommand(newTaskRmCmd(&configPath))
+	root.AddCommand(newTaskRenderCmd(&configPath))
 	root.AddCommand(newTaskExportCmd(&configPath))
 	root.AddCommand(newTaskCleanCmd(&configPath))
 
@@ -95,7 +96,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"discover", "Run the Discovery layer once and enqueue new tasks."},
 		{"run-all", "Dispatch every pending task in priority order."},
 		{"status", "Show the running workspaces and their latest output."},
-		{"render", "Generate ~/.marunage/view.md for the cmux markdown viewer."},
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
 		{"notify", "Send completion / failure / waiting_human notifications."},
 		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
