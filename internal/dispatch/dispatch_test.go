@@ -419,6 +419,76 @@ func TestRunSkipsLockedRowAndContinues(t *testing.T) {
 	}
 }
 
+// D1b: AcquireLock-then-NewWorkspace-failure must release the lock_key so a
+// sibling pending row sharing the same resolved lock_key is not blocked
+// forever. Without this, AcquireLock's "pending counts as a holder" rule
+// (store/tasks.go AcquireLock godoc) means the failed row keeps the key
+// indefinitely while sitting in pending — every subsequent Run hits
+// ErrLockHeld for any other row resolving to the same lock_key.
+func TestRunReleasesLockOnNewWorkspaceFailure(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithLockKeys(map[string]string{
+			"^repo:.*": "git-repo",
+		}),
+	)
+
+	// First call to NewWorkspace fails; subsequent calls succeed. This
+	// simulates "the first row hit a transient cmux error after we already
+	// AcquireLock'd it; the second row shares the same lock_hint and must
+	// still go through".
+	var calls int
+	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+		calls++
+		if calls == 1 {
+			return cmux.Workspace{}, errors.New("cmux exploded")
+		}
+		return cmux.Workspace{ID: fmt.Sprintf("workspace:%d", calls)}, nil
+	}
+
+	first, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "first", CWD: "/tmp",
+		Notes: `{"lock_hint":"repo:haruotsu/marunage"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert first: %v", err)
+	}
+	second, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "second", CWD: "/tmp",
+		Notes: `{"lock_hint":"repo:haruotsu/marunage"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert second: %v", err)
+	}
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 2}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// First row: NewWorkspace failed -> still pending, lock_key released.
+	firstRow, err := f.repo.Get(f.ctx, first)
+	if err != nil {
+		t.Fatalf("Get first: %v", err)
+	}
+	if firstRow.Status != store.StatusPending {
+		t.Errorf("first status = %q; want still %q (NewWorkspace failed)", firstRow.Status, store.StatusPending)
+	}
+	if firstRow.LockKey != "" {
+		t.Errorf("first lock_key = %q; want empty (must be released after NewWorkspace failure so siblings can dispatch)", firstRow.LockKey)
+	}
+
+	// Second row: should have been dispatched (lock was released by the first row).
+	secondRow, err := f.repo.Get(f.ctx, second)
+	if err != nil {
+		t.Fatalf("Get second: %v", err)
+	}
+	if secondRow.Status != store.StatusRunning {
+		t.Errorf("second status = %q; want %q (sibling row should dispatch after lock release)", secondRow.Status, store.StatusRunning)
+	}
+	if secondRow.WS == "" {
+		t.Errorf("second ws = %q; want non-empty (sibling row should have a workspace)", secondRow.WS)
+	}
+}
+
 // D1: NewWorkspace failure leaves the row pending so it retries next round.
 func TestRunRequeueOnNewWorkspaceFailure(t *testing.T) {
 	f := newDispatchFixture(t)
