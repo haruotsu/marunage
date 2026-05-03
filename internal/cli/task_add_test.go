@@ -306,6 +306,10 @@ func TestTaskAdd_NotesAcceptsValidJSON(t *testing.T) {
 }
 
 // 7. --notes rejects invalid JSON before talking to the repo.
+//
+// Pin both halves of the diagnostic — the flag name and the reason —
+// so the message stays "--notes: invalid JSON" rather than degrading
+// to a vague "notes" prefix or a wrapped sqlite CHECK violation.
 func TestTaskAdd_NotesRejectsInvalidJSON(t *testing.T) {
 	repo := installFakeRepo(t)
 
@@ -319,6 +323,9 @@ func TestTaskAdd_NotesRejectsInvalidJSON(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "notes") {
 		t.Errorf("stderr should mention notes; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid JSON") {
+		t.Errorf("stderr should explain the reason ('invalid JSON'); got %q", stderr.String())
 	}
 }
 
