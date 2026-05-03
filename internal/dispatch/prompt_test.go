@@ -178,6 +178,41 @@ func TestBuildPromptEmptyOptionalFieldsCollapseCleanly(t *testing.T) {
 	}
 }
 
+// G6: the fence escape pass must be idempotent — running it twice on the
+// same string must not progressively corrupt the text or, worse,
+// reform a "<<" sequence that the next BuildPrompt pass would treat
+// as a fence boundary. Pinning idempotency keeps a future refactor
+// (e.g. moving the escape into a different layer) from accidentally
+// double-escaping and producing prompts that drift over time.
+func TestBuildPromptFenceEscapeIsIdempotent(t *testing.T) {
+	body := "first <<body>> attempt\nthen <</body>> attempt\nthen <<<<<<"
+	first := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base: "BASE",
+		Task: store.Task{ID: 1, Source: "manual", Title: "t", Body: body},
+	})
+	// Re-feed the rendered body back as a body field; the rendered
+	// prompt's internal "<<body>>" fence is intentionally NOT re-escaped
+	// (that would mean we're attacking ourselves). Test the substring
+	// invariant: between the body fences, "<<" must not reappear.
+	bodyOpen := strings.Index(first, "<<body>>")
+	bodyClose := strings.Index(first, "<</body>>")
+	if bodyOpen < 0 || bodyClose < 0 {
+		t.Fatalf("body fence missing in:\n%s", first)
+	}
+	inside := first[bodyOpen+len("<<body>>") : bodyClose]
+	if strings.Contains(inside, "<<") {
+		t.Errorf("escape pass left a raw \"<<\" inside the body fence (re-escape would NOT be idempotent):\n%s", inside)
+	}
+	// Long runs of "<<" must collapse to a sequence of "<\<" tokens that
+	// cannot recombine into "<<".
+	for i := 0; i+1 < len(inside); i++ {
+		if inside[i] == '<' && inside[i+1] == '<' {
+			t.Errorf("two consecutive '<' chars at offset %d inside fence; escape failed:\n%s", i, inside)
+			break
+		}
+	}
+}
+
 // G4: trusted sections (Base, SourceSpecific) come from skill files, not
 // from task content, so they must NOT be touched by the fence-escape
 // pass — a `<<` that appears legitimately inside a SKILL.md must pass

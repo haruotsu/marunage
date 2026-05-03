@@ -912,6 +912,37 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 }
 
+// J5: NewWorkspace failure AFTER ClaimWorkspace must clear the
+// __dispatching__ sentinel so the row is retryable and is not stuck
+// looking like a half-finished claim. Pinned to catch a regression
+// where the sentinel is left in place and the next Run sees the row
+// as "already claimed" forever.
+func TestRunClearsSentinelOnNewWorkspaceFailureAfterClaim(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+		return cmux.Workspace{}, errors.New("cmux exploded")
+	}
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "sentinel cleanup", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status = %q; want %q (NewWorkspace failure must leave row retryable)", row.Status, store.StatusPending)
+	}
+	if row.WS != "" {
+		t.Errorf("ws = %q; want empty (sentinel must be cleared so row is re-claimable)", row.WS)
+	}
+}
+
 // J1/J2: two Dispatchers sharing one store + cmux must not double-claim
 // a row. Without an atomic claim step, both dispatchers can pick the
 // same pending row, both NewWorkspace, both SetWorkspace — leaving an
