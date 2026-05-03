@@ -22,8 +22,11 @@ exceptions so far are `marunage config get <key>` and
 `marunage config set <key> <value>`, which read and write
 `~/.marunage/config.toml` (override the path with `--config`) with schema
 validation, a timestamped `.bak` snapshot before each write, and rollback
-on validation failure. Actual behavior for the rest lands in later PRs
-along the [PR split plan](./docs/pr_split_plan.md).
+on validation failure. Each successful `config set` also appends a
+JSON-Lines audit entry (`config.set` + `config.save`) to
+`<configdir>/logs/audit.log` so every mutation is observable. Actual
+behavior for the rest lands in later PRs along the
+[PR split plan](./docs/pr_split_plan.md).
 
 ## Build
 
@@ -51,7 +54,10 @@ and on every pull request.
 
 ```
 cmd/marunage/       CLI entrypoint (the marunage binary)
-internal/           private packages (version, future: store/exec/source/...)
+internal/cli/       cobra command tree
+internal/config/    typed config schema, Load/Save, Get/Set primitives
+internal/logging/   JSON-Lines logger, rotating daemon.log writer, append-only audit.log
+internal/version/   build-time version string
 pkg/                public library packages (reserved for future phases)
 web/                Web UI assets (reserved for PR-62 onwards)
 ```
