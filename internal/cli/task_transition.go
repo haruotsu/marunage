@@ -51,14 +51,19 @@ type mirrorHook func(ctx context.Context, mirror Mirror, t store.Task) error
 //  1. Parses the id positional.
 //  2. Opens the repo + mirror via the package-private factories so tests
 //     can inject fakes.
-//  3. Calls TransitionStatus(id, target). Translates ErrNotFound into the
+//  3. Loads the row, checks the current status against allowedFrom (an
+//     empty set means "rely on the store-side matrix only"), and rejects
+//     with ErrInvalidTransition when the command's narrower precondition
+//     fails. This is how `promote` and `reopen` differentiate even though
+//     both ultimately drive the row to pending.
+//  4. Calls TransitionStatus(id, target). Translates ErrNotFound into the
 //     friendly "Task #<id> not found." message and ErrInvalidTransition
 //     into the "cannot transition: from X to Y" diagnostic.
-//  4. Reloads the row (now carrying the new status) and fires the mirror
+//  5. Reloads the row (now carrying the new status) and fires the mirror
 //     hook. Mirror errors are surfaced as a non-zero exit but do NOT roll
 //     back the local mutation; the local store is the source of truth and
 //     mirror sync is best-effort.
-//  5. Prints a confirmation line on stdout.
+//  6. Prints a confirmation line on stdout.
 //
 // rm is implemented separately because it deletes rather than transitions
 // and needs the pre-delete snapshot for the mirror hook.
@@ -67,6 +72,7 @@ func transitionRunner(
 	args []string,
 	configPath string,
 	target string,
+	allowedFrom map[string]bool,
 	hook mirrorHook,
 ) error {
 	id, err := parseTaskID(args[0])
@@ -79,6 +85,21 @@ func transitionRunner(
 		return err
 	}
 	defer func() { _ = closer() }()
+
+	if len(allowedFrom) > 0 {
+		current, err := repo.Get(cmd.Context(), id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				printNotFoundAndExit(cmd, id)
+				return errTaskCommandFailed
+			}
+			return translateRepoError(err)
+		}
+		if !allowedFrom[current.Status] {
+			return fmt.Errorf("cannot transition: %w: from %q to %q",
+				store.ErrInvalidTransition, current.Status, target)
+		}
+	}
 
 	if err := repo.TransitionStatus(cmd.Context(), id, target); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

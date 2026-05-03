@@ -72,6 +72,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskShowCmd(&configPath))
 	root.AddCommand(newTaskDoneCmd(&configPath))
 	root.AddCommand(newTaskFailCmd(&configPath))
+	root.AddCommand(newTaskPromoteCmd(&configPath))
 
 	return root
 }
@@ -96,7 +97,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"notify", "Send completion / failure / waiting_human notifications."},
 		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
 		{"web", "Start the local Web UI (defaults to 127.0.0.1:7777)."},
-		{"promote <id>", "Promote a skipped task back to pending."},
 		{"reopen <id>", "Reopen a done task."},
 		{"review", "Review past skipped tasks for triage feedback."},
 		{"clean", "Reap dead workspace references (manual trigger of the reaper)."},

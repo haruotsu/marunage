@@ -27,7 +27,7 @@ var requiredTopLevelSubcommands = []string{
 var leafStubSubcommands = []string{
 	"init", "setup", "rm",
 	"discover", "dispatch", "run-all", "status", "render", "open", "notify",
-	"loop", "web", "promote", "reopen", "review", "clean", "export",
+	"loop", "web", "reopen", "review", "clean", "export",
 }
 
 func TestExecute_Help_ListsAllRequiredSubcommands(t *testing.T) {
