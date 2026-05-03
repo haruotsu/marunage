@@ -16,6 +16,7 @@ type cliAuditLine struct {
 	Path   string `json:"path"`
 	Key    string `json:"key"`
 	Value  string `json:"value"`
+	Name   string `json:"name"`
 }
 
 func readCLIAuditLines(t *testing.T, path string) []cliAuditLine {
