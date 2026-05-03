@@ -266,6 +266,84 @@ func (r *TaskRepo) UpdateStatus(ctx context.Context, id int64, newStatus string)
 	return nil
 }
 
+// AcquireLock claims lockKey for the row with the given id, blocking
+// when another running task already holds the same key (docs/
+// requirement.md "lock_key でのソフトロック取得 / 解放"). It is "soft"
+// because the conflict probe checks status='running': as soon as the
+// holder transitions to done / failed / skipped the next AcquireLock for
+// the same key succeeds without an explicit ReleaseLock.
+//
+// Atomicity: the row probe, conflict probe, and UPDATE all run inside a
+// single transaction so a concurrent dispatcher cannot squeeze between
+// the probe and the write. The store-wide SetMaxOpenConns(1) gives this
+// transaction full writer serialisation per process; cross-process races
+// fall back on SQLite's busy_timeout.
+func (r *TaskRepo) AcquireLock(ctx context.Context, id int64, lockKey string) error {
+	if lockKey == "" {
+		return fmt.Errorf("store: lockKey is required")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("acquire lock begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var probe int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT id FROM tasks WHERE id = ?", id,
+	).Scan(&probe); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("acquire lock probe row: %w", err)
+	}
+
+	var conflict int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT id FROM tasks WHERE lock_key = ? AND status = ? AND id != ? LIMIT 1",
+		lockKey, StatusRunning, id,
+	).Scan(&conflict)
+	switch {
+	case err == nil:
+		return ErrLockHeld
+	case errors.Is(err, sql.ErrNoRows):
+		// no conflict, fall through to claim
+	default:
+		return fmt.Errorf("acquire lock probe key: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE tasks SET lock_key = ? WHERE id = ?", lockKey, id,
+	); err != nil {
+		return fmt.Errorf("acquire lock write: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("acquire lock commit: %w", err)
+	}
+	return nil
+}
+
+// ReleaseLock clears lock_key on a row. Soft locks are normally released
+// implicitly by the status transition out of running (see AcquireLock);
+// this method exists for the reaper / clean flows that need to drop a
+// stale claim left behind by a crashed dispatcher.
+func (r *TaskRepo) ReleaseLock(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET lock_key = NULL WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("release lock: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("release lock rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetWorkspace records the cmux ws reference for a dispatched task. It is
 // the immediate "claim" PR-42 writes after `cmux new-workspace` returns so
 // a parallel dispatch loop iteration cannot pick the same row twice.

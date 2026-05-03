@@ -474,3 +474,145 @@ func TestTaskRepoSetWorkspaceMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("SetWorkspace(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// 17. AcquireLock on a free key claims it: the column is persisted and a
+//     subsequent Get sees it. The Phase-1 dispatcher (PR-42) does this
+//     immediately after picking a candidate so a concurrent loop iteration
+//     cannot pick a colliding row.
+func TestTaskRepoAcquireLockClaimsFreeKey(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "first"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.AcquireLock(f.ctx, id, "git-repo:web"); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LockKey != "git-repo:web" {
+		t.Errorf("lock_key = %q; want %q", got.LockKey, "git-repo:web")
+	}
+}
+
+// 18. AcquireLock blocks when another *running* task already holds the
+//     same key. The blocked attempt must NOT mutate lock_key, otherwise a
+//     retry would silently overwrite the holder's claim.
+func TestTaskRepoAcquireLockBlockedByRunningHolder(t *testing.T) {
+	f := newRepoFixture(t)
+
+	holderID, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "holder"})
+	if err != nil {
+		t.Fatalf("Insert holder: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, holderID, "k1"); err != nil {
+		t.Fatalf("holder AcquireLock: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, holderID, store.StatusRunning); err != nil {
+		t.Fatalf("holder UpdateStatus(running): %v", err)
+	}
+
+	laterID, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "later"})
+	if err != nil {
+		t.Fatalf("Insert later: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, laterID, "k1"); !errors.Is(err, store.ErrLockHeld) {
+		t.Fatalf("later AcquireLock: err = %v; want ErrLockHeld", err)
+	}
+	got, err := f.repo.Get(f.ctx, laterID)
+	if err != nil {
+		t.Fatalf("Get later: %v", err)
+	}
+	if got.LockKey != "" {
+		t.Errorf("blocked AcquireLock left lock_key = %q; want empty", got.LockKey)
+	}
+}
+
+// 19. AcquireLock succeeds again once the previous holder transitions out
+//     of running. Status-based release is the whole point of "soft" lock:
+//     no explicit ReleaseLock call is required for the next claim to go
+//     through.
+func TestTaskRepoAcquireLockSucceedsAfterHolderDone(t *testing.T) {
+	f := newRepoFixture(t)
+
+	holderID, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "holder"})
+	if err != nil {
+		t.Fatalf("Insert holder: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, holderID, "k1"); err != nil {
+		t.Fatalf("holder AcquireLock: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, holderID, store.StatusRunning); err != nil {
+		t.Fatalf("holder running: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, holderID, store.StatusDone); err != nil {
+		t.Fatalf("holder done: %v", err)
+	}
+
+	laterID, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "later"})
+	if err != nil {
+		t.Fatalf("Insert later: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, laterID, "k1"); err != nil {
+		t.Fatalf("later AcquireLock after holder done: %v", err)
+	}
+}
+
+// 20. ReleaseLock clears lock_key. Used by reaper / clean flows when a
+//     task aborted without going through done/failed (e.g. crash, manual
+//     intervention).
+func TestTaskRepoReleaseLockClearsLockKey(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "t"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, id, "k1"); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if err := f.repo.ReleaseLock(f.ctx, id); err != nil {
+		t.Fatalf("ReleaseLock: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LockKey != "" {
+		t.Errorf("lock_key after ReleaseLock = %q; want empty", got.LockKey)
+	}
+}
+
+// 21. ReleaseLock on a missing id returns ErrNotFound for the same reason
+//     UpdateStatus / SetWorkspace do.
+func TestTaskRepoReleaseLockMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	if err := f.repo.ReleaseLock(f.ctx, 99999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ReleaseLock(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 22. AcquireLock with an empty key is a programmer error — the schema
+//     would gladly store NULL, defeating every subsequent probe — so the
+//     repo rejects it loudly at the boundary.
+func TestTaskRepoAcquireLockEmptyKeyValidates(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "t"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.AcquireLock(f.ctx, id, ""); err == nil {
+		t.Fatalf("AcquireLock with empty lockKey must fail")
+	}
+}
+
+// 23. AcquireLock on a missing id returns ErrNotFound (probe-then-update
+//     would silently no-op without this check).
+func TestTaskRepoAcquireLockMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	if err := f.repo.AcquireLock(f.ctx, 99999, "k1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AcquireLock(missing): err = %v; want ErrNotFound", err)
+	}
+}
