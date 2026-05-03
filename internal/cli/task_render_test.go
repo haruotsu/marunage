@@ -49,14 +49,19 @@ func TestTaskRender_WritesViewFile(t *testing.T) {
 }
 
 // C2: A previous view.md is overwritten — and no .tmp.* sibling is
-// left behind, proving atomic write went all the way through.
+// left behind, proving atomic write went all the way through. Also
+// pins the 0o600 perm contract: the chmod must happen on the tmp
+// before the rename, so a racing reader cannot observe a wider mode.
+// (Mirrors internal/source/markdown/writer_test.go TestAtomicWriteFile.)
 func TestTaskRender_OverwritesExistingAndLeavesNoTmp(t *testing.T) {
 	repo, dest := installRenderHarness(t)
 	repo.rows[1] = store.Task{
 		ID: 1, Source: "manual", Title: "fresh row", Status: store.StatusPending,
 	}
 
-	if err := os.WriteFile(dest, []byte("STALE CONTENT\n"), 0o600); err != nil {
+	// Seed with a deliberately wider mode so the assertion below cannot
+	// be satisfied accidentally by reusing the seed file's permissions.
+	if err := os.WriteFile(dest, []byte("STALE CONTENT\n"), 0o644); err != nil {
 		t.Fatalf("seed stale view: %v", err)
 	}
 
@@ -75,6 +80,14 @@ func TestTaskRender_OverwritesExistingAndLeavesNoTmp(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "fresh row") {
 		t.Errorf("new content missing:\n%s", got)
+	}
+
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("perm = %v; want 0o600 (chmod must run on tmp before rename)", perm)
 	}
 
 	entries, err := os.ReadDir(filepath.Dir(dest))
@@ -117,6 +130,37 @@ func TestTaskRender_FileContentMatchesPureRender(t *testing.T) {
 	want := render.Render([]store.Task{repo.rows[1], repo.rows[2]}, fixed)
 	if string(got) != want {
 		t.Errorf("file content diverges from pure Render()\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// C4: render must list EVERY task, not the dispatcher's "actionable
+// only" subset. The on-disk contract is "single screen of everything",
+// so the SUT has to pass an empty ListFilter (no Statuses, no Sources,
+// no Limit) into repo.List. A future change that defaults to
+// {Statuses: [pending, running]} (matching `marunage list`) would
+// silently break the cmux viewer's "see done/failed/skipped too"
+// promise without this guard.
+func TestTaskRender_PassesEmptyListFilter(t *testing.T) {
+	repo, _ := installRenderHarness(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"render"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("render exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	if len(repo.listFilters) != 1 {
+		t.Fatalf("listFilters captured = %d; want 1", len(repo.listFilters))
+	}
+	got := repo.listFilters[0]
+	if len(got.Statuses) != 0 {
+		t.Errorf("Statuses = %v; want empty (render shows every status)", got.Statuses)
+	}
+	if len(got.Sources) != 0 {
+		t.Errorf("Sources = %v; want empty", got.Sources)
+	}
+	if got.Limit != 0 {
+		t.Errorf("Limit = %d; want 0 (no truncation in view.md)", got.Limit)
 	}
 }
 
