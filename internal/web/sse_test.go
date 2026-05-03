@@ -57,7 +57,9 @@ func TestHub_UnsubscribeStopsDelivery(t *testing.T) {
 // TestHub_NoGoroutineLeakAfterUnsubscribe pins the leak-free invariant
 // — many client cancels in rapid succession must not grow the
 // runtime's goroutine count.  This is the SSE-side counterpart to the
-// HTTP handler test below.
+// HTTP handler test below.  The poll loop replaces the original fixed
+// sleep so the test is not flaky on slow CI runners (the previous
+// 50ms wait was occasionally too short under -race).
 func TestHub_NoGoroutineLeakAfterUnsubscribe(t *testing.T) {
 	hub := NewHub()
 	before := runtime.NumGoroutine()
@@ -66,14 +68,27 @@ func TestHub_NoGoroutineLeakAfterUnsubscribe(t *testing.T) {
 		sub := hub.Subscribe()
 		hub.Unsubscribe(sub)
 	}
-	// Give the runtime a moment to settle scheduled goroutines.
-	time.Sleep(50 * time.Millisecond)
-	runtime.GC()
 
-	after := runtime.NumGoroutine()
-	if after > before+5 {
-		t.Fatalf("goroutine count grew %d -> %d after subscribe/unsubscribe loop; expected near zero growth", before, after)
+	if !waitGoroutinesSettleNear(t, before, 5, 2*time.Second) {
+		t.Fatalf("goroutine count grew from %d to %d after subscribe/unsubscribe loop; expected near zero growth", before, runtime.NumGoroutine())
 	}
+}
+
+// waitGoroutinesSettleNear polls runtime.NumGoroutine() until it is
+// within slack of baseline or until timeout elapses.  Returns true if
+// the count converged.  Replaces the previous time.Sleep + single
+// runtime.GC pattern that was sensitive to scheduler timing.
+func waitGoroutinesSettleNear(t *testing.T, baseline, slack int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		if runtime.NumGoroutine() <= baseline+slack {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return runtime.NumGoroutine() <= baseline+slack
 }
 
 // TestHub_RejectsSubscribersAboveCap pins the soft-DoS guard: when
@@ -175,12 +190,10 @@ func TestSSEHandler_ClientCancelLeavesNoLeak(t *testing.T) {
 		cancel()
 		_ = resp.Body.Close()
 	}
-	// Allow the server-side handlers to observe ctx cancellation and exit.
-	time.Sleep(200 * time.Millisecond)
-	runtime.GC()
-
-	after := runtime.NumGoroutine()
-	if after > before+5 {
-		t.Fatalf("goroutine count grew %d -> %d after 10 SSE connect/cancel cycles", before, after)
+	// Poll until the server-side goroutines unwind rather than guess
+	// at a fixed sleep interval — the previous 200ms wait was racy
+	// under -race on slower CI runners.
+	if !waitGoroutinesSettleNear(t, before, 5, 3*time.Second) {
+		t.Fatalf("goroutine count grew from %d to %d after 10 SSE connect/cancel cycles", before, runtime.NumGoroutine())
 	}
 }
