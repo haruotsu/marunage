@@ -79,7 +79,7 @@ func newConfigCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open audit log %s: %w", auditPath, err)
 			}
-			defer auditor.Close()
+			defer func() { _ = auditor.Close() }()
 
 			auditor.Record(config.AuditEvent{
 				Action: "config.set",

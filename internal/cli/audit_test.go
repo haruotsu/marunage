@@ -24,7 +24,7 @@ func readCLIAuditLines(t *testing.T, path string) []cliAuditLine {
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []cliAuditLine
 	sc := bufio.NewScanner(f)
