@@ -25,7 +25,7 @@ var requiredTopLevelSubcommands = []string{
 // commands ship (config in PR-05, doctor in PR-32, add/list/show in PR-20,
 // done/fail/rm/promote/reopen in PR-21, ...) they leave this list.
 var leafStubSubcommands = []string{
-	"init", "setup",
+	"setup",
 	"discover", "run-all", "open", "notify",
 	"loop", "web", "review",
 }
