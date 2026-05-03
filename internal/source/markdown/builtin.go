@@ -3,8 +3,6 @@ package markdown
 import (
 	_ "embed"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/haruotsu/marunage/internal/source"
 )
@@ -21,23 +19,18 @@ import (
 var embeddedManifest []byte
 
 // Manifest returns the parsed view of the bundled plugin.toml. The bytes
-// are routed through source.LoadManifest by way of a tempfile so the
-// embedded payload is validated by the exact same pipeline as on-disk
-// manifests. Validation runs on every call rather than at package init so
-// a malformed manifest surfaces to the caller (typically tests or
-// RegisterBuiltin) rather than crashing every binary that links the
-// package.
+// flow through source.LoadManifestFromBytes so the embedded payload is
+// validated by the exact same pipeline as on-disk manifests, without the
+// I/O failure modes a tempfile detour would add. Validation runs on every
+// call rather than at package init so a malformed manifest surfaces to
+// the caller (typically tests or RegisterBuiltin) rather than crashing
+// every binary that links the package.
 func Manifest() (*source.Manifest, error) {
-	dir, err := os.MkdirTemp("", "marunage-md-manifest-*")
+	m, err := source.LoadManifestFromBytes(embeddedManifest)
 	if err != nil {
-		return nil, fmt.Errorf("manifest tempdir: %w", err)
+		return nil, fmt.Errorf("markdown embedded manifest: %w", err)
 	}
-	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "plugin.toml")
-	if err := os.WriteFile(path, embeddedManifest, 0o600); err != nil {
-		return nil, fmt.Errorf("write embedded manifest: %w", err)
-	}
-	return source.LoadManifest(path)
+	return m, nil
 }
 
 // RegisterBuiltin constructs an Adapter wrapping a fresh markdown.Plugin

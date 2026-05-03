@@ -162,3 +162,88 @@ func TestLoadManifestMissingFile(t *testing.T) {
 		t.Fatalf("want error for missing file, got nil")
 	}
 }
+
+// TestLoadManifestFromBytesParsesValidPluginToml drives the bytes-based loader
+// the embedded built-in manifest needs. Going through tempfile + os.ReadFile
+// just to feed go-embed bytes through the same parser is a wart we now
+// remove; tests pin both APIs to the same validation rules.
+func TestLoadManifestFromBytesParsesValidPluginToml(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`
+[plugin]
+name = "markdown"
+version = "0.1.0"
+description = "x"
+sync_mode = "bidirectional"
+capabilities = ["list", "setup", "auth-status", "since", "add", "complete", "delete"]
+`)
+	m, err := LoadManifestFromBytes(body)
+	if err != nil {
+		t.Fatalf("LoadManifestFromBytes: %v", err)
+	}
+	if m.Name != "markdown" || !m.HasCapability(CapAdd) {
+		t.Fatalf("unexpected manifest: %+v", m)
+	}
+}
+
+// TestLoadManifestFromBytesValidates ensures bytes input shares the same
+// validation pipeline as on-disk manifests; an unknown capability must
+// surface ErrInvalidManifest just like LoadManifest.
+func TestLoadManifestFromBytesValidates(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "bidirectional"
+capabilities = ["list", "setup", "auth-status", "telepathy"]
+`)
+	_, err := LoadManifestFromBytes(body)
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("want ErrInvalidManifest, got %v", err)
+	}
+}
+
+// TestLoadManifestRejectsDuplicateCapability covers the manifest.go
+// "listed twice" branch that was previously uncovered (review iter1 W8).
+func TestLoadManifestRejectsDuplicateCapability(t *testing.T) {
+	t.Parallel()
+
+	path := writeManifest(t, `
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "bidirectional"
+capabilities = ["list", "setup", "auth-status", "list"]
+`)
+	_, err := LoadManifest(path)
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("want ErrInvalidManifest, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "twice") {
+		t.Errorf("error should mention duplicate: %v", err)
+	}
+}
+
+// TestLoadManifestRejectsMissingSyncMode covers the empty-sync_mode branch
+// distinct from "unknown sync_mode" (review iter1 W8).
+func TestLoadManifestRejectsMissingSyncMode(t *testing.T) {
+	t.Parallel()
+
+	path := writeManifest(t, `
+[plugin]
+name = "x"
+version = "1"
+description = "no mode"
+capabilities = ["list", "setup", "auth-status"]
+`)
+	_, err := LoadManifest(path)
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("want ErrInvalidManifest, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sync_mode") {
+		t.Errorf("error should mention sync_mode: %v", err)
+	}
+}
