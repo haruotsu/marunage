@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/haruotsu/marunage/internal/cmux"
 )
@@ -32,6 +33,12 @@ import (
 //      send` invocation reports a non-zero exit (requirement.md step 2.f).
 //   9. Send rejects empty workspace IDs with ErrInvalidWorkspace so a
 //      caller cannot accidentally send to "".
+//  10. WaitReady polls the readiness probe and returns nil as soon as it
+//      reports ready=true.
+//  11. WaitReady honours the configured startup timeout and returns
+//      ErrTimeout when the probe never goes ready.
+//  12. WaitReady returns ctx.Err() immediately when the parent context is
+//      cancelled, even if the timeout has not expired.
 
 // callRecord captures one Runner.Run invocation so assertions can inspect
 // argv ordering. The struct is exported only to the test file; the fake
@@ -256,6 +263,78 @@ func TestSendRejectsEmptyWorkspace(t *testing.T) {
 	}
 	if got := len(r.Calls()); got != 0 {
 		t.Errorf("Runner invoked %d times; want 0", got)
+	}
+}
+
+// scriptedProbe is a ReadinessProbe whose answer is driven by a sequence
+// of bool flips, so WaitReady tests can express "not ready, not ready,
+// ready" without sleeping.
+type scriptedProbe struct {
+	mu    sync.Mutex
+	ready []bool
+	calls int
+}
+
+func (p *scriptedProbe) IsReady(_ context.Context, _ cmux.Workspace) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if len(p.ready) == 0 {
+		return false, nil
+	}
+	v := p.ready[0]
+	p.ready = p.ready[1:]
+	return v, nil
+}
+
+// 10: WaitReady returns nil as soon as the probe reports ready.
+func TestWaitReadySucceedsWhenProbeFlipsToReady(t *testing.T) {
+	probe := &scriptedProbe{ready: []bool{false, false, true}}
+	c := cmux.NewClient(
+		cmux.WithReadinessProbe(probe),
+		cmux.WithStartupTimeout(time.Second),
+		cmux.WithPollInterval(time.Millisecond),
+	)
+	err := c.WaitReady(context.Background(), cmux.Workspace{ID: "workspace:1"})
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if probe.calls < 3 {
+		t.Errorf("probe calls = %d; want >= 3 (matches scripted ready slice)", probe.calls)
+	}
+}
+
+// 11: WaitReady times out cleanly when the probe never flips.
+func TestWaitReadyTimesOut(t *testing.T) {
+	probe := &scriptedProbe{} // always returns false
+	c := cmux.NewClient(
+		cmux.WithReadinessProbe(probe),
+		cmux.WithStartupTimeout(20*time.Millisecond),
+		cmux.WithPollInterval(2*time.Millisecond),
+	)
+	err := c.WaitReady(context.Background(), cmux.Workspace{ID: "workspace:1"})
+	if !errors.Is(err, cmux.ErrTimeout) {
+		t.Fatalf("err = %v; want ErrTimeout", err)
+	}
+}
+
+// 12: parent ctx cancel short-circuits WaitReady.
+func TestWaitReadyHonoursContextCancel(t *testing.T) {
+	probe := &scriptedProbe{} // never ready
+	c := cmux.NewClient(
+		cmux.WithReadinessProbe(probe),
+		cmux.WithStartupTimeout(time.Hour),
+		cmux.WithPollInterval(time.Millisecond),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		cancel()
+	}()
+	err := c.WaitReady(ctx, cmux.Workspace{ID: "workspace:1"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v; want context.Canceled", err)
 	}
 }
 
