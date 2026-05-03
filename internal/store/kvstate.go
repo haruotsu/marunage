@@ -14,16 +14,28 @@
 //   - CompareAndSwap is a single conditional UPDATE; the WHERE clause
 //     checks both the key and the expected current value, so two callers
 //     racing to advance the same checkpoint cannot both succeed.
-//   - Errors are typed (ErrKVNotFound, ErrKVKeyRequired, ErrKVStaleValue)
-//     so callers can distinguish "no checkpoint yet" (first run), "drift"
-//     (concurrent advance), and "programmer error" without parsing
-//     strings.
+//   - Errors are typed (ErrKVNotFound, ErrKVKeyRequired, ErrKVValueRequired,
+//     ErrKVStaleValue) so callers can distinguish "no checkpoint yet"
+//     (first run), "drift" (concurrent advance), and "programmer error"
+//     without parsing strings.
 //
 // The kv_state schema (migrations/0001_init.sql) is intentionally minimal:
 // (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL).
 // Missing checkpoint is row absence, never NULL or empty value, so the
 // "no checkpoint yet" signal cannot collide with a legitimately empty
-// stored value.
+// stored value. The repo enforces the non-empty half at the boundary
+// (Set / CompareAndSwap reject value=="" with ErrKVValueRequired) so the
+// schema NOT NULL alone does not have to carry the invariant.
+//
+// Concurrency model: this repo runs against the *sql.DB returned by
+// store.Open, which sets SetMaxOpenConns(1). All writers therefore go
+// through a single SQLite connection, so the "follow-up SELECT" probe
+// CompareAndSwap performs in its rare RowsAffected==0 branch sees a
+// state consistent with the just-completed UPDATE — no other writer can
+// have modified the row in between. CompareAndSwap's missing-vs-stale
+// distinction relies on this; running this repo against a multi-writer
+// connection pool would weaken that distinction without changing the
+// atomicity of Set / CompareAndSwap themselves (each is one statement).
 
 package store
 
@@ -224,7 +236,10 @@ func (r *KVStateRepo) CompareAndSwap(ctx context.Context, key, expected, newValu
 
 	// RowsAffected == 0 has two causes: the key does not exist, or the
 	// expected value did not match. Distinguish so the caller can choose
-	// re-Set vs. retry.
+	// re-Set vs. retry. The follow-up SELECT is safe against an interleaved
+	// writer because store.Open pins SetMaxOpenConns(1), so another Set /
+	// Delete cannot run between the UPDATE and this SELECT on the same
+	// connection (see package godoc "Concurrency model").
 	var probe string
 	err = r.db.QueryRowContext(ctx,
 		`SELECT value FROM kv_state WHERE key = ?`, key,
