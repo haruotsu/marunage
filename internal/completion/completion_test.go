@@ -442,6 +442,161 @@ func TestTickIgnoresMissingWorkspaceDir(t *testing.T) {
 	}
 }
 
+// W14 (security): a symlink at the sentinel path must NOT be followed.
+// Threat model: a prompt-injected Claude session writes
+// .exit_code as a symlink to ~/.marunage/secrets/gmail.json, hoping the
+// watcher will read the target and persist its contents into
+// tasks.judgment_reason and audit.log (both readable through the Web
+// UI / dashboard). The watcher must reject the symlink without ever
+// touching the target file.
+func TestTickRejectsSymlinkSentinel(t *testing.T) {
+	f := newFixture(t)
+	id := f.insertRunning("symlink attack")
+	dir := f.dirs.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Plant a "secret" file outside the workspace dir whose contents
+	// must NEVER appear in judgment_reason / audit.log.
+	const secret = "API_TOKEN=super-secret-value-do-not-leak"
+	secretPath := filepath.Join(t.TempDir(), "fake-secret.txt")
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	if err := os.Symlink(secretPath, filepath.Join(dir, ".exit_code")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (symlink sentinel must mark row failed)", row.Status, store.StatusFailed)
+	}
+	if strings.Contains(row.JudgmentReason, secret) || strings.Contains(row.JudgmentReason, "API_TOKEN") {
+		t.Errorf("judgment_reason leaks symlink target contents: %q", row.JudgmentReason)
+	}
+	if !strings.Contains(strings.ToLower(row.JudgmentReason), "symlink") {
+		t.Errorf("judgment_reason = %q; want it to mention the symlink rejection", row.JudgmentReason)
+	}
+	for _, ev := range f.au.Events() {
+		if strings.Contains(ev.Value, secret) || strings.Contains(ev.Value, "API_TOKEN") {
+			t.Errorf("audit event leaks symlink target contents: %+v", ev)
+		}
+	}
+}
+
+// W15 (security): a symlink at the result-summary path must not leak.
+// Same threat model as W14, but the watcher's policy on .result_summary
+// is "optional — empty string when missing or rejected" so the happy
+// path still proceeds. The point under test is the no-leak invariant.
+func TestTickRejectsSymlinkResultSummary(t *testing.T) {
+	f := newFixture(t)
+	id := f.insertRunning("summary symlink")
+	dir := f.dirs.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const secret = "DB_PASSWORD=hunter2-do-not-leak"
+	secretPath := filepath.Join(t.TempDir(), "fake-secret.txt")
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	if err := os.Symlink(secretPath, filepath.Join(dir, ".result_summary")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".exit_code"), []byte("0\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile exit_code: %v", err)
+	}
+
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(row.ResultSummary, secret) || strings.Contains(row.ResultSummary, "DB_PASSWORD") {
+		t.Errorf("result_summary leaks symlink target contents: %q", row.ResultSummary)
+	}
+}
+
+// W16 (security): an oversized sentinel file must not be slurped into
+// memory + the audit log. 1 MiB of "0" digits would technically parse
+// to 0 (Atoi accepts leading zeros) but inflates the audit raw= field
+// without bound. Cap the read.
+func TestTickRejectsOversizedSentinel(t *testing.T) {
+	f := newFixture(t)
+	id := f.insertRunning("oversized")
+	dir := f.dirs.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	huge := strings.Repeat("A", 100*1024) // 100 KiB of garbage
+	if err := os.WriteFile(filepath.Join(dir, ".exit_code"), []byte(huge), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (oversized sentinel must mark row failed)", row.Status, store.StatusFailed)
+	}
+	if len(row.JudgmentReason) > 512 {
+		t.Errorf("judgment_reason length = %d; want bounded (got %q...)", len(row.JudgmentReason), row.JudgmentReason[:128])
+	}
+	for _, ev := range f.au.Events() {
+		if len(ev.Value) > 512 {
+			t.Errorf("audit Value length = %d; want bounded", len(ev.Value))
+		}
+	}
+}
+
+// W17 (security): an unparseable sentinel that fits under the size cap
+// but is still long (e.g. 256 chars of garbage) must be truncated in
+// the displayed reason to keep audit.log forensically useful — without
+// the cap a malicious Claude can stuff the audit trail with arbitrary
+// strings ("No silent execution" trustworthiness).
+func TestTickTruncatesUnparseableSentinelDisplay(t *testing.T) {
+	f := newFixture(t)
+	id := f.insertRunning("long garbage")
+	dir := f.dirs.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// 200 bytes of non-numeric content; under the size cap so the read
+	// succeeds, but the display must still be capped.
+	garbage := strings.Repeat("X", 200)
+	if err := os.WriteFile(filepath.Join(dir, ".exit_code"), []byte(garbage), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Fatalf("status = %q; want %q", row.Status, store.StatusFailed)
+	}
+	// The display field must not echo the entire 200-byte raw verbatim.
+	if strings.Contains(row.JudgmentReason, garbage) {
+		t.Errorf("judgment_reason embeds the entire raw sentinel without truncation: %q", row.JudgmentReason)
+	}
+}
+
 // W13: write-tmp-then-rename produces a single, complete read for the
 // watcher. Reproduces the documented `echo $? > .exit_code.tmp && mv
 // .exit_code.tmp .exit_code` flow with intermediate Tick calls so a
