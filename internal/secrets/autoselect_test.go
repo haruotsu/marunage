@@ -15,11 +15,11 @@ type fakeStore struct {
 	name string
 }
 
-func (f fakeStore) Backend() string                        { return f.name }
-func (fakeStore) Get(string) (string, bool, error)         { return "", false, nil }
-func (fakeStore) Set(string, string) error                 { return nil }
-func (fakeStore) Delete(string) error                      { return nil }
-func (fakeStore) List() ([]string, error)                  { return nil, nil }
+func (f fakeStore) Backend() string                { return f.name }
+func (fakeStore) Get(string) (string, bool, error) { return "", false, nil }
+func (fakeStore) Set(string, string) error         { return nil }
+func (fakeStore) Delete(string) error              { return nil }
+func (fakeStore) List() ([]string, error)          { return nil, nil }
 
 // availableFactory returns a Store advertising backendName.
 func availableFactory(backendName string) secrets.BackendFactory {

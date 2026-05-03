@@ -12,11 +12,11 @@
 //
 // Auto-select algorithm (cfg.Backend == "auto"):
 //
-//	1. keyring  — OS-native (macOS Keychain / Secret Service / Windows CM)
-//	2. pass     — UNIX `pass` password store (Linux headless servers)
-//	3. age      — passphrase-protected age file (no GUI, no pass)
-//	4. file     — 0600 plaintext fallback (~/.marunage/secrets/<name>.json)
-//	5. (env is intentionally NOT probed here — see below)
+//  1. keyring  — OS-native (macOS Keychain / Secret Service / Windows CM)
+//  2. pass     — UNIX `pass` password store (Linux headless servers)
+//  3. age      — passphrase-protected age file (no GUI, no pass)
+//  4. file     — 0600 plaintext fallback (~/.marunage/secrets/<name>.json)
+//  5. (env is intentionally NOT probed here — see below)
 //
 // The first backend whose probeAvailable returns nil wins. env is excluded
 // from "auto" because reading process environment is the documented opt-in
