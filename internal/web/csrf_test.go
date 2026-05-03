@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,6 +100,48 @@ func TestCSRF_PostWithMismatchingTokenIs403(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d; want 403", rec.Code)
 	}
+}
+
+// TestCSRF_CookieSecureMirrorsTLS pins the contract that the CSRF
+// cookie carries the Secure attribute exactly when the request rode
+// in over TLS — without this guard the cookie would be readable in
+// transit on any plain-HTTP --remote deployment, defeating the
+// double-submit defence under MITM. Plain-HTTP requests must NOT set
+// Secure or browsers refuse the cookie entirely (which would break
+// local dev).
+func TestCSRF_CookieSecureMirrorsTLS(t *testing.T) {
+	csrf, err := NewCSRF(testTokenSource)
+	if err != nil {
+		t.Fatalf("NewCSRF: %v", err)
+	}
+	h := csrf.Middleware(http.HandlerFunc(okHandler))
+
+	t.Run("plain HTTP does not set Secure", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		cookie := findCookie(rec.Result().Cookies(), CSRFCookieName)
+		if cookie == nil {
+			t.Fatalf("missing %q cookie", CSRFCookieName)
+		}
+		if cookie.Secure {
+			t.Errorf("Secure = true for plain-HTTP request; would break local dev")
+		}
+	})
+
+	t.Run("TLS request sets Secure", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://localhost/", nil)
+		req.TLS = &tls.ConnectionState{}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		cookie := findCookie(rec.Result().Cookies(), CSRFCookieName)
+		if cookie == nil {
+			t.Fatalf("missing %q cookie", CSRFCookieName)
+		}
+		if !cookie.Secure {
+			t.Errorf("Secure = false for TLS request; cookie can leak over a downgraded session")
+		}
+	})
 }
 
 // TestCSRF_PostAcceptsFormField mirrors the templ form helper path: a
