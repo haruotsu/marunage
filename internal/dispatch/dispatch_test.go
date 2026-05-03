@@ -419,6 +419,89 @@ func TestRunSkipsLockedRowAndContinues(t *testing.T) {
 	}
 }
 
+// E_cwd: requirement.md L687 + L774 mandates that task.CWD must match
+// one of cfg.Execution.AllowedCwdPrefixes (when the list is non-empty)
+// before dispatch. A missing prefix check would let a Discovery plugin
+// or a manual `marunage add --cwd /etc` smuggle an arbitrary directory
+// into the bypass-mode Claude session — directly contradicting the
+// security boundary the requirement promises.
+//
+// Pin three behaviours:
+//   1. CWD inside the allowlist dispatches normally.
+//   2. CWD outside the allowlist is failed before NewWorkspace.
+//   3. An empty / unset allowlist means "no whitelist" (per spec).
+func TestRunRejectsCwdOutsideAllowlist(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithAllowedCwdPrefixes([]string{"/tmp/works/", "/home/me/src/"}),
+	)
+	bad, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "outside", CWD: "/etc/passwd",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+		t.Errorf("NewWorkspace called %d times for cwd outside allowlist; want 0", got)
+	}
+	row, err := f.repo.Get(f.ctx, bad)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (cwd outside allowlist must fail before dispatch)", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, "cwd") {
+		t.Errorf("judgment_reason = %q; want it to mention the cwd policy", row.JudgmentReason)
+	}
+}
+
+func TestRunAcceptsCwdInsideAllowlist(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithAllowedCwdPrefixes([]string{"/tmp/works/", "/home/me/src/"}),
+	)
+	good, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "inside", CWD: "/tmp/works/repo-a",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, good)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (cwd inside allowlist should dispatch)", row.Status, store.StatusRunning)
+	}
+}
+
+func TestRunEmptyAllowlistPermitsAnyCwd(t *testing.T) {
+	// Default fixture has no WithAllowedCwdPrefixes; this is the spec
+	// "空配列の場合はホワイトリストを無効化（全パス許可）" path.
+	f := newDispatchFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no-allowlist", CWD: "/anywhere",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (empty allowlist should not gate dispatch)", row.Status, store.StatusRunning)
+	}
+}
+
 // D3: when dispatch fails AFTER the row already carries a triage /
 // orient judgment_reason (e.g. "phase1: markdown source bypass" set at
 // Insert time, or an EscalateToHuman reason left over from a prior

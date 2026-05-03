@@ -36,13 +36,14 @@ type SourceSkillFunc func(source string) string
 // Dispatcher ties the cmux client + store repo together with the
 // lock-key resolver and prompt builder.
 type Dispatcher struct {
-	store         Store
-	cmux          cmux.Client
-	now           func() time.Time
-	baseSkill     string
-	sourceSkill   SourceSkillFunc
-	lockKeys      map[string]string
-	claudeCommand string
+	store              Store
+	cmux               cmux.Client
+	now                func() time.Time
+	baseSkill          string
+	sourceSkill        SourceSkillFunc
+	lockKeys           map[string]string
+	claudeCommand      string
+	allowedCwdPrefixes []string
 }
 
 // Option mutates Dispatcher construction.
@@ -73,6 +74,19 @@ func WithLockKeys(m map[string]string) Option { return func(d *Dispatcher) { d.l
 // WithClaudeCommand sets the shell command cmux runs inside each new
 // workspace. Required.
 func WithClaudeCommand(s string) Option { return func(d *Dispatcher) { d.claudeCommand = s } }
+
+// WithAllowedCwdPrefixes installs the cfg.Execution.AllowedCwdPrefixes
+// allowlist. A row whose CWD does not start with any listed prefix is
+// failed before NewWorkspace, per requirement.md L687 / L774. An empty
+// or nil slice means "no whitelist" (all paths allowed) — matching the
+// spec's "空配列の場合はホワイトリストを無効化（全パス許可）".
+//
+// Prefix matching is byte-literal strings.HasPrefix; the config layer
+// is responsible for any path normalisation (e.g. ~ expansion) before
+// the slice reaches the dispatcher.
+func WithAllowedCwdPrefixes(prefixes []string) Option {
+	return func(d *Dispatcher) { d.allowedCwdPrefixes = prefixes }
+}
 
 // ErrInvalidConfig signals a missing required Option at construction.
 var ErrInvalidConfig = errors.New("dispatch: missing required option")
@@ -222,6 +236,16 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 // A non-nil error is reserved for store-level failures the dispatcher
 // cannot recover from; per-row failures are recorded onto the row.
 func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, error) {
+	// Reject CWD outside the configured allowlist before doing any
+	// work. requirement.md L687 promises this gate runs "dispatch 前",
+	// so we put it ahead of AcquireLock — no point burning a lock_key
+	// on a row we are about to fail anyway.
+	if !cwdAllowed(task.CWD, d.allowedCwdPrefixes) {
+		d.markFailed(ctx, task.ID,
+			fmt.Sprintf("dispatch: cwd %q not in allowed_cwd_prefixes", task.CWD))
+		return false, nil
+	}
+
 	lockKey, err := ResolveLockKey(d.lockKeys, task.Notes)
 	if err != nil {
 		// Malformed notes is a Discovery-plugin bug; recording the row as
@@ -301,6 +325,20 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		return true, nil
 	}
 	return true, nil
+}
+
+// cwdAllowed returns true when cwd starts with any of prefixes, or
+// when prefixes is empty (the spec's "all paths allowed" mode).
+func cwdAllowed(cwd string, prefixes []string) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(cwd, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // workspaceName renders the cmux dashboard label per requirement.md

@@ -78,6 +78,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithBaseSkill(baseExecutionSkill),
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
+		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
 	)
 	if err != nil {
 		_ = db.Close()
