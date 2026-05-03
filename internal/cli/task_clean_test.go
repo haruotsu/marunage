@@ -40,6 +40,10 @@ func installFakeWorkspaceLister(t *testing.T, alive ...string) *fakeWorkspaceLis
 
 // 11. No flags = dry-run = no DB mutations. The orphan reference must
 // stay on the row so a subsequent --apply pass can still clean it.
+// The verb assertion ("would clear" + "pass --apply") is what
+// distinguishes dry-run from --apply in the prose; pinning both the
+// state (WS unchanged) and the prose (verb hint) catches a flipped
+// `apply` boolean as well as a missing SetWorkspace call.
 func TestTaskClean_DryRunIsDefault(t *testing.T) {
 	repo := installFakeRepo(t)
 	installFakeWorkspaceLister(t)
@@ -52,6 +56,13 @@ func TestTaskClean_DryRunIsDefault(t *testing.T) {
 	}
 	if got := repo.rows[1].WS; got != "workspace:9" {
 		t.Errorf("dry-run mutated WS: got %q; want %q", got, "workspace:9")
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "would clear") {
+		t.Errorf("dry-run output should pin the dry-run verb 'would clear'; got %q", out)
+	}
+	if !strings.Contains(out, "--apply") {
+		t.Errorf("dry-run output should hint at --apply; got %q", out)
 	}
 }
 
@@ -251,9 +262,10 @@ func TestTaskClean_PropagatesRepoErrors(t *testing.T) {
 	}
 }
 
-// 19. cmux lister errors propagate. Pinning this keeps a future "swallow
-// lister failures and treat all rows as alive" shortcut from silently
-// regressing the orphan detection.
+// 19. cmux lister errors propagate. Pinning the wrap prefix and the
+// underlying message keeps a future "swallow lister failures and treat
+// all rows as alive" shortcut from silently regressing the orphan
+// detection — and keeps the operator-facing diagnostic intact.
 func TestTaskClean_PropagatesWorkspaceListerErrors(t *testing.T) {
 	repo := installFakeRepo(t)
 	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:1"}
@@ -266,10 +278,38 @@ func TestTaskClean_PropagatesWorkspaceListerErrors(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "list workspaces") {
+		t.Errorf("stderr should pin the 'list workspaces' wrap; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cmux down") {
+		t.Errorf("stderr should surface the underlying error; got %q", stderr.String())
+	}
+}
+
+// 19b. If the lister factory itself fails (e.g. config malformed) the
+// failure must surface with the "workspace lister:" wrap so the
+// operator distinguishes a setup error from a runtime cmux failure.
+func TestTaskClean_PropagatesWorkspaceListerFactoryError(t *testing.T) {
+	installFakeRepo(t)
+	withWorkspaceListerFactory(t, func(_ context.Context, _ string) (workspaceLister, error) {
+		return nil, errors.New("bad config")
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "workspace lister") {
+		t.Errorf("stderr should pin the 'workspace lister' wrap; got %q", stderr.String())
+	}
 }
 
 // 20. --json emits a structured report so CI / scripts can parse without
-// touching the human prose.
+// touching the human prose. Pinning each value (dry_run=true,
+// applied=0, orphans[0].id=3, orphans[0].ws=workspace:8) catches a
+// flipped DryRun symbol or a swapped (id, ws) field assignment in the
+// report builder.
 func TestTaskClean_JSONFlagOutputsStructuredReport(t *testing.T) {
 	repo := installFakeRepo(t)
 	installFakeWorkspaceLister(t)
@@ -280,15 +320,55 @@ func TestTaskClean_JSONFlagOutputsStructuredReport(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("clean --json exit=%d; stderr=%q", code, stderr.String())
 	}
-	var got map[string]any
+	var got struct {
+		Orphans []struct {
+			ID int64  `json:"id"`
+			WS string `json:"ws"`
+		} `json:"orphans"`
+		Applied int  `json:"applied"`
+		DryRun  bool `json:"dry_run"`
+	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, stdout.String())
 	}
-	if _, ok := got["orphans"]; !ok {
-		t.Errorf("JSON should contain 'orphans' key; got %+v", got)
+	if !got.DryRun {
+		t.Errorf("dry_run = %v; want true (no --apply was passed)", got.DryRun)
 	}
-	if _, ok := got["applied"]; !ok {
-		t.Errorf("JSON should contain 'applied' key; got %+v", got)
+	if got.Applied != 0 {
+		t.Errorf("applied = %d; want 0 in dry-run", got.Applied)
+	}
+	if len(got.Orphans) != 1 {
+		t.Fatalf("orphans len = %d; want 1", len(got.Orphans))
+	}
+	if got.Orphans[0].ID != 3 || got.Orphans[0].WS != "workspace:8" {
+		t.Errorf("orphans[0] = %+v; want {id:3 ws:workspace:8}", got.Orphans[0])
+	}
+}
+
+// 20b. --json --apply flips dry_run to false and surfaces the applied
+// count. Same pinning rationale as 20: keep the symbol stable.
+func TestTaskClean_JSONApplyReportsDryRunFalse(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[5] = store.Task{ID: 5, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:5"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean --apply --json exit=%d; stderr=%q", code, stderr.String())
+	}
+	var got struct {
+		Applied int  `json:"applied"`
+		DryRun  bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout.String())
+	}
+	if got.DryRun {
+		t.Errorf("dry_run = %v; want false under --apply", got.DryRun)
+	}
+	if got.Applied != 1 {
+		t.Errorf("applied = %d; want 1", got.Applied)
 	}
 }
 
