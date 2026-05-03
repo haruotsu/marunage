@@ -26,7 +26,7 @@ var requiredTopLevelSubcommands = []string{
 // done/fail/rm/promote/reopen in PR-21, ...) they leave this list.
 var leafStubSubcommands = []string{
 	"init", "setup",
-	"discover", "run-all", "status", "open", "notify",
+	"discover", "run-all", "open", "notify",
 	"loop", "web", "review",
 }
 
