@@ -60,15 +60,22 @@ type DiscoveryGitHub struct {
 }
 
 type ExecutionConfig struct {
-	PermissionMode      string            `toml:"permission_mode"`
-	ClaudeCommand       string            `toml:"claude_command"`
-	StartupTimeout      int               `toml:"startup_timeout"`
-	PromptSkill         string            `toml:"prompt_skill"`
-	AllowedCwdPrefixes  []string          `toml:"allowed_cwd_prefixes"`
-	AutoAcceptTools     []string          `toml:"auto_accept_tools"`
-	OnUnknownPermission string            `toml:"on_unknown_permission"`
-	HumanWaitTimeout    string            `toml:"human_wait_timeout"`
-	LockKeys            map[string]string `toml:"lock_keys"`
+	PermissionMode      string   `toml:"permission_mode"`
+	ClaudeCommand       string   `toml:"claude_command"`
+	StartupTimeout      int      `toml:"startup_timeout"`
+	PromptSkill         string   `toml:"prompt_skill"`
+	AllowedCwdPrefixes  []string `toml:"allowed_cwd_prefixes"`
+	AutoAcceptTools     []string `toml:"auto_accept_tools"`
+	OnUnknownPermission string   `toml:"on_unknown_permission"`
+	HumanWaitTimeout    string   `toml:"human_wait_timeout"`
+	// ReaperStuckThreshold caps how long a row may stay status=running
+	// before PR-44 reaper appends a "stuck running over <threshold>"
+	// warning to audit.log + judgment_reason. Stays a Go duration string
+	// (parsed via time.ParseDuration) for parity with HumanWaitTimeout
+	// and so config.toml stays grep-able. Default "24h" tracks
+	// docs/requirement.md PR-44 ("started_at + 24h 超の running を警告").
+	ReaperStuckThreshold string            `toml:"reaper_stuck_threshold"`
+	LockKeys             map[string]string `toml:"lock_keys"`
 }
 
 type ReflectionConfig struct {
@@ -154,8 +161,9 @@ func Default() Config {
 				"Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
 				"Bash(ls:*)", "Bash(cat:*)",
 			},
-			OnUnknownPermission: "escalate",
-			HumanWaitTimeout:    "30m",
+			OnUnknownPermission:  "escalate",
+			HumanWaitTimeout:     "30m",
+			ReaperStuckThreshold: "24h",
 			LockKeys: map[string]string{
 				"^repo:.*":  "git-repo",
 				"^slack:.*": "slack-channel",
@@ -225,6 +233,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := time.ParseDuration(c.Execution.HumanWaitTimeout); err != nil {
 		return fmt.Errorf("execution.human_wait_timeout: %w", err)
+	}
+	if _, err := time.ParseDuration(c.Execution.ReaperStuckThreshold); err != nil {
+		return fmt.Errorf("execution.reaper_stuck_threshold: %w", err)
 	}
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
