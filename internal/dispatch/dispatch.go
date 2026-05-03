@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -115,6 +116,18 @@ func validPermissionPolicy(p string) bool {
 // the section cleanly.
 type SourceSkillFunc func(source string) string
 
+// WorkspaceDirs resolves the per-task on-disk control directory marunage
+// owns (typically ~/.marunage/workspaces/<id>). Used by the dispatcher
+// to mkdir the dir before NewWorkspace and to embed the sentinel-write
+// path in the prompt. Production wires the same concrete implementation
+// the PR-43 completion watcher reads from, so the two layers cannot
+// disagree on the path. The interface intentionally mirrors
+// completion.WorkspaceDirs (same shape, same method) without importing
+// it, to keep the dispatch -> completion dependency direction clean.
+type WorkspaceDirs interface {
+	Dir(taskID int64) string
+}
+
 // Dispatcher ties the cmux client + store repo together with the
 // lock-key resolver and prompt builder.
 type Dispatcher struct {
@@ -127,6 +140,7 @@ type Dispatcher struct {
 	claudeCommand       string
 	allowedCwdPrefixes  []string
 	auditor             config.Auditor
+	workspaceDirs       WorkspaceDirs
 	matcher             PermissionMatcher
 	onUnknownPermission string
 	permissionMode      string
@@ -171,31 +185,31 @@ func WithAuditor(a config.Auditor) Option {
 	return func(d *Dispatcher) { d.auditor = a }
 }
 
+// WithWorkspaceDirs installs the per-task control-directory provider.
+// When set, the dispatcher mkdirs Dir(task.ID) before NewWorkspace and
+// passes the same path into BuildPrompt so the dispatched Claude
+// session writes its sentinel into the dir the PR-43 completion watcher
+// is polling.
+func WithWorkspaceDirs(d WorkspaceDirs) Option {
+	return func(disp *Dispatcher) { disp.workspaceDirs = d }
+}
+
 // WithPermissionMatcher installs the auto-accept allowlist resolver.
 // Optional; when nil, HandlePermissionRequest returns PermissionAsk for
-// every prompt (safe default — never silently allow). Production
-// callers wire `permission.New(cfg.Execution.AutoAcceptTools)`.
+// every prompt (safe default — never silently allow).
 func WithPermissionMatcher(m PermissionMatcher) Option {
 	return func(d *Dispatcher) { d.matcher = m }
 }
 
 // WithOnUnknownPermission selects the policy applied when the matcher
-// denies a request. Accepts the same strings config.toml's
-// execution.on_unknown_permission accepts: "escalate", "fail",
-// "retry". Empty / unset is treated as PermissionAsk (the dispatcher
-// abstains and the caller re-prompts the human). New() returns
-// ErrInvalidConfig for any other value.
+// denies a request. Accepts "escalate" / "fail" / "retry"; empty
+// is treated as PermissionAsk.
 func WithOnUnknownPermission(p string) Option {
 	return func(d *Dispatcher) { d.onUnknownPermission = p }
 }
 
-// WithPermissionMode declares the cfg.Execution.PermissionMode the
-// dispatcher will run under. New() uses it to enforce the safety
-// invariant "non-bypass mode requires a PermissionMatcher": without a
-// matcher Claude's permission prompts would either hang or be silently
-// denied, leaving zombie cmux workspaces. Empty (default) bypasses
-// the check so existing tests / library callers that have not opted in
-// keep building.
+// WithPermissionMode declares the cfg.Execution.PermissionMode. New()
+// uses it to enforce "non-bypass mode requires a PermissionMatcher".
 func WithPermissionMode(mode string) Option {
 	return func(d *Dispatcher) { d.permissionMode = mode }
 }
@@ -502,12 +516,36 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		}
 	}
 
+	// Materialise the per-task control directory BEFORE the
+	// concurrency claim so the prompt's sentinel-write instruction has a
+	// real target. Failure here leaves the row pending; release any
+	// lock_key so siblings are not blocked. No claim written yet, so a
+	// retry next Run is safe.
+	workspaceDir := ""
+	if d.workspaceDirs != nil {
+		workspaceDir = d.workspaceDirs.Dir(task.ID)
+		if err := os.MkdirAll(workspaceDir, 0o700); err != nil {
+			d.recordAuditFail(task.ID,
+				fmt.Sprintf("dispatch: MkdirAll workspace dir failed: %v", err))
+			if lockKey != "" {
+				_ = d.store.ReleaseLock(ctx, task.ID)
+			}
+			return false, nil
+		}
+		if err := os.Chmod(workspaceDir, 0o700); err != nil {
+			d.recordAuditFail(task.ID,
+				fmt.Sprintf("dispatch: Chmod workspace dir failed: %v", err))
+			if lockKey != "" {
+				_ = d.store.ReleaseLock(ctx, task.ID)
+			}
+			return false, nil
+		}
+	}
+
 	// Reserve the row with a sentinel BEFORE NewWorkspace so a concurrent
 	// dispatcher cannot also burn a cmux workspace on the same row. The
-	// claim is atomic at the SQLite level (UPDATE ... WHERE status=pending
-	// AND ws IS NULL); the loser observes claimed=false and abandons.
-	// The sentinel is replaced by the real ws ID once NewWorkspace
-	// returns.
+	// claim is atomic at the SQLite level; the loser observes
+	// claimed=false and abandons.
 	claimed, err := d.store.ClaimWorkspace(ctx, task.ID, dispatchClaimSentinel)
 	if err != nil {
 		if lockKey != "" {
@@ -516,8 +554,6 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		return false, fmt.Errorf("dispatch: ClaimWorkspace id=%d: %w", task.ID, err)
 	}
 	if !claimed {
-		// Lost the race to another dispatcher. Release any lock_key we
-		// hold so a sibling row sharing the same key is not blocked.
 		if lockKey != "" {
 			_ = d.store.ReleaseLock(ctx, task.ID)
 		}
@@ -530,9 +566,10 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		Name:    workspaceName(task),
 	})
 	if err != nil {
-		// Clear the sentinel so the row is safely retryable on the next
-		// Run. Release any lock_key we acquired so a sibling row
-		// sharing the same resolved key is not blocked indefinitely.
+		// Clear the sentinel + audit so the row is retryable, and
+		// release any lock_key so siblings are not blocked.
+		d.recordAuditFail(task.ID,
+			fmt.Sprintf("dispatch: NewWorkspace failed: %v", err))
 		_ = d.store.SetWorkspace(ctx, task.ID, "")
 		if lockKey != "" {
 			_ = d.store.ReleaseLock(ctx, task.ID)
@@ -567,6 +604,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		Base:           d.baseSkill,
 		SourceSpecific: d.sourceSkill(task.Source),
 		Task:           task,
+		WorkspaceDir:   workspaceDir,
 	})
 	if err := d.cmux.Send(ctx, ws, prompt); err != nil {
 		d.markFailed(ctx, task.ID,
