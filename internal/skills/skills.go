@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/config"
 )
 
 // ErrUnsafePath is the typed sentinel `Install` returns when the
@@ -86,6 +88,13 @@ type InstallOptions struct {
 	// back to os.Stdin. Tests pass a strings.Reader so they do not
 	// need an interactive terminal.
 	In io.Reader
+
+	// Auditor receives one config.AuditEvent per skill that was
+	// installed, updated, or skipped. nil falls back to NopAuditor.
+	// The "No silent execution" invariant from docs/requirement.md
+	// requires Skills install to leave an audit trace just like
+	// init.create / init.skip / config.set do.
+	Auditor config.Auditor
 }
 
 // Install applies opts and returns the per-skill outcomes.
@@ -108,6 +117,10 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	in := opts.In
 	if in == nil {
 		in = os.Stdin
+	}
+	auditor := opts.Auditor
+	if auditor == nil {
+		auditor = config.NopAuditor{}
 	}
 
 	// Discover the skills the source carries. Sorting the list keeps the
@@ -183,8 +196,10 @@ func Install(opts InstallOptions) (InstallResult, error) {
 				return res, err
 			}
 			res.Installed = append(res.Installed, report)
+			auditor.Record(skillEvent("setup.skills.install", name, dstPath))
 		case bytes.Equal(existing, srcBody):
 			res.Skipped = append(res.Skipped, report)
+			auditor.Record(skillEvent("setup.skills.skip", name, dstPath))
 		case opts.Merge:
 			overwrite, err := promptMerge(out, in, name, existing, srcBody)
 			if err != nil {
@@ -192,19 +207,23 @@ func Install(opts InstallOptions) (InstallResult, error) {
 			}
 			if !overwrite {
 				res.Skipped = append(res.Skipped, report)
+				auditor.Record(skillEvent("setup.skills.skip", name, dstPath))
 				continue
 			}
 			if err := writeSkill(dstPath, srcBody); err != nil {
 				return res, err
 			}
 			res.Updated = append(res.Updated, report)
+			auditor.Record(skillEvent("setup.skills.update", name, dstPath))
 		case !opts.Force:
 			res.Skipped = append(res.Skipped, report)
+			auditor.Record(skillEvent("setup.skills.skip", name, dstPath))
 		default:
 			if err := writeSkill(dstPath, srcBody); err != nil {
 				return res, err
 			}
 			res.Updated = append(res.Updated, report)
+			auditor.Record(skillEvent("setup.skills.update", name, dstPath))
 		}
 	}
 
@@ -215,6 +234,13 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	}
 
 	return res, nil
+}
+
+// skillEvent builds the per-skill AuditEvent the installer records for
+// install / update / skip. Centralising the shape here keeps the audit
+// vocabulary uniform across the three classifications.
+func skillEvent(action, name, dstPath string) config.AuditEvent {
+	return config.AuditEvent{Action: action, Name: name, Path: dstPath}
 }
 
 // listSkillDirs returns every top-level entry under root that looks like

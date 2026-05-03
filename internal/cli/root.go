@@ -68,7 +68,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newConfigCmd(&configPath))
 	root.AddCommand(newDoctorCmd(&configPath))
 	root.AddCommand(newInitCmd(&configPath))
-	root.AddCommand(newSetupCmd())
+	root.AddCommand(newSetupCmd(&configPath))
 	root.AddCommand(newDispatchCmd(&configPath))
 	root.AddCommand(newTaskAddCmd(&configPath))
 	root.AddCommand(newTaskListCmd(&configPath))
