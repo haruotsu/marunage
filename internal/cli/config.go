@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/logging"
 )
 
 // defaultConfigPath returns ~/.marunage/config.toml, with a graceful fallback
@@ -22,9 +23,17 @@ func defaultConfigPath() string {
 	return filepath.Join(home, ".marunage", "config.toml")
 }
 
+// auditLogPathFor derives the audit log location from the active config
+// path so `--config` overrides flow through to the audit trail. Mirroring
+// the documented ~/.marunage/logs/ layout next to config.toml keeps both
+// files inside the same per-user data directory.
+func auditLogPathFor(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "logs", "audit.log")
+}
+
 // newConfigCmd builds the `marunage config` subtree. get/set are wired to
 // the internal/config primitives; edit/wizard remain stubs (PR-30+ will
-// flesh them out alongside the audit log writer in PR-04).
+// flesh them out).
 func newConfigCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
@@ -61,7 +70,24 @@ func newConfigCmd(configPath *string) *cobra.Command {
 			if err := config.Set(&c, args[0], args[1]); err != nil {
 				return err
 			}
-			if err := config.Save(*configPath, c, nil); err != nil {
+
+			// Open the audit writer only after Set succeeds so a typo'd
+			// key never creates an empty logs/ tree on disk and never
+			// emits a misleading config.set line.
+			auditPath := auditLogPathFor(*configPath)
+			auditor, err := logging.NewAuditLog(auditPath)
+			if err != nil {
+				return fmt.Errorf("open audit log %s: %w", auditPath, err)
+			}
+			defer auditor.Close()
+
+			auditor.Record(config.AuditEvent{
+				Action: "config.set",
+				Path:   *configPath,
+				Key:    args[0],
+				Value:  args[1],
+			})
+			if err := config.Save(*configPath, c, auditor); err != nil {
 				return fmt.Errorf("save %s: %w", *configPath, err)
 			}
 			return nil
