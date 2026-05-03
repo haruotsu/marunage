@@ -230,10 +230,11 @@ func (r *TaskRepo) Insert(ctx context.Context, t Task) (int64, error) {
 //
 // MAINTAINER NOTE: column changes touch THREE places that must all move
 // together:
-//   1. migrations/0001_init.sql (or a new migration adding the column)
-//   2. this constant (which scanTask iterates positionally)
-//   3. Insert's INSERT statement column list + the matching VALUES
-//      placeholder count + ExecContext arg list
+//  1. migrations/0001_init.sql (or a new migration adding the column)
+//  2. this constant (which scanTask iterates positionally)
+//  3. Insert's INSERT statement column list + the matching VALUES
+//     placeholder count + ExecContext arg list
+//
 // TestTaskRepoInsertAndGetAllFields catches a mismatch by round-tripping
 // every column; this comment is the diff-reviewer-facing reminder.
 const taskColumns = `id, source, external_id, external_url, title, body, notes,
@@ -541,4 +542,3 @@ func scanTask(row rowScanner) (Task, error) {
 	}
 	return t, nil
 }
-
