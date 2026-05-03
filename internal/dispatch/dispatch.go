@@ -389,13 +389,18 @@ func cwdAllowed(cwd string, prefixes []string) bool {
 // workspaceName renders the cmux dashboard label per requirement.md
 // step 2.a ("--name '#<id> <title短縮>'"). Long titles are truncated so
 // the cmux dashboard stays readable on a typical 80-column terminal.
+//
+// Trim is rune-based, not byte-based: a Japanese / emoji title sliced at
+// `title[:titleMaxLen]` would cut mid-rune and emit invalid UTF-8 to the
+// cmux label (and to anything downstream that re-parses the name).
 const titleMaxLen = 40
 
 func workspaceName(t store.Task) string {
-	title := t.Title
-	if len(title) > titleMaxLen {
-		title = title[:titleMaxLen]
+	runes := []rune(t.Title)
+	if len(runes) > titleMaxLen {
+		runes = runes[:titleMaxLen]
 	}
+	title := string(runes)
 	// Strip embedded newlines so the cmux dashboard line does not break.
 	title = strings.ReplaceAll(title, "\n", " ")
 	title = strings.ReplaceAll(title, "\r", " ")
