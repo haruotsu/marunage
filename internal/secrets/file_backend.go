@@ -40,7 +40,20 @@ func newFileBackend(cfg Config) (Store, error) {
 		}
 		home = h
 	}
-	dir := filepath.Join(home, ".marunage", "secrets")
+	// Tighten ~/.marunage itself before descending into secrets/. A
+	// pre-existing ~/.marunage at 0755 (created by `marunage init` with a
+	// wide umask, for example) would otherwise leave the umbrella dir
+	// world-readable even though tasks.db and secrets/<name>.json are
+	// individually 0600. Mirrors the same parent-tighten pattern that
+	// internal/store/store.go applies.
+	marunageDir := filepath.Join(home, ".marunage")
+	if err := os.MkdirAll(marunageDir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", marunageDir, err)
+	}
+	if err := os.Chmod(marunageDir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod %s: %w", marunageDir, err)
+	}
+	dir := filepath.Join(marunageDir, "secrets")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
