@@ -1,6 +1,7 @@
 package secrets_test
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -126,6 +127,43 @@ func TestAgeBackendListAlphaSorted(t *testing.T) {
 		if got[i] != name {
 			t.Errorf("List[%d] = %q; want %q (full got = %v)", i, got[i], name, got)
 		}
+	}
+}
+
+// TestAgeBackendWrongPassphraseIsTypedError pins the corruption-vs-
+// wrong-passphrase distinction: when an existing vault cannot be
+// decrypted with the supplied passphrase, callers must get
+// ErrPassphraseIncorrect (so the CLI can re-prompt) rather than a raw
+// age error (which would look like file corruption to the user).
+func TestAgeBackendWrongPassphraseIsTypedError(t *testing.T) {
+	home := t.TempDir()
+
+	// Seed the vault with passphrase A.
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "passphrase-A")
+	secrets.ResetPassphraseCacheForTest()
+	first, err := secrets.Open(secrets.Config{Backend: "age", HomeDir: home})
+	if err != nil {
+		t.Fatalf("Open with passphrase A: %v", err)
+	}
+	if err := first.Set("gmail", "tok"); err != nil {
+		t.Fatalf("Set with passphrase A: %v", err)
+	}
+
+	// Re-Open with passphrase B, clearing the cache so the new env
+	// value is what gets used. Get must return ErrPassphraseIncorrect,
+	// not a generic "age decrypt" error string.
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "passphrase-B")
+	secrets.ResetPassphraseCacheForTest()
+	second, err := secrets.Open(secrets.Config{Backend: "age", HomeDir: home})
+	if err != nil {
+		t.Fatalf("Open with passphrase B: %v", err)
+	}
+	_, _, err = second.Get("gmail")
+	if err == nil {
+		t.Fatal("Get with wrong passphrase = nil; want ErrPassphraseIncorrect")
+	}
+	if !errors.Is(err, secrets.ErrPassphraseIncorrect) {
+		t.Errorf("Get error = %v; want errors.Is(..., ErrPassphraseIncorrect)", err)
 	}
 }
 
