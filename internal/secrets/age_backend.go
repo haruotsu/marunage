@@ -285,12 +285,17 @@ func (a *ageBackend) loadVault(passphrase string) (map[string]string, error) {
 	}
 	r, err := age.Decrypt(bytes.NewReader(body), identity)
 	if err != nil {
-		// age returns a generic "no identity matched any of the
-		// recipients" when the passphrase is wrong; surface the typed
-		// sentinel so callers can distinguish "needs another prompt"
-		// from "I/O error" without string-matching upstream messages.
-		if strings.Contains(err.Error(), "no identity matched") {
-			return nil, ErrPassphraseIncorrect
+		// age v1 surfaces a wrong passphrase as "identity did not
+		// match any of the recipients" (sometimes nested as "incorrect
+		// passphrase"). String-matching the upstream error is brittle
+		// but unavoidable: age does not export a typed sentinel for
+		// this case. Surface ErrPassphraseIncorrect so callers can
+		// branch with errors.Is rather than re-parsing the message.
+		msg := err.Error()
+		if strings.Contains(msg, "incorrect passphrase") ||
+			strings.Contains(msg, "no identity matched") ||
+			strings.Contains(msg, "identity did not match") {
+			return nil, fmt.Errorf("%w: %v", ErrPassphraseIncorrect, err)
 		}
 		return nil, fmt.Errorf("age decrypt: %w", err)
 	}
