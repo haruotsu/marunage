@@ -538,17 +538,17 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 	return nil
 }
 
-// judgmentReasonSeparator is the canonical join token between the prior
+// JudgmentReasonSeparator is the canonical join token between the prior
 // judgment_reason and any newly appended note. Centralised so the SQL
-// CASE expression in AppendJudgmentReason and the dispatcher's in-Go
-// concatenation in dispatch.markFailed cannot drift apart — a future
-// `marunage review` parser that splits on this token reads from a
-// single source of truth.
-const judgmentReasonSeparator = "; "
+// CASE expression in AppendJudgmentReason, the dispatcher's in-Go
+// concatenation in dispatch.markFailed, and the reaper's idempotency
+// segment-split cannot drift apart — a future `marunage review` parser
+// that splits on this token reads from a single source of truth.
+const JudgmentReasonSeparator = "; "
 
 // AppendJudgmentReason concatenates suffix onto judgment_reason for the
 // given row. Empty existing reason → suffix becomes the whole value;
-// non-empty existing reason → joined with judgmentReasonSeparator so
+// non-empty existing reason → joined with JudgmentReasonSeparator so
 // the post-mortem in `marunage review` still sees the prior triage
 // trail. Status is NOT touched: the helper exists for the PR-44 reaper
 // "stuck warn" path, which records a heads-up without auto-failing the
@@ -574,7 +574,7 @@ func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix st
 		       ELSE judgment_reason || ? || ?
 		   END
 		 WHERE id = ?`
-	res, err := r.db.ExecContext(ctx, q, suffix, judgmentReasonSeparator, suffix, id)
+	res, err := r.db.ExecContext(ctx, q, suffix, JudgmentReasonSeparator, suffix, id)
 	if err != nil {
 		return fmt.Errorf("append judgment_reason: %w", err)
 	}
@@ -596,7 +596,7 @@ func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix st
 // running cannot be silently overwritten by reaper's stale snapshot.
 //
 // reason is appended to any existing judgment_reason (joined with
-// judgmentReasonSeparator) rather than overwriting it. requirement.md
+// JudgmentReasonSeparator) rather than overwriting it. requirement.md
 // L567 reserves judgment_reason writes outside of EscalateToHuman to
 // the "append-only" rule so the prior triage trail `marunage review`
 // reads for post-mortem survives reaper's failed transition. The
@@ -629,7 +629,7 @@ func (r *TaskRepo) MarkFailedFromRunningWithReason(ctx context.Context, id int64
 		   AND status = ?`
 	res, err := r.db.ExecContext(ctx, q,
 		StatusFailed,
-		reason, judgmentReasonSeparator, reason,
+		reason, JudgmentReasonSeparator, reason,
 		id, StatusRunning)
 	if err != nil {
 		return fmt.Errorf("mark failed from running: %w", err)

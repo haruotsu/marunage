@@ -264,7 +264,7 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 	}
 	reason := dispatchReason
 	if cur.JudgmentReason != "" {
-		reason = cur.JudgmentReason + "; " + dispatchReason
+		reason = cur.JudgmentReason + store.JudgmentReasonSeparator + dispatchReason
 	}
 	_ = d.store.MarkFailedWithReason(ctx, id, reason)
 	d.recordAuditFail(id, dispatchReason)
