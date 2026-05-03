@@ -72,6 +72,30 @@ func TestRedactMasksKnownTokens(t *testing.T) {
 			secret: "eyJhbGciOiJIUzI1NiJ9.payload.sig",
 			keep:   "Authorization: Bearer",
 		},
+		{
+			// HTTP Basic auth: the base64 blob carries user:pass and must
+			// be masked. The Basic keyword survives so a reviewer still
+			// sees the failure originated at an Authorization header.
+			name:   "basic-auth-header",
+			in:     "Authorization: Basic dXNlcjpzZWNyZXRwYXNzd29yZDEyMw==",
+			secret: "dXNlcjpzZWNyZXRwYXNzd29yZDEyMw==",
+			keep:   "Authorization: Basic",
+		},
+		{
+			// Tokens / passwords smuggled through a URL query string are a
+			// classic leak path. Mask the value while keeping the key
+			// label so a reviewer can still grep the failure context.
+			name:   "url-password-query",
+			in:     "GET https://api.example.com/v1/x?password=hunter2supersecretvalue&debug=1 -> 401",
+			secret: "hunter2supersecretvalue",
+			keep:   "GET https://api.example.com",
+		},
+		{
+			name:   "url-api-key-query",
+			in:     "GET https://api.example.com/?api_key=abcdef0123456789xyz -> 200",
+			secret: "abcdef0123456789xyz",
+			keep:   "GET https://api.example.com",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
