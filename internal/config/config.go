@@ -104,6 +104,22 @@ var (
 	allowedLogLevels            = []string{"debug", "info", "warn", "error"}
 )
 
+// IsValidOnUnknownPermission reports whether s is a recognised value
+// for execution.on_unknown_permission. Exported so downstream packages
+// (notably internal/dispatch) can reuse the same enum without
+// duplicating the list — a divergence here would let a typo slip
+// through Validate but be rejected later, or vice versa.
+func IsValidOnUnknownPermission(s string) bool {
+	return contains(allowedOnUnknownPermissions, s)
+}
+
+// IsValidPermissionMode reports whether s is a recognised value for
+// execution.permission_mode. Same single-source-of-truth rationale as
+// IsValidOnUnknownPermission above.
+func IsValidPermissionMode(s string) bool {
+	return contains(allowedPermissionModes, s)
+}
+
 // Default returns the configuration shipped to a freshly initialised user.
 // Values are taken from the example block in docs/requirement.md so the
 // documentation and the binary cannot drift apart.

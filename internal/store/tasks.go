@@ -98,6 +98,10 @@ var (
 	// ErrDeadlineRequired guards bulk expiry helpers from a zero time.Time
 	// silently expiring nothing.
 	ErrDeadlineRequired = errors.New("store: deadline is required")
+	// ErrWSRequired is returned by ClaimWorkspace when the caller passed
+	// an empty ws — silently NULL-ing the column would defeat the
+	// atomic-claim semantics callers (PR-42b dispatcher) depend on.
+	ErrWSRequired = errors.New("store: ws is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -474,6 +478,12 @@ func (r *TaskRepo) ExpireWaitingHuman(ctx context.Context, deadline time.Time) (
 // on started_at; an unstamped row would never trip the timeout.
 var ErrStartedAtRequired = errors.New("store: started_at is required")
 
+// ErrCompletedAtRequired guards SetCompletedAt / MarkDoneWithSummary
+// against a zero time.Time silently leaving completed_at NULL. PR-43's
+// completion watcher reads back completed_at to render durations; an
+// unstamped row would surface as "still running" on every dashboard.
+var ErrCompletedAtRequired = errors.New("store: completed_at is required")
+
 // SetStartedAt stamps started_at on a row. PR-42 dispatch calls this when
 // claiming pending -> running so the reaper (PR-44) can later detect a
 // row that has been running past the 24h threshold. The package godoc on
@@ -497,6 +507,69 @@ func (r *TaskRepo) SetStartedAt(ctx context.Context, id int64, t time.Time) erro
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("set started_at rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetCompletedAt stamps completed_at on a row. PR-43's completion
+// watcher calls this on the failed branch (non-zero exit_code / parse
+// failure) so the row carries an end-time even when MarkFailedWithReason
+// was already issued. Mirrors SetStartedAt: zero time.Time fails loud
+// with ErrCompletedAtRequired, and a missing id surfaces ErrNotFound
+// rather than a silent no-op.
+func (r *TaskRepo) SetCompletedAt(ctx context.Context, id int64, t time.Time) error {
+	if t.IsZero() {
+		return ErrCompletedAtRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET completed_at = ? WHERE id = ?", formatTime(t.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("set completed_at: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set completed_at rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkDoneWithSummary atomically flips a row to done and records the
+// final summary plus completion timestamp. PR-43's completion watcher
+// uses this on the happy path (sentinel exit_code == 0): a single
+// UPDATE means a concurrent reader cannot observe a row in done with
+// completed_at IS NULL, which would mis-classify it as "still running"
+// in the dashboard.
+//
+// summary may be empty — Claude is permitted to finish without a final
+// summary, and the watcher still wants the done transition to land.
+// completedAt zero rejects with ErrCompletedAtRequired so a forgotten
+// clock injection fails loud rather than writing NULL on the wire (see
+// formatTime). Missing id surfaces ErrNotFound the same way SetStartedAt
+// / SetWorkspace do.
+//
+// There is intentionally no source-state guard: the watcher's only call
+// site is "row was running and the sentinel just appeared", so the
+// matrix lives in TransitionStatus and this helper is the unguarded
+// escape hatch (mirroring MarkFailedWithReason).
+func (r *TaskRepo) MarkDoneWithSummary(ctx context.Context, id int64, summary string, completedAt time.Time) error {
+	if completedAt.IsZero() {
+		return ErrCompletedAtRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ?, result_summary = ?, completed_at = ? WHERE id = ?",
+		StatusDone, nullable(summary), formatTime(completedAt.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("mark done with summary: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark done with summary rows: %w", err)
 	}
 	if n == 0 {
 		return ErrNotFound
@@ -539,30 +612,11 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 }
 
 // JudgmentReasonSeparator is the canonical join token between the prior
-// judgment_reason and any newly appended note. Centralised so the SQL
-// CASE expression in AppendJudgmentReason, the dispatcher's in-Go
-// concatenation in dispatch.markFailed, and the reaper's idempotency
-// segment-split cannot drift apart — a future `marunage review` parser
-// that splits on this token reads from a single source of truth.
+// judgment_reason and any newly appended note.
 const JudgmentReasonSeparator = "; "
 
 // AppendJudgmentReason concatenates suffix onto judgment_reason for the
-// given row. Empty existing reason → suffix becomes the whole value;
-// non-empty existing reason → joined with JudgmentReasonSeparator so
-// the post-mortem in `marunage review` still sees the prior triage
-// trail. Status is NOT touched: the helper exists for the PR-44 reaper
-// "stuck warn" path, which records a heads-up without auto-failing the
-// row.
-//
-// Atomicity: implemented as a single UPDATE that derives the new value
-// inside SQLite (CASE WHEN judgment_reason IS NULL OR ” THEN ? ELSE
-// judgment_reason || '; ' || ? END), so a concurrent writer cannot lose
-// the prior content via a Get-then-Update race the way an in-process
-// helper would.
-//
-// Errors:
-//   - ErrReasonRequired : suffix is empty
-//   - ErrNotFound       : id does not exist
+// given row in a single atomic UPDATE.
 func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix string) error {
 	if suffix == "" {
 		return ErrReasonRequired
@@ -588,32 +642,10 @@ func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix st
 	return nil
 }
 
-// MarkFailedFromRunningWithReason is the status-guarded sibling of
-// MarkFailedWithReason: it transitions a row to failed only if the
-// current status is running, and returns ErrInvalidTransition otherwise.
-// The reaper (PR-44) uses this so a row another writer (the atomic
-// sentinel PR-43, a manual `marunage done`) has just moved past
-// running cannot be silently overwritten by reaper's stale snapshot.
-//
-// reason is appended to any existing judgment_reason (joined with
-// JudgmentReasonSeparator) rather than overwriting it. requirement.md
-// L567 reserves judgment_reason writes outside of EscalateToHuman to
-// the "append-only" rule so the prior triage trail `marunage review`
-// reads for post-mortem survives reaper's failed transition. The
-// dispatcher's markFailed (PR-42) follows the same convention via Go-
-// side concatenation; here we use a SQL CASE expression so the read +
-// write happen in one atomic UPDATE.
-//
-// Atomicity: a single UPDATE with a status guard does the conflict
-// check + the write + the reason concatenation. A follow-up SELECT
-// distinguishes ErrNotFound from ErrInvalidTransition when
-// RowsAffected reports zero — same disambiguation pattern AcquireLock
-// and EscalateToHuman use.
-//
-// Errors:
-//   - ErrReasonRequired   : reason is empty
-//   - ErrNotFound         : id does not exist
-//   - ErrInvalidTransition: row is not in running
+// MarkFailedFromRunningWithReason transitions a row to failed only if
+// the current status is running. Used by the reaper so a row another
+// writer (atomic sentinel, manual done) has moved past running is not
+// overwritten by a stale snapshot.
 func (r *TaskRepo) MarkFailedFromRunningWithReason(ctx context.Context, id int64, reason string) error {
 	if reason == "" {
 		return ErrReasonRequired
@@ -650,6 +682,40 @@ func (r *TaskRepo) MarkFailedFromRunningWithReason(ctx context.Context, id int64
 		return fmt.Errorf("mark failed from running probe: %w", err)
 	}
 	return fmt.Errorf("%w: cannot mark failed from %q", ErrInvalidTransition, current)
+}
+
+// ClaimWorkspace atomically attaches ws to a row that is still pending
+// AND has no prior ws reference. PR-42b's race-safety primitive.
+func (r *TaskRepo) ClaimWorkspace(ctx context.Context, id int64, ws string) (bool, error) {
+	if ws == "" {
+		return false, ErrWSRequired
+	}
+	const q = `
+		UPDATE tasks SET ws = ?
+		WHERE id = ?
+		  AND status = ?
+		  AND (ws IS NULL OR ws = '')`
+	res, err := r.db.ExecContext(ctx, q, ws, id, StatusPending)
+	if err != nil {
+		return false, fmt.Errorf("claim workspace: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim workspace rows: %w", err)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	var probe int64
+	err = r.db.QueryRowContext(ctx,
+		"SELECT id FROM tasks WHERE id = ?", id).Scan(&probe)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim workspace probe: %w", err)
+	}
+	return false, nil
 }
 
 // SetWorkspace records the cmux ws reference for a dispatched task. It is

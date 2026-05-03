@@ -1248,16 +1248,226 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// AppendJudgmentReason test list (PR-44 reaper helper):
-//
-//   47. Empty existing judgment_reason: row gets exactly the suffix.
-//   48. Non-empty existing reason: suffix joined with "; " separator so
-//       the post-mortem in `marunage review` keeps the prior triage
-//       trail intact.
-//   49. Empty suffix is rejected with ErrReasonRequired.
-//   50. Missing id returns ErrNotFound.
 
-// 47. Empty existing judgment_reason: row gets exactly the suffix.
+// 47 (PR-42b): ClaimWorkspace atomically attaches a ws reference to a
+// pending row with no prior claim.
+func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "claim race"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if !claimed {
+		t.Errorf("claimed = false; want true on first claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws = %q; want workspace:1", got.WS)
+	}
+}
+
+// 48 (PR-42b): a duplicate ClaimWorkspace returns claimed=false without
+// touching the existing ws.
+func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "second claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1"); err != nil {
+		t.Fatalf("first ClaimWorkspace: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:2")
+	if err != nil {
+		t.Fatalf("second ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false on duplicate claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws after rejected claim = %q; want preserved %q", got.WS, "workspace:1")
+	}
+}
+
+// 49 (PR-42b): ClaimWorkspace on a non-pending row returns claimed=false.
+func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "post-claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false (row is already running)")
+	}
+}
+
+// 50 (PR-42b): ClaimWorkspace on a missing id returns ErrNotFound.
+func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	_, err := f.repo.ClaimWorkspace(f.ctx, 99999, "workspace:1")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ClaimWorkspace(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 51 (PR-42b): ClaimWorkspace with empty ws is rejected.
+func TestTaskRepoClaimWorkspaceRejectsEmptyWS(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "empty ws"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	_, err = f.repo.ClaimWorkspace(f.ctx, id, "")
+	if !errors.Is(err, store.ErrWSRequired) {
+		t.Fatalf("ClaimWorkspace(empty ws): err = %v; want ErrWSRequired", err)
+	}
+}
+
+// PR-43 S1: MarkDoneWithSummary stamps status=done, result_summary, and
+// completed_at in a single UPDATE.
+func TestTaskRepoMarkDoneWithSummaryStampsAllFields(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "completion test", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const summary = "Done. PR opened: https://example.com/pr/1"
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, summary, completedAt); err != nil {
+		t.Fatalf("MarkDoneWithSummary: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusDone)
+	}
+	if got.ResultSummary != summary {
+		t.Errorf("result_summary = %q; want %q", got.ResultSummary, summary)
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("completed_at = %v; want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	err := f.repo.MarkDoneWithSummary(f.ctx, 99999, "irrelevant", completedAt)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkDoneWithSummary(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryAcceptsEmptySummary(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no summary", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, "", completedAt); err != nil {
+		t.Fatalf("MarkDoneWithSummary(empty summary): %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusDone)
+	}
+	if got.ResultSummary != "" {
+		t.Errorf("result_summary = %q; want empty", got.ResultSummary)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryRejectsZeroCompletedAt(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "needs completed_at", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, "ok", time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
+		t.Fatalf("MarkDoneWithSummary(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("row touched despite rejected call: status = %q", got.Status)
+	}
+}
+
+func TestTaskRepoSetCompletedAtRoundTrip(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "set completed_at",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	completedAt := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	if err := f.repo.SetCompletedAt(f.ctx, id, completedAt); err != nil {
+		t.Fatalf("SetCompletedAt: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("completed_at = %v; want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestTaskRepoSetCompletedAtMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	completedAt := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	if err := f.repo.SetCompletedAt(f.ctx, 99999, completedAt); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetCompletedAt(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+func TestTaskRepoSetCompletedAtRejectsZeroTime(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "zero time",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetCompletedAt(f.ctx, id, time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
+		t.Fatalf("SetCompletedAt(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+}
+
+// AppendJudgmentReason (PR-44 reaper helper).
+
 func TestTaskRepoAppendJudgmentReasonOnEmpty(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1282,7 +1492,6 @@ func TestTaskRepoAppendJudgmentReasonOnEmpty(t *testing.T) {
 	}
 }
 
-// 48. Non-empty existing reason: "; "-joined append preserves prior content.
 func TestTaskRepoAppendJudgmentReasonPreservesExisting(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1306,7 +1515,6 @@ func TestTaskRepoAppendJudgmentReasonPreservesExisting(t *testing.T) {
 	}
 }
 
-// 49. Empty suffix is rejected with ErrReasonRequired.
 func TestTaskRepoAppendJudgmentReasonRejectsEmptySuffix(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1320,7 +1528,6 @@ func TestTaskRepoAppendJudgmentReasonRejectsEmptySuffix(t *testing.T) {
 	}
 }
 
-// 50. Missing id returns ErrNotFound.
 func TestTaskRepoAppendJudgmentReasonMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
 	err := f.repo.AppendJudgmentReason(f.ctx, 9999, "x")
@@ -1329,17 +1536,8 @@ func TestTaskRepoAppendJudgmentReasonMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// MarkFailedFromRunningWithReason test list (PR-44 reaper helper):
-//
-//   51. Running row flips to failed with reason recorded (happy path).
-//   52. Already-done row is left untouched and ErrInvalidTransition is
-//       returned — pinning that the reaper cannot overwrite a row a
-//       concurrent atomic sentinel (PR-43) has just moved past running.
-//   53. Empty reason rejected with ErrReasonRequired.
-//   54. Missing id returns ErrNotFound.
+// MarkFailedFromRunningWithReason (PR-44 reaper helper).
 
-// 51. Running row → failed; reason stored verbatim when no prior reason
-// exists.
 func TestTaskRepoMarkFailedFromRunningWithReasonHappyPath(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1364,12 +1562,6 @@ func TestTaskRepoMarkFailedFromRunningWithReasonHappyPath(t *testing.T) {
 	}
 }
 
-// 51b. Existing JudgmentReason (from triage / EscalateToHuman) must be
-// preserved with the "; " separator — symmetry with dispatch.markFailed
-// (PR-42) and the requirement.md L567 rule that "judgment_reason writes
-// are append-only outside of EscalateToHuman". reaper inherits that
-// contract: an orphan transition must NOT clobber the prior triage
-// trail that `marunage review` reads for post-mortem.
 func TestTaskRepoMarkFailedFromRunningWithReasonAppendsToExisting(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1392,13 +1584,10 @@ func TestTaskRepoMarkFailedFromRunningWithReasonAppendsToExisting(t *testing.T) 
 	}
 	want := "operator triage note; " + reason
 	if got.JudgmentReason != want {
-		t.Errorf("judgment_reason = %q; want %q (must append, not overwrite)",
-			got.JudgmentReason, want)
+		t.Errorf("judgment_reason = %q; want %q (must append, not overwrite)", got.JudgmentReason, want)
 	}
 }
 
-// 52. Done row is NOT overwritten — the helper exists precisely to make
-// reaper's failed transition safe against a concurrent done writer.
 func TestTaskRepoMarkFailedFromRunningWithReasonRefusesNonRunning(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1423,7 +1612,6 @@ func TestTaskRepoMarkFailedFromRunningWithReasonRefusesNonRunning(t *testing.T) 
 	}
 }
 
-// 53. Empty reason rejected.
 func TestTaskRepoMarkFailedFromRunningWithReasonRejectsEmptyReason(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1437,7 +1625,6 @@ func TestTaskRepoMarkFailedFromRunningWithReasonRejectsEmptyReason(t *testing.T)
 	}
 }
 
-// 54. Missing id returns ErrNotFound.
 func TestTaskRepoMarkFailedFromRunningWithReasonMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
 	err := f.repo.MarkFailedFromRunningWithReason(f.ctx, 9999, "x")
