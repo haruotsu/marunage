@@ -62,6 +62,22 @@ func TestRoutes_SecurityHeaders(t *testing.T) {
 	}
 }
 
+// TestRoutes_CSPHardenings pins the CSP defence-in-depth additions
+// the security review flagged: object-src 'none' blocks legacy
+// plugin embeds, and form-action 'self' stops a compromised page
+// from POSTing form data to a third-party origin.
+func TestRoutes_CSPHardenings(t *testing.T) {
+	srv := newTestServer(t)
+	rec := doGet(t, srv, "/")
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"object-src 'none'", "form-action 'self'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP missing %q\nfull CSP:\n%s", want, csp)
+		}
+	}
+}
+
 // TestRoutes_StaticServesEmbeddedCSS pins that the embed.FS-backed
 // /static/ tree is wired up.  The fixture style.css is part of the
 // build so a packaging regression (lost embed directive) shows up here
