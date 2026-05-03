@@ -34,10 +34,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/haruotsu/marunage/internal/config"
@@ -70,6 +73,22 @@ type WorkspaceDirs interface {
 const (
 	sentinelFile      = ".exit_code"
 	resultSummaryFile = ".result_summary"
+)
+
+// Read caps + display caps. The watcher reads two attacker-influenced
+// files (Claude can write whatever it wants in the workspace dir) and
+// surfaces their bytes through audit.log + judgment_reason — both
+// readable through the Web UI. Without bounds, a prompt-injected Claude
+// can leak arbitrary file contents (via symlink) or stuff the audit
+// trail with megabytes of garbage.
+//
+// Read caps are the I/O-time defence (refuse to slurp huge files).
+// Display caps are the rendering-time defence (truncate the rejected
+// raw bytes before they reach the audit Value / judgment_reason).
+const (
+	maxSentinelBytes      = 64        // exit_code is "0\n", "127\n", etc. — pad for whitespace
+	maxResultSummaryBytes = 64 * 1024 // 64 KiB of human summary is generous
+	maxRawDisplayBytes    = 64        // truncate rejected raw bytes before logging
 )
 
 // Audit action labels. requirement.md unwavering #2 "No silent execution"
@@ -228,21 +247,39 @@ func (w *Watcher) Tick(ctx context.Context) error {
 // poison the rest of the scan.
 func (w *Watcher) checkOne(ctx context.Context, task store.Task) {
 	dir := w.dirs.Dir(task.ID)
-	sentinelPath := filepath.Join(dir, sentinelFile)
 
-	data, err := os.ReadFile(sentinelPath)
+	data, err := readBoundedNoFollow(filepath.Join(dir, sentinelFile), maxSentinelBytes)
 	if err != nil {
-		// ENOENT (file or parent dir missing) is the steady state for an
-		// in-flight task; ignore silently. Anything else (permission denied,
-		// I/O error) also leaves the row running — the next tick retries.
-		// PR-44 reaper owns the "workspace deleted entirely" branch.
+		if errors.Is(err, fs.ErrNotExist) {
+			// Steady state for an in-flight task. PR-44 reaper owns the
+			// "workspace deleted entirely" branch.
+			return
+		}
+		if errors.Is(err, errSymlinkRefused) {
+			w.markFailed(ctx, task.ID,
+				fmt.Sprintf("completion: %s rejected (refused to follow symlink)", sentinelFile))
+			return
+		}
+		if errors.Is(err, errNotRegularFile) {
+			w.markFailed(ctx, task.ID,
+				fmt.Sprintf("completion: %s rejected (not a regular file)", sentinelFile))
+			return
+		}
+		if errors.Is(err, errFileTooLarge) {
+			w.markFailed(ctx, task.ID,
+				fmt.Sprintf("completion: %s rejected (exceeds %d bytes)", sentinelFile, maxSentinelBytes))
+			return
+		}
+		// Other I/O errors (transient permission denied, etc.) — leave
+		// the row running so the next tick retries.
 		return
 	}
 
 	rawSentinel := strings.TrimSpace(string(data))
 	exitCode, parseErr := strconv.Atoi(rawSentinel)
 	if parseErr != nil {
-		reason := fmt.Sprintf("completion: parse %s failed: %v (raw=%q)", sentinelFile, parseErr, rawSentinel)
+		reason := fmt.Sprintf("completion: parse %s failed: %v (raw=%q)",
+			sentinelFile, parseErr, truncateForDisplay(rawSentinel, maxRawDisplayBytes))
 		w.markFailed(ctx, task.ID, reason)
 		return
 	}
@@ -282,15 +319,88 @@ func (w *Watcher) markFailed(ctx context.Context, id int64, reason string) {
 }
 
 // readResultSummary returns the trimmed contents of <dir>/.result_summary
-// or "" when the file is absent. The trim is deliberate: Claude's last
-// console line is conventionally newline-terminated, and the dashboards
-// render result_summary on a single line.
+// or "" when the file is absent OR fails the security gate (symlink,
+// non-regular, oversized). The summary is optional — the watcher must
+// not fail the row when its only problem is a missing/malformed
+// summary file, but it must also never leak symlink-target contents
+// into tasks.result_summary (Web UI surface).
 func (w *Watcher) readResultSummary(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, resultSummaryFile))
+	data, err := readBoundedNoFollow(filepath.Join(dir, resultSummaryFile), maxResultSummaryBytes)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// Sentinel file-read errors. Distinct sentinels so checkOne can render
+// each rejection reason without leaking attacker-controlled bytes from
+// the file's name / target.
+var (
+	errSymlinkRefused = errors.New("completion: refused to follow symlink")
+	errNotRegularFile = errors.New("completion: not a regular file")
+	errFileTooLarge   = errors.New("completion: file exceeds size cap")
+)
+
+// readBoundedNoFollow opens path with O_NOFOLLOW (rejects symlinks at
+// the syscall level — no TOCTOU window between Lstat and Open) and
+// reads at most maxBytes+1 bytes. If the file exceeds maxBytes the
+// excess byte triggers errFileTooLarge before the over-read can bloat
+// memory or downstream audit logs.
+//
+// Defence-in-depth notes:
+//   - O_NOFOLLOW returns ELOOP on POSIX when the path is a symlink.
+//     Translated to errSymlinkRefused so checkOne can render a clean
+//     reason without echoing the attacker-controlled symlink target.
+//   - A non-regular file (FIFO, device, directory) is rejected after
+//     stat-via-fd to defeat racy swaps.
+//   - LimitReader bounds memory even if the file grew between the
+//     Stat() check and the Read() call.
+//   - On the rejection paths the file's *contents* are never read, so
+//     symlink targets cannot leak into the audit trail.
+func readBoundedNoFollow(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		// Linux + macOS both surface ELOOP for an O_NOFOLLOW symlink
+		// open. Translate so checkOne does not have to know about
+		// platform errnos.
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, errSymlinkRefused
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errNotRegularFile
+	}
+	if info.Size() > maxBytes {
+		return nil, errFileTooLarge
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, errFileTooLarge
+	}
+	return data, nil
+}
+
+// truncateForDisplay caps an attacker-influenced string before it lands
+// in audit.log / judgment_reason. fmt's %q already escapes non-printable
+// bytes, but it does not bound length — without truncation a 100KB
+// .exit_code parse failure would echo the entire blob through to the
+// Web UI dashboard.
+func truncateForDisplay(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 func (w *Watcher) recordAudit(action string, id int64, value string) {
