@@ -1,6 +1,7 @@
 package secrets_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -174,6 +175,9 @@ func TestUnknownBackendRejectedBeforeProbe(t *testing.T) {
 	_, err := secrets.OpenWithFactories(secrets.Config{Backend: "garbage"}, factories)
 	if err == nil {
 		t.Fatal("Open with unknown backend = nil; want validation error")
+	}
+	if !errors.Is(err, secrets.ErrUnknownBackend) {
+		t.Errorf("error must wrap ErrUnknownBackend so callers can branch on errors.Is; got %v", err)
 	}
 	if !strings.Contains(err.Error(), "garbage") {
 		t.Errorf("error must mention the offending value; got %v", err)
