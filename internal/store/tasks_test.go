@@ -114,8 +114,8 @@ func TestTaskRepoInsertAndGetMinimal(t *testing.T) {
 	}
 }
 
-// 3. Get on a missing id returns the typed sentinel so callers can
-//    pattern-match instead of inspecting strings.
+//  3. Get on a missing id returns the typed sentinel so callers can
+//     pattern-match instead of inspecting strings.
 func TestTaskRepoGetMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
 
@@ -125,9 +125,9 @@ func TestTaskRepoGetMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 2. Every column must round-trip. The point is to catch a future column
-//    addition that someone wires into Insert but forgets in scanTask (or
-//    vice-versa) — that asymmetry would silently drop data on read.
+//  2. Every column must round-trip. The point is to catch a future column
+//     addition that someone wires into Insert but forgets in scanTask (or
+//     vice-versa) — that asymmetry would silently drop data on read.
 func TestTaskRepoInsertAndGetAllFields(t *testing.T) {
 	f := newRepoFixture(t)
 
@@ -183,11 +183,11 @@ func TestTaskRepoInsertAndGetAllFields(t *testing.T) {
 	}
 }
 
-// 4. Insert validates Source and Title at the repo boundary; the schema
-//    itself enforces NOT NULL but a Go-side error gives PR-20's CLI a
-//    clean message instead of a wrapped sqlite constraint string. The
-//    typed sentinels let the CLI render a flag-name-aware diagnostic
-//    without parsing the message.
+//  4. Insert validates Source and Title at the repo boundary; the schema
+//     itself enforces NOT NULL but a Go-side error gives PR-20's CLI a
+//     clean message instead of a wrapped sqlite constraint string. The
+//     typed sentinels let the CLI render a flag-name-aware diagnostic
+//     without parsing the message.
 func TestTaskRepoInsertValidatesRequiredFields(t *testing.T) {
 	f := newRepoFixture(t)
 
@@ -199,9 +199,9 @@ func TestTaskRepoInsertValidatesRequiredFields(t *testing.T) {
 	}
 }
 
-// 6. Idempotency (invariant #4): a Discovery plugin re-fetching the same
-//    upstream id must hit the unique index and surface the typed sentinel
-//    so the caller can short-circuit cleanly rather than re-create the row.
+//  6. Idempotency (invariant #4): a Discovery plugin re-fetching the same
+//     upstream id must hit the unique index and surface the typed sentinel
+//     so the caller can short-circuit cleanly rather than re-create the row.
 func TestTaskRepoInsertDuplicateExternalIDReturnsErr(t *testing.T) {
 	f := newRepoFixture(t)
 
@@ -222,10 +222,10 @@ func TestTaskRepoInsertDuplicateExternalIDReturnsErr(t *testing.T) {
 	}
 }
 
-// 7. Manually-added rows (no upstream id) must not be blocked by the
-//    unique partial index. Tested at the schema level in store_test.go;
-//    repeated here at the repo boundary so a future change that started
-//    sending an empty string instead of NULL would be caught immediately.
+//  7. Manually-added rows (no upstream id) must not be blocked by the
+//     unique partial index. Tested at the schema level in store_test.go;
+//     repeated here at the repo boundary so a future change that started
+//     sending an empty string instead of NULL would be caught immediately.
 func TestTaskRepoInsertAllowsRepeatedNullExternalID(t *testing.T) {
 	f := newRepoFixture(t)
 
@@ -239,8 +239,8 @@ func TestTaskRepoInsertAllowsRepeatedNullExternalID(t *testing.T) {
 	}
 }
 
-// 5. Insert rejects an unknown Status before reaching SQLite so callers see
-//    the typed sentinel rather than a generic CHECK violation.
+//  5. Insert rejects an unknown Status before reaching SQLite so callers see
+//     the typed sentinel rather than a generic CHECK violation.
 func TestTaskRepoInsertRejectsInvalidStatus(t *testing.T) {
 	f := newRepoFixture(t)
 
@@ -260,11 +260,12 @@ func TestTaskRepoInsertRejectsInvalidStatus(t *testing.T) {
 // reference rows without depending on autoincrement details.
 //
 // Layout (clock advances by 1m between inserts):
-//   index 0: gmail / pending / prio=5  (high priority, oldest)
-//   index 1: gmail / pending / prio=1
-//   index 2: slack / running / prio=5  (same prio as #0, but newer)
-//   index 3: slack / done    / prio=0
-//   index 4: gmail / pending / prio=5  (same prio as #0, newest)
+//
+//	index 0: gmail / pending / prio=5  (high priority, oldest)
+//	index 1: gmail / pending / prio=1
+//	index 2: slack / running / prio=5  (same prio as #0, but newer)
+//	index 3: slack / done    / prio=0
+//	index 4: gmail / pending / prio=5  (same prio as #0, newest)
 func seedListFixture(t *testing.T, f repoFixture) []int64 {
 	t.Helper()
 	rows := []store.Task{
@@ -306,15 +307,15 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// 8. List with no filter returns every row in dispatch order
-//    (priority DESC, created_at ASC, id ASC). PR-42 and PR-60 both rely
-//    on this ordering so `marunage list` shows the same row a dispatcher
-//    would pick next. The seed fixture exercises three laws at once:
-//    (a) priority DESC dominates so prio=5 rows come before prio=1/0;
-//    (b) within the same priority, created_at ASC orders the row that
-//        was inserted earlier first (g0 before s0 before g2);
-//    (c) the id tie-break only fires when (priority, created_at) match,
-//        which is covered separately by TestTaskRepoListTieBreaksById.
+//  8. List with no filter returns every row in dispatch order
+//     (priority DESC, created_at ASC, id ASC). PR-42 and PR-60 both rely
+//     on this ordering so `marunage list` shows the same row a dispatcher
+//     would pick next. The seed fixture exercises three laws at once:
+//     (a) priority DESC dominates so prio=5 rows come before prio=1/0;
+//     (b) within the same priority, created_at ASC orders the row that
+//     was inserted earlier first (g0 before s0 before g2);
+//     (c) the id tie-break only fires when (priority, created_at) match,
+//     which is covered separately by TestTaskRepoListTieBreaksById.
 func TestTaskRepoListNoFilterUsesDispatchOrder(t *testing.T) {
 	f := newRepoFixture(t)
 	seedListFixture(t, f)
@@ -329,8 +330,8 @@ func TestTaskRepoListNoFilterUsesDispatchOrder(t *testing.T) {
 	}
 }
 
-// 9. List filters by status. Single and multi-status both go through
-//    one IN (?) path so we exercise both shapes.
+//  9. List filters by status. Single and multi-status both go through
+//     one IN (?) path so we exercise both shapes.
 func TestTaskRepoListByStatus(t *testing.T) {
 	f := newRepoFixture(t)
 	seedListFixture(t, f)
@@ -356,7 +357,7 @@ func TestTaskRepoListByStatus(t *testing.T) {
 	}
 }
 
-// 10. List filters by source. Same shape as status; mostly here so a
+//  10. List filters by source. Same shape as status; mostly here so a
 //     future "filter by both source and status" addition does not regress
 //     the AND wiring.
 func TestTaskRepoListBySource(t *testing.T) {
@@ -383,7 +384,7 @@ func TestTaskRepoListBySource(t *testing.T) {
 	}
 }
 
-// 11. List honours Limit. Combined with the dispatch order, this is what
+//  11. List honours Limit. Combined with the dispatch order, this is what
 //     PR-42 calls when picking the next N candidates.
 func TestTaskRepoListHonoursLimit(t *testing.T) {
 	f := newRepoFixture(t)
@@ -398,7 +399,7 @@ func TestTaskRepoListHonoursLimit(t *testing.T) {
 	}
 }
 
-// 12. UpdateStatus pending -> running succeeds and the AFTER UPDATE trigger
+//  12. UpdateStatus pending -> running succeeds and the AFTER UPDATE trigger
 //     bumps updated_at. Pre-seeding an obviously-old timestamp removes any
 //     dependence on the test wall-clock resolution: any "now" the trigger
 //     stamps will be after 2020.
@@ -432,7 +433,7 @@ func TestTaskRepoUpdateStatusSucceeds(t *testing.T) {
 	}
 }
 
-// 13. UpdateStatus rejects unknown values before talking to SQLite so the
+//  13. UpdateStatus rejects unknown values before talking to SQLite so the
 //     row is not even attempted, and the error is the typed sentinel.
 func TestTaskRepoUpdateStatusInvalidValueReturnsErr(t *testing.T) {
 	f := newRepoFixture(t)
@@ -454,7 +455,7 @@ func TestTaskRepoUpdateStatusInvalidValueReturnsErr(t *testing.T) {
 	}
 }
 
-// 14. UpdateStatus on a missing id returns ErrNotFound rather than silently
+//  14. UpdateStatus on a missing id returns ErrNotFound rather than silently
 //     succeeding (which the bare UPDATE would do — RowsAffected=0 with no
 //     error).
 func TestTaskRepoUpdateStatusMissingReturnsErrNotFound(t *testing.T) {
@@ -464,7 +465,7 @@ func TestTaskRepoUpdateStatusMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 15. SetWorkspace stores the ws reference. PR-42 calls this immediately
+//  15. SetWorkspace stores the ws reference. PR-42 calls this immediately
 //     after `cmux new-workspace` returns so the row is "claimed" before
 //     the next dispatch loop iteration runs (the soft de-dup the spec
 //     calls "ws参照を即座に DB に書き戻す").
@@ -487,7 +488,7 @@ func TestTaskRepoSetWorkspaceStoresReference(t *testing.T) {
 	}
 }
 
-// 16. SetWorkspace on a missing id returns ErrNotFound. Same reasoning as
+//  16. SetWorkspace on a missing id returns ErrNotFound. Same reasoning as
 //     UpdateStatus: silent no-op would mask a stale id in the dispatcher.
 func TestTaskRepoSetWorkspaceMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
@@ -496,7 +497,7 @@ func TestTaskRepoSetWorkspaceMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 17. AcquireLock on a free key claims it: the column is persisted and a
+//  17. AcquireLock on a free key claims it: the column is persisted and a
 //     subsequent Get sees it. The Phase-1 dispatcher (PR-42) does this
 //     immediately after picking a candidate so a concurrent loop iteration
 //     cannot pick a colliding row.
@@ -519,7 +520,7 @@ func TestTaskRepoAcquireLockClaimsFreeKey(t *testing.T) {
 	}
 }
 
-// 18. AcquireLock blocks when another *running* task already holds the
+//  18. AcquireLock blocks when another *running* task already holds the
 //     same key. The blocked attempt must NOT mutate lock_key, otherwise a
 //     retry would silently overwrite the holder's claim.
 func TestTaskRepoAcquireLockBlockedByRunningHolder(t *testing.T) {
@@ -552,7 +553,7 @@ func TestTaskRepoAcquireLockBlockedByRunningHolder(t *testing.T) {
 	}
 }
 
-// 19. AcquireLock succeeds again once the previous holder transitions out
+//  19. AcquireLock succeeds again once the previous holder transitions out
 //     of running. Status-based release is the whole point of "soft" lock:
 //     no explicit ReleaseLock call is required for the next claim to go
 //     through.
@@ -582,7 +583,7 @@ func TestTaskRepoAcquireLockSucceedsAfterHolderDone(t *testing.T) {
 	}
 }
 
-// 20. ReleaseLock clears lock_key. Used by reaper / clean flows when a
+//  20. ReleaseLock clears lock_key. Used by reaper / clean flows when a
 //     task aborted without going through done/failed (e.g. crash, manual
 //     intervention).
 func TestTaskRepoReleaseLockClearsLockKey(t *testing.T) {
@@ -606,7 +607,7 @@ func TestTaskRepoReleaseLockClearsLockKey(t *testing.T) {
 	}
 }
 
-// 21. ReleaseLock on a missing id returns ErrNotFound for the same reason
+//  21. ReleaseLock on a missing id returns ErrNotFound for the same reason
 //     UpdateStatus / SetWorkspace do.
 func TestTaskRepoReleaseLockMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
@@ -615,7 +616,7 @@ func TestTaskRepoReleaseLockMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 22. AcquireLock with an empty key is a programmer error — the schema
+//  22. AcquireLock with an empty key is a programmer error — the schema
 //     would gladly store NULL, defeating every subsequent probe — so the
 //     repo rejects it loudly at the boundary with a typed sentinel.
 func TestTaskRepoAcquireLockEmptyKeyValidates(t *testing.T) {
@@ -629,7 +630,7 @@ func TestTaskRepoAcquireLockEmptyKeyValidates(t *testing.T) {
 	}
 }
 
-// 23. AcquireLock on a missing id returns ErrNotFound (probe-then-update
+//  23. AcquireLock on a missing id returns ErrNotFound (probe-then-update
 //     would silently no-op without this check).
 func TestTaskRepoAcquireLockMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
@@ -638,7 +639,7 @@ func TestTaskRepoAcquireLockMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 24. AcquireLock blocks when another *pending* row already holds the same
+//  24. AcquireLock blocks when another *pending* row already holds the same
 //     lock_key, not just when there is a running holder. Without this, a
 //     dispatcher pattern of "AcquireLock; UpdateStatus(running)" lets two
 //     callers both observe "no running holder", both succeed, and the
@@ -666,7 +667,7 @@ func TestTaskRepoAcquireLockBlockedByPendingHolder(t *testing.T) {
 	}
 }
 
-// 25. AcquireLock is idempotent for the same (id, lockKey): a retry after
+//  25. AcquireLock is idempotent for the same (id, lockKey): a retry after
 //     a transient error must succeed without complaint and leave lock_key
 //     untouched. The dispatcher relies on this for crash-recovery /
 //     re-claim flows.
@@ -692,7 +693,7 @@ func TestTaskRepoAcquireLockIdempotentSelfAcquire(t *testing.T) {
 	}
 }
 
-// 26. SetWorkspace with empty string clears the column. The doc comment
+//  26. SetWorkspace with empty string clears the column. The doc comment
 //     on SetWorkspace promises this for reaper / clean flows; without a
 //     test the contract would silently regress.
 func TestTaskRepoSetWorkspaceEmptyClearsColumn(t *testing.T) {
@@ -716,7 +717,7 @@ func TestTaskRepoSetWorkspaceEmptyClearsColumn(t *testing.T) {
 	}
 }
 
-// 27. List with a non-matching filter returns a zero-length slice. PR-20
+//  27. List with a non-matching filter returns a zero-length slice. PR-20
 //     `marunage list` iterates over this with `for _, t := range list`
 //     so "no matches" must be observably empty, not garbage.
 func TestTaskRepoListReturnsZeroLengthOnNoMatch(t *testing.T) {
@@ -733,7 +734,7 @@ func TestTaskRepoListReturnsZeroLengthOnNoMatch(t *testing.T) {
 	}
 }
 
-// 28. List tie-breaks on id when priority and created_at are identical.
+//  28. List tie-breaks on id when priority and created_at are identical.
 //     Without the trailing `id ASC` in the ORDER BY (and the matching
 //     trailing column in idx_tasks_dispatch), two rows inserted at the
 //     same instant could swap order between calls, breaking dispatch
@@ -762,7 +763,7 @@ func TestTaskRepoListTieBreaksById(t *testing.T) {
 	}
 }
 
-// 29. List rejects oversized Statuses / Sources filters. Without an
+//  29. List rejects oversized Statuses / Sources filters. Without an
 //     upper bound, an unbounded IN (?, ?, ...) expansion grows linearly
 //     with the caller-controlled slice length and could exceed
 //     SQLITE_MAX_VARIABLE_NUMBER (32766 by default) or simply waste
