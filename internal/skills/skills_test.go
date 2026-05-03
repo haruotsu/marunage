@@ -413,6 +413,68 @@ func TestInstall_Merge_OverwriteChoice(t *testing.T) {
 	}
 }
 
+// TestInstall_Merge_DiffThenOverwrite pins the third merge branch:
+// the "d" choice prints a diff and re-prompts. Sending "d\no\n" should
+// dump a diff to Out and then end up overwriting (the second answer).
+func TestInstall_Merge_DiffThenOverwrite(t *testing.T) {
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+	if _, err := Install(InstallOptions{Target: target, Source: EmbeddedFS()}); err != nil {
+		t.Fatalf("seed Install: %v", err)
+	}
+	skillPath := filepath.Join(target, "marunage-triage", "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("locally edited triage\n"), 0o600); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	res, err := Install(InstallOptions{
+		Target: target,
+		Source: EmbeddedFS(),
+		Merge:  true,
+		Out:    &stdout,
+		In:     strings.NewReader("d\no\n"),
+	})
+	if err != nil {
+		t.Fatalf("Install --merge d->o: %v", err)
+	}
+	if !contains(names(res.Updated), "marunage-triage") {
+		t.Errorf("Updated missing marunage-triage; got %v", names(res.Updated))
+	}
+	if !strings.Contains(stdout.String(), "locally edited triage") {
+		t.Errorf("merge 'd' did not render a diff containing the on-disk body; got %q", stdout.String())
+	}
+}
+
+// TestInstall_Merge_RejectsUnknownChoice pins the input-validation
+// branch: an unknown answer must trigger a re-prompt rather than be
+// silently treated as skip-or-overwrite. We send "x\ns\n" and assert
+// the "unknown choice" message lands and the file is preserved.
+func TestInstall_Merge_RejectsUnknownChoice(t *testing.T) {
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+	if _, err := Install(InstallOptions{Target: target, Source: EmbeddedFS()}); err != nil {
+		t.Fatalf("seed Install: %v", err)
+	}
+	skillPath := filepath.Join(target, "marunage-triage", "SKILL.md")
+	userBody := []byte("---\nname: marunage-triage\ndescription: edit\n---\n<!-- version: 0.1.0 -->\n# edit\n## 判定ロジック\nx\n## 出力フォーマット\nx\n")
+	if err := os.WriteFile(skillPath, userBody, 0o600); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if _, err := Install(InstallOptions{
+		Target: target,
+		Source: EmbeddedFS(),
+		Merge:  true,
+		Out:    &stdout,
+		In:     strings.NewReader("xyz\ns\n"),
+	}); err != nil {
+		t.Fatalf("Install --merge xyz->s: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "unknown choice") {
+		t.Errorf("unknown answer did not surface 'unknown choice'; got %q", stdout.String())
+	}
+}
+
 // TestInstall_Merge_SkipChoice pins that "s" preserves the on-disk
 // content, mirroring how a no-flag run handles drift. We seed the user
 // edit with a structurally valid SKILL.md (matching required sections)
