@@ -1677,3 +1677,63 @@ func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
 		})
 	}
 }
+
+// PR-72: WithTriageSkill plumbs the marunage-triage SKILL.md content
+// into BuildPrompt so the dispatched Send carries the OODA Orient
+// section the embedded skill defines.
+func TestRunIncludesTriageSkillInSendPayload(t *testing.T) {
+	const triageSkillBody = "TRIAGE-SKILL-OODA-ORIENT"
+	f := newDispatchFixture(t, dispatch.WithTriageSkill(triageSkillBody))
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "triage me", Body: "b", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	if !strings.Contains(payload, triageSkillBody) {
+		t.Errorf("Send payload missing triage skill body %q; got:\n%s", triageSkillBody, payload)
+	}
+	// Sanity check the row actually transitioned out of pending so we
+	// know the wiring did not break the rest of the dispatch path.
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusRunning)
+	}
+}
+
+// PR-72 back-compat: omitting WithTriageSkill leaves the Send payload
+// identical to PR-42's wire format (no triage section, no doubled
+// separators). Guards callers that have not yet adopted the skill.
+func TestRunOmitsTriageSectionWhenSkillNotConfigured(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	if _, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "no triage", Body: "b", CWD: "/tmp",
+	}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	if strings.Contains(payload, "TRIAGE") {
+		t.Errorf("Send payload unexpectedly contains a triage marker:\n%s", payload)
+	}
+	if strings.Contains(payload, "\n\n\n\n") {
+		t.Errorf("Send payload has doubled blank-line separator:\n%s", payload)
+	}
+}
