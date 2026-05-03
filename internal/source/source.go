@@ -169,8 +169,9 @@ type Deleter interface {
 	Delete(ctx context.Context, externalID string) error
 }
 
-// ErrPluginNotFound is returned by Registry.Get for an unknown name. Defined
-// here (rather than in registry.go) because some callers — the manifest
-// validator in particular — also use it when cross-checking declared
-// capabilities against a not-yet-registered plugin.
+// ErrPluginNotFound is returned by Registry.Get for an unknown name. It
+// lives in this file (rather than registry.go) so callers branching on
+// plugin lookups can reference it without dragging the whole registry
+// type into their import set — handy for tests that only need the typed
+// error to assert on.
 var ErrPluginNotFound = errors.New("source: plugin not found")

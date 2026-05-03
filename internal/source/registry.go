@@ -94,6 +94,13 @@ func (r *Registry) Names() []string {
 // NOT declare in the manifest are tolerated. The manifest is the
 // authoritative "what the source says it can do"; over-implementing is
 // harmless, under-implementing is a contract violation.
+//
+// Dispatch-side enforcement (PR-71): the scheduler that turns plugin
+// output into queue rows must consult Manifest.HasCapability before
+// invoking Adder/Completer/Deleter — never reach for the runtime type
+// assertion alone — so the manifest stays the single source of truth
+// for "is this source allowed to mutate upstream?". Documenting the
+// rule here is the easiest place a future PR-71 reviewer will see it.
 func ValidateAgainstManifest(p Plugin, m *Manifest) error {
 	if p == nil || m == nil {
 		return fmt.Errorf("%w: nil plugin or manifest", ErrCapabilityMismatch)
@@ -104,9 +111,9 @@ func ValidateAgainstManifest(p Plugin, m *Manifest) error {
 	}
 
 	checks := []struct {
-		cap  Capability
-		ok   bool
-		hint string
+		capability Capability
+		ok         bool
+		hint       string
 	}{
 		{CapSince, implementsSincer(p), "Sincer"},
 		{CapAdd, implementsAdder(p), "Adder"},
@@ -114,12 +121,12 @@ func ValidateAgainstManifest(p Plugin, m *Manifest) error {
 		{CapDelete, implementsDeleter(p), "Deleter"},
 	}
 	for _, c := range checks {
-		if !m.HasCapability(c.cap) {
+		if !m.HasCapability(c.capability) {
 			continue
 		}
 		if !c.ok {
 			return fmt.Errorf("%w: manifest declares %q but plugin does not implement %s",
-				ErrCapabilityMismatch, c.cap, c.hint)
+				ErrCapabilityMismatch, c.capability, c.hint)
 		}
 	}
 	return nil
