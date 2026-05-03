@@ -67,6 +67,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDaemonCmd())
 	root.AddCommand(newConfigCmd(&configPath))
 	root.AddCommand(newDoctorCmd(&configPath))
+	root.AddCommand(newInitCmd(&configPath))
 	root.AddCommand(newDispatchCmd(&configPath))
 	root.AddCommand(newTaskAddCmd(&configPath))
 	root.AddCommand(newTaskListCmd(&configPath))
@@ -91,7 +92,6 @@ type stubSpec struct {
 
 func buildLeafStubs() []*cobra.Command {
 	specs := []stubSpec{
-		{"init", "Initialize ~/.marunage/, the SQLite store, and prompt for a permission mode."},
 		{"setup", "Run the OSS setup wizard: install Skills and authenticate sources."},
 		{"discover", "Run the Discovery layer once and enqueue new tasks."},
 		{"run-all", "Dispatch every pending task in priority order."},
