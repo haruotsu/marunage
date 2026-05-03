@@ -1338,7 +1338,8 @@ func TestTaskRepoAppendJudgmentReasonMissingReturnsErrNotFound(t *testing.T) {
 //   53. Empty reason rejected with ErrReasonRequired.
 //   54. Missing id returns ErrNotFound.
 
-// 51. Running row → failed; reason stored verbatim.
+// 51. Running row → failed; reason stored verbatim when no prior reason
+// exists.
 func TestTaskRepoMarkFailedFromRunningWithReasonHappyPath(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1360,6 +1361,39 @@ func TestTaskRepoMarkFailedFromRunningWithReasonHappyPath(t *testing.T) {
 	}
 	if got.JudgmentReason != reason {
 		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, reason)
+	}
+}
+
+// 51b. Existing JudgmentReason (from triage / EscalateToHuman) must be
+// preserved with the "; " separator — symmetry with dispatch.markFailed
+// (PR-42) and the requirement.md L567 rule that "judgment_reason writes
+// are append-only outside of EscalateToHuman". reaper inherits that
+// contract: an orphan transition must NOT clobber the prior triage
+// trail that `marunage review` reads for post-mortem.
+func TestTaskRepoMarkFailedFromRunningWithReasonAppendsToExisting(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "had triage note", Status: store.StatusRunning,
+		JudgmentReason: "operator triage note",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const reason = "workspace disappeared (reaper)"
+	if err := f.repo.MarkFailedFromRunningWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkFailedFromRunningWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("status = %q; want failed", got.Status)
+	}
+	want := "operator triage note; " + reason
+	if got.JudgmentReason != want {
+		t.Errorf("judgment_reason = %q; want %q (must append, not overwrite)",
+			got.JudgmentReason, want)
 	}
 }
 
