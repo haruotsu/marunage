@@ -144,6 +144,7 @@ type Dispatcher struct {
 	matcher             PermissionMatcher
 	onUnknownPermission string
 	permissionMode      string
+	triageSkill         string
 }
 
 // Option mutates Dispatcher construction.
@@ -165,6 +166,15 @@ func WithBaseSkill(s string) Option { return func(d *Dispatcher) { d.baseSkill =
 // WithSourceSkill installs the source-specific skill resolver. Optional;
 // when absent, source-specific guidance is omitted from every prompt.
 func WithSourceSkill(f SourceSkillFunc) Option { return func(d *Dispatcher) { d.sourceSkill = f } }
+
+// WithTriageSkill injects the contents of skills/marunage-triage/SKILL.md
+// (PR-34 distributes the embedded copy to ~/.claude/skills/ via
+// `marunage setup --skills`). When set, BuildPrompt emits the triage
+// section between the source-specific skill and the task block so the
+// receiving Claude session loads OODA Orient guidance before reasoning
+// about the task payload. Empty string disables the section entirely
+// (back-compat for callers that have not wired the triage skill yet).
+func WithTriageSkill(s string) Option { return func(d *Dispatcher) { d.triageSkill = s } }
 
 // WithLockKeys installs the [execution.lock_keys] regex map used to
 // resolve notes.lock_hint. Optional; when absent, no AcquireLock call
@@ -603,6 +613,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	prompt := BuildPrompt(PromptInputs{
 		Base:           d.baseSkill,
 		SourceSpecific: d.sourceSkill(task.Source),
+		Triage:         d.triageSkill,
 		Task:           task,
 		WorkspaceDir:   workspaceDir,
 	})
