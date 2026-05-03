@@ -40,9 +40,8 @@ func newSetupCmd(configPath *string) *cobra.Command {
 		Long: "setup provisions the Skills (~/.claude/skills/marunage-*) and the\n" +
 			"per-source auth bundles a fresh marunage install needs before its\n" +
 			"first autonomous run.\n\n" +
-			"This PR implements --skills (Skills install / diff / merge /\n" +
-			"check-updates / from-dir). The full interactive wizard and\n" +
-			"--source <name> auth flow land in subsequent PRs.\n\n" +
+			"At present, only --skills is wired up; the full interactive wizard\n" +
+			"and per-source auth flow (--source <name>) are planned.\n\n" +
 			"--diff prints the diff against the embedded copy without writing.\n" +
 			"--force overwrites a hand-edited SKILL.md.\n" +
 			"--merge prompts per conflict for overwrite / skip / show-diff.\n" +
@@ -189,21 +188,29 @@ func resolveSkillSource(fromDir string) (fs.FS, error) {
 }
 
 // printSkillsResult renders the per-bucket summary so a user can see
-// at a glance what changed. The format is a stable enough convention
-// for users to grep ("Installed:") but is NOT a programmatic interface
-// — machine consumers should call internal/skills directly.
+// at a glance what changed and where each skill landed on disk. The
+// format is a stable enough convention for users to grep ("Installed:")
+// but is NOT a programmatic interface — machine consumers should call
+// internal/skills directly.
+//
+// Every bucket renders the dest path; the previous Installed-only
+// asymmetry made `Updated:` and `Skipped:` un-greppable for the
+// disk path the operator might want to inspect.
 //
 // Diff / CheckUpdates renders inline in skills.Install via the Out
 // writer; the post-write summary therefore only needs to surface the
 // install / skip / update buckets.
 func printSkillsResult(w io.Writer, target string, res skills.InstallResult) {
 	for _, r := range res.Installed {
-		fmt.Fprintf(w, "Installed: %s (version %s) -> %s\n", r.Name, r.NewVersion, filepath.Join(target, r.Name))
+		fmt.Fprintf(w, "Installed: %s (version %s) -> %s\n",
+			r.Name, r.NewVersion, filepath.Join(target, r.Name, "SKILL.md"))
 	}
 	for _, r := range res.Updated {
-		fmt.Fprintf(w, "Updated:   %s (%s -> %s)\n", r.Name, r.OldVersion, r.NewVersion)
+		fmt.Fprintf(w, "Updated:   %s (%s -> %s) -> %s\n",
+			r.Name, r.OldVersion, r.NewVersion, filepath.Join(target, r.Name, "SKILL.md"))
 	}
 	for _, r := range res.Skipped {
-		fmt.Fprintf(w, "Skipped:   %s (already at %s, use --force to overwrite)\n", r.Name, r.NewVersion)
+		fmt.Fprintf(w, "Skipped:   %s (already at %s, use --force to overwrite) -> %s\n",
+			r.Name, r.NewVersion, filepath.Join(target, r.Name, "SKILL.md"))
 	}
 }
