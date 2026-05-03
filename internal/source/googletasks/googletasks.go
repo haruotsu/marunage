@@ -66,7 +66,7 @@ var (
 // the underlying Client (which the real implementation backs with a
 // goroutine-safe *tasks.Service).
 type Plugin struct {
-	client Client
+	upstream Client
 
 	// defaultListID is the tasklist Add writes into. Empty means
 	// "@default", which is the special Google Tasks alias for the
@@ -86,7 +86,7 @@ type Option func(*Plugin)
 // callers pass a real *tasks.Service-backed Client constructed from an
 // authenticated OAuth token.
 func WithClient(c Client) Option {
-	return func(p *Plugin) { p.client = c }
+	return func(p *Plugin) { p.upstream = c }
 }
 
 // WithDefaultTaskList overrides the tasklist id Add writes into. Empty or
@@ -110,38 +110,216 @@ func New(opts ...Option) *Plugin {
 // Name reports the canonical plugin identifier.
 func (p *Plugin) Name() string { return pluginName }
 
-// List returns every task across every tasklist the configured Client can
-// see. Implementation lands in a later test cycle.
+// client returns the configured upstream Client under read lock so a
+// concurrent setup-driven swap (a future PR-71 Setup will refresh the
+// Client when re-auth completes) cannot tear with an in-flight List.
+func (p *Plugin) client() Client {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.upstream
+}
+
+// targetList returns the configured destination for Add. "@default" is
+// used when WithDefaultTaskList was not supplied.
+func (p *Plugin) targetList() string {
+	if p.defaultListID == "" {
+		return defaultTaskListAlias
+	}
+	return p.defaultListID
+}
+
+// List enumerates every task across every tasklist the configured Client
+// reports. The brief calls out "TaskList → Tasks" — a single ListTaskLists
+// call followed by per-list ListTasks — and the upstream API mirrors that
+// shape exactly, so we walk it sequentially.
+//
+// Two design choices worth noting here so future readers do not undo
+// them:
+//
+//   - SourcePath is `tasklists/<id>` rather than the bare list id. The
+//     prefix gives a future `marunage show` a stable URL-shaped value to
+//     render and matches the upstream REST path, so a debugging user
+//     can paste it after `https://www.googleapis.com/tasks/v1/` to find
+//     the row in the Google API explorer.
+//   - We do NOT short-circuit when one ListTasks fails. A partial result
+//     would be worse than an error for the queue's reconciliation logic,
+//     which uses "list size" as a heuristic for "did the source go
+//     silent?". Returning the error fails closed.
 func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
-	return nil, ErrNotConfigured
+	c := p.client()
+	if c == nil {
+		return nil, ErrNotConfigured
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	lists, err := c.ListTaskLists(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []source.Task
+	for _, l := range lists {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		tasks, err := c.ListTasks(ctx, l.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range tasks {
+			out = append(out, source.Task{
+				Source:     pluginName,
+				ExternalID: t.ID,
+				Title:      t.Title,
+				Body:       t.Notes,
+				Done:       t.Status == statusCompleted,
+				SourcePath: "tasklists/" + l.ID,
+			})
+		}
+	}
+	return out, nil
 }
 
-// Setup runs the OAuth / smoke-test flow for the source. Implementation
-// lands in a later test cycle.
+// Setup is the OAuth / smoke-test entry point for the source. PR-84
+// scaffolds the contract; the real OAuth dance lands in a follow-up PR
+// once the secrets backend integration story is settled. Returning
+// ErrNotConfigured here is the documented "not implemented yet" signal —
+// the CLI surface for `marunage setup --source googletasks` will report
+// it as "wire OAuth in PR-XX".
 func (p *Plugin) Setup(ctx context.Context, opts source.SetupOptions) error {
+	_ = opts
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return ErrNotConfigured
 }
 
-// AuthStatus reports the current credential state. Implementation lands
-// in a later test cycle.
+// AuthStatus translates the upstream Client's reachability into the
+// four-state enum from internal/source. The mapping is:
+//
+//   - no Client                 -> AuthNotConfigured
+//   - Ping returns nil          -> AuthAuthenticated
+//   - Ping returns ErrUnauthorized -> AuthRevoked
+//   - any other Ping error      -> propagated unchanged (the caller
+//     decides whether a transient
+//     network failure should retry
+//     or surface to the user).
+//
+// AuthExpired is NOT used today because the Google Tasks token refresh
+// is handled inside the real Client (a transparent OAuth refresher
+// wrapping the http.RoundTripper). By the time Ping fails with
+// ErrUnauthorized the refresh has already been attempted and lost — so
+// the credential is genuinely revoked, not merely expired.
 func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
-	return source.AuthNotConfigured, nil
+	c := p.client()
+	if c == nil {
+		return source.AuthNotConfigured, nil
+	}
+	if err := c.Ping(ctx); err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			return source.AuthRevoked, nil
+		}
+		return "", err
+	}
+	return source.AuthAuthenticated, nil
 }
 
-// Add inserts a new task in the default tasklist. Implementation lands
-// in a later test cycle.
+// Add inserts a new task in the configured target tasklist. notes lands
+// in the upstream Notes field; the queue layer surfaces it as task body.
 func (p *Plugin) Add(ctx context.Context, title, notes string) (source.Task, error) {
-	return source.Task{}, ErrNotConfigured
+	c := p.client()
+	if c == nil {
+		return source.Task{}, ErrNotConfigured
+	}
+	if title == "" {
+		return source.Task{}, ErrInvalidTitle
+	}
+	listID := p.targetList()
+	got, err := c.InsertTask(ctx, listID, GTask{
+		Title:  title,
+		Notes:  notes,
+		Status: statusNeedsAction,
+	})
+	if err != nil {
+		return source.Task{}, err
+	}
+	return source.Task{
+		Source:     pluginName,
+		ExternalID: got.ID,
+		Title:      got.Title,
+		Body:       got.Notes,
+		Done:       got.Status == statusCompleted,
+		SourcePath: "tasklists/" + listID,
+	}, nil
 }
 
-// Complete flips the upstream task identified by externalID to status
-// "completed". Implementation lands in a later test cycle.
+// Complete patches the upstream task to status="completed". The brief
+// calls this out as the rear half of the marunage-side "done" mirror:
+// when the queue marks a task done, this method propagates the state to
+// Google Tasks so the user sees the same status in both places.
+//
+// Why findTaskList(): the source.Plugin contract takes only the
+// externalID, not (tasklist, taskID) pair, so we have to discover which
+// list the task lives in. The cost is one extra ListTasks call per list
+// in the worst case; in practice most users have one tasklist so the
+// overhead is invisible. Caching the mapping is left for a follow-up
+// PR once we have evidence the cost matters.
 func (p *Plugin) Complete(ctx context.Context, externalID string) error {
-	return ErrNotConfigured
+	c := p.client()
+	if c == nil {
+		return ErrNotConfigured
+	}
+	if externalID == "" {
+		return ErrInvalidTaskID
+	}
+	listID, err := p.findTaskList(ctx, c, externalID)
+	if err != nil {
+		return err
+	}
+	if _, err := c.PatchTask(ctx, listID, externalID, GTask{Status: statusCompleted}); err != nil {
+		return err
+	}
+	return nil
 }
 
-// Delete removes the upstream task identified by externalID. Implementation
-// lands in a later test cycle.
+// Delete removes the upstream task. Same locator strategy as Complete.
 func (p *Plugin) Delete(ctx context.Context, externalID string) error {
-	return ErrNotConfigured
+	c := p.client()
+	if c == nil {
+		return ErrNotConfigured
+	}
+	if externalID == "" {
+		return ErrInvalidTaskID
+	}
+	listID, err := p.findTaskList(ctx, c, externalID)
+	if err != nil {
+		return err
+	}
+	return c.DeleteTask(ctx, listID, externalID)
+}
+
+// findTaskList walks every tasklist the upstream knows about and returns
+// the id of the list that contains taskID. Returns ErrTaskNotFound when
+// no list claims the id (the typed error lets callers branch on
+// errors.Is rather than parsing strings).
+func (p *Plugin) findTaskList(ctx context.Context, c Client, taskID string) (string, error) {
+	lists, err := c.ListTaskLists(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, l := range lists {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		tasks, err := c.ListTasks(ctx, l.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, t := range tasks {
+			if t.ID == taskID {
+				return l.ID, nil
+			}
+		}
+	}
+	return "", ErrTaskNotFound
 }
