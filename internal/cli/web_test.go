@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestWeb_FactoryReceivesEffectiveAddress pins the flag-precedence
@@ -129,6 +133,77 @@ func TestWeb_NonRemoteDoesNotWarn(t *testing.T) {
 	if strings.Contains(stderr.String(), "WARNING") {
 		t.Errorf("stderr unexpectedly carries WARNING for loopback bind; got %q", stderr.String())
 	}
+}
+
+// TestWeb_ProductionFactory_RealListenAndShutdown exercises
+// productionWebFactory end-to-end so a regression in the real wiring
+// (net.Listen → web.NewServer → serverRunner.Run → graceful shutdown)
+// surfaces here rather than in production.  The other tests inject a
+// stub factory and would silently miss any breakage of the real path.
+func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
+	addr := freeLoopbackAddr(t)
+
+	runner, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr})
+	if err != nil {
+		t.Fatalf("productionWebFactory: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- runner.Run(ctx) }()
+
+	if err := pollHealthz(t, "http://"+addr+"/healthz", 3*time.Second); err != nil {
+		cancel()
+		<-runErr
+		t.Fatalf("server never became ready: %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned %v; want nil on graceful shutdown", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Run did not return within 6s of cancel; expected graceful shutdown within 5s budget")
+	}
+}
+
+// freeLoopbackAddr binds + immediately closes a kernel-assigned port,
+// returning the chosen 127.0.0.1:<port> string so the caller can hand
+// it to the production factory.  There is a small TOCTOU window
+// before the production listener re-binds; in practice the kernel
+// reuses the port for the next bind on the same loopback.
+func freeLoopbackAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close ephemeral listener: %v", err)
+	}
+	return addr
+}
+
+func pollHealthz(t *testing.T, url string, timeout time.Duration) error {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK && strings.TrimSpace(string(body)) == "ok" {
+				return nil
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout waiting for %s", url)
 }
 
 // TestWeb_StubRemoved confirms the leaf stub for `web` is gone — the
