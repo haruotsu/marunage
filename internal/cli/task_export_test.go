@@ -29,8 +29,11 @@ func TestTaskExport_JSONEmptyIsEmptyArrayNotNull(t *testing.T) {
 }
 
 // 2. Default --format is "json" and the output is a parseable JSON array
-// of taskJSON-shaped objects. Pinning the wire shape (id / source / title /
-// status fields) keeps export aligned with `list --json` and `show --json`.
+// of taskJSON-shaped objects. Pinning the wire shape AND the values
+// (id, title, source, status) keeps export aligned with `list --json` /
+// `show --json` and catches a regression where taskFromStore is replaced
+// by a zero-value taskJSON{} (key-presence-only assertions would still
+// pass against that mutation).
 func TestTaskExport_JSONFormatEmitsTaskJSONArray(t *testing.T) {
 	repo := installFakeRepo(t)
 	repo.rows[1] = store.Task{
@@ -48,19 +51,29 @@ func TestTaskExport_JSONFormatEmitsTaskJSONArray(t *testing.T) {
 		t.Fatalf("export exit=%d; stderr=%q", code, stderr.String())
 	}
 
-	var arr []map[string]any
+	var arr []struct {
+		ID     int64  `json:"id"`
+		Source string `json:"source"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
 	if err := json.Unmarshal(stdout.Bytes(), &arr); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, stdout.String())
 	}
 	if len(arr) != 2 {
 		t.Fatalf("export array len = %d; want 2", len(arr))
 	}
-	for _, row := range arr {
-		for _, k := range []string{"id", "source", "title", "status"} {
-			if _, ok := row[k]; !ok {
-				t.Errorf("export row missing key %q; row=%+v", k, row)
-			}
-		}
+	byID := map[int64]struct {
+		Source, Title, Status string
+	}{
+		arr[0].ID: {arr[0].Source, arr[0].Title, arr[0].Status},
+		arr[1].ID: {arr[1].Source, arr[1].Title, arr[1].Status},
+	}
+	if got := byID[1]; got.Source != "manual" || got.Title != "first" || got.Status != store.StatusPending {
+		t.Errorf("row id=1 = %+v; want {manual first pending}", got)
+	}
+	if got := byID[2]; got.Source != "gmail" || got.Title != "second" || got.Status != store.StatusDone {
+		t.Errorf("row id=2 = %+v; want {gmail second done}", got)
 	}
 }
 
@@ -88,8 +101,10 @@ func TestTaskExport_DefaultIncludesAllStatuses(t *testing.T) {
 	if len(arr) != 5 {
 		t.Errorf("default export array len = %d; want 5 (all statuses)", len(arr))
 	}
-	// And the wiring: SUT must NOT pass a default Statuses filter so the
-	// store-level scan returns every row.
+	// And the wiring: SUT must NOT pass a default Statuses or Sources
+	// filter so the store-level scan returns every row. Pinning Sources
+	// too catches a "Sources defaulting to [\"manual\"]" regression that
+	// the all-manual test fixture would otherwise hide.
 	if len(repo.listFilters) != 1 {
 		t.Fatalf("listFilters captured = %d; want 1", len(repo.listFilters))
 	}
@@ -97,13 +112,17 @@ func TestTaskExport_DefaultIncludesAllStatuses(t *testing.T) {
 		t.Errorf("default Statuses filter = %v; want empty (no filter)",
 			repo.listFilters[0].Statuses)
 	}
+	if len(repo.listFilters[0].Sources) != 0 {
+		t.Errorf("default Sources filter = %v; want empty (no filter)",
+			repo.listFilters[0].Sources)
+	}
 }
 
 // 4. --format markdown renders a human-readable section per task.
-// Pinning a few field markers (the id, the title, the source) keeps the
-// format stable enough for the operator who pipes the output into a
-// retrospective doc; the exact prose around them is intentionally NOT
-// asserted so future polish does not require a test edit.
+// Pinning the structural markers (`## #42` H2 header, `- source:` /
+// `- status:` / `- priority:` list items) catches a regression where
+// the renderer drops to plain text or downshifts heading levels — the
+// loose substring assertions alone would still pass against either.
 func TestTaskExport_MarkdownFormatRendersHumanReadable(t *testing.T) {
 	repo := installFakeRepo(t)
 	repo.rows[42] = store.Task{
@@ -117,10 +136,39 @@ func TestTaskExport_MarkdownFormatRendersHumanReadable(t *testing.T) {
 		t.Fatalf("export markdown exit=%d; stderr=%q", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"42", "review PDF", "gmail", "done", "the contract"} {
+	for _, want := range []string{
+		"## #42 review PDF",
+		"- source: gmail",
+		"- status: done",
+		"- priority: 0",
+		"the contract",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("markdown output missing %q; got %q", want, out)
 		}
+	}
+}
+
+// 4b. --status accepts repeated occurrences (cobra StringSliceVar
+// semantics). Pinning this keeps a future flag-redeclaration to
+// StringVar from silently dropping all but the last value.
+func TestTaskExport_StatusFlagAcceptsRepeated(t *testing.T) {
+	repo := installFakeRepo(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "p", Status: store.StatusPending}
+	repo.rows[2] = store.Task{ID: 2, Source: "manual", Title: "d", Status: store.StatusDone}
+	repo.rows[3] = store.Task{ID: 3, Source: "manual", Title: "f", Status: store.StatusFailed}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"export", "--status", "pending", "--status", "done"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("export --status pending --status done exit=%d; stderr=%q", code, stderr.String())
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &arr); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout.String())
+	}
+	if len(arr) != 2 {
+		t.Errorf("array len = %d; want 2 (pending+done, NOT failed)", len(arr))
 	}
 }
 
