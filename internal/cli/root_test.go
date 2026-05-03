@@ -127,7 +127,8 @@ func TestExecute_DaemonGroup(t *testing.T) {
 }
 
 func TestExecute_ConfigGroup(t *testing.T) {
-	subs := []string{"get", "set", "edit", "wizard"}
+	allSubs := []string{"get", "set", "edit", "wizard"}
+	stillStubbed := []string{"edit", "wizard"}
 
 	t.Run("config --help lists subcommands", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -137,14 +138,14 @@ func TestExecute_ConfigGroup(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("config --help exit=%d; want 0; stderr=%q", code, stderr.String())
 		}
-		for _, s := range subs {
+		for _, s := range allSubs {
 			if !strings.Contains(stdout.String(), s) {
 				t.Errorf("config --help missing subcommand %q\noutput:\n%s", s, stdout.String())
 			}
 		}
 	})
 
-	for _, s := range subs {
+	for _, s := range stillStubbed {
 		t.Run("config "+s, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 

@@ -56,11 +56,16 @@ func newRootCmd() *cobra.Command {
 	}
 	root.SetVersionTemplate("{{.Version}}\n")
 
+	// --config lets every subcommand point at an alternate config.toml.
+	// It's a persistent flag so subcommands inherit it without re-declaring.
+	configPath := defaultConfigPath()
+	root.PersistentFlags().StringVar(&configPath, "config", configPath, "Path to the marunage config.toml")
+
 	for _, c := range buildLeafStubs() {
 		root.AddCommand(c)
 	}
 	root.AddCommand(newDaemonCmd())
-	root.AddCommand(newConfigCmd())
+	root.AddCommand(newConfigCmd(&configPath))
 
 	return root
 }
@@ -134,22 +139,6 @@ func newDaemonCmd() *cobra.Command {
 		{"status", "Show the marunage daemon status."},
 	} {
 		cmd.AddCommand(newStubCmd(s, "daemon"))
-	}
-	return cmd
-}
-
-func newConfigCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Inspect or modify ~/.marunage/config.toml.",
-	}
-	for _, s := range []stubSpec{
-		{"get <key>", "Print the value of a single config key."},
-		{"set <key> <value>", "Set a single config key (non-interactive)."},
-		{"edit", "Open ~/.marunage/config.toml in $EDITOR with schema validation on save."},
-		{"wizard", "Run the interactive config wizard."},
-	} {
-		cmd.AddCommand(newStubCmd(s, "config"))
 	}
 	return cmd
 }
