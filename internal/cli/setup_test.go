@@ -200,6 +200,104 @@ func TestSetup_Skills_HelpDescribesFlags(t *testing.T) {
 	}
 }
 
+// TestSetup_Skills_DiffCLI pins the --diff arm end-to-end: `marunage
+// setup --skills --diff` must surface a diff for an edited skill and
+// must not write to disk. This is the CLI mirror of
+// TestInstall_Diff_PrintsDiffWithoutWriting.
+func TestSetup_Skills_DiffCLI(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	var b1, b2 bytes.Buffer
+	if code := Execute([]string{"setup", "--skills"}, &b1, &b2); code != 0 {
+		t.Fatalf("seed: %v", b2.String())
+	}
+	skillPath := filepath.Join(home, ".claude", "skills", "marunage-triage", "SKILL.md")
+	userBody := []byte("locally edited via CLI\n")
+	if err := os.WriteFile(skillPath, userBody, 0o600); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"setup", "--skills", "--diff"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("setup --diff exit=%d; stderr=%q", code, stderr.String())
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("locally edited via CLI")) {
+		t.Errorf("--diff output missing on-disk content marker; stdout=%q", stdout.String())
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read after --diff: %v", err)
+	}
+	if !bytes.Equal(got, userBody) {
+		t.Errorf("--diff mutated the file; want %q got %q", userBody, got)
+	}
+}
+
+// TestSetup_Skills_ForceCLI pins the --force arm end-to-end: a hand-
+// edited skill is overwritten with the embedded body when the user
+// passes --force.
+func TestSetup_Skills_ForceCLI(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	var b1, b2 bytes.Buffer
+	if code := Execute([]string{"setup", "--skills"}, &b1, &b2); code != 0 {
+		t.Fatalf("seed: %v", b2.String())
+	}
+	skillPath := filepath.Join(home, ".claude", "skills", "marunage-triage", "SKILL.md")
+	userBody := []byte("---\nname: marunage-triage\ndescription: edited\n---\n<!-- version: 0.1.0 -->\n# edit\n## 判定ロジック\nx\n## 出力フォーマット\nx\n")
+	if err := os.WriteFile(skillPath, userBody, 0o600); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"setup", "--skills", "--force"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("setup --force exit=%d; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read after --force: %v", err)
+	}
+	if bytes.Equal(got, userBody) {
+		t.Errorf("--force did not overwrite the on-disk SKILL.md")
+	}
+	if !strings.Contains(stdout.String(), "Updated") {
+		t.Errorf("--force did not surface 'Updated:' in summary; stdout=%q", stdout.String())
+	}
+}
+
+// TestSetup_Skills_FromDirTildeExpand pins that `--from-dir ~/foo` is
+// expanded relative to $HOME so script invocations that single-quote
+// the path still work. Without this, `marunage setup --skills
+// --from-dir '~/my-skills'` would fail with a literal `~/...` Stat.
+func TestSetup_Skills_FromDirTildeExpand(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	src := filepath.Join(home, "my-skills")
+	if err := os.MkdirAll(filepath.Join(src, "marunage-triage"), 0o755); err != nil {
+		t.Fatalf("seed src: %v", err)
+	}
+	body := []byte("---\nname: marunage-triage\ndescription: x\n---\n<!-- version: 5.0.0 -->\n# t\n## 判定ロジック\nx\n## 出力フォーマット\nx\n")
+	if err := os.WriteFile(filepath.Join(src, "marunage-triage", "SKILL.md"), body, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"setup", "--skills", "--from-dir", "~/my-skills"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("setup --from-dir ~/my-skills exit=%d; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "marunage-triage", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read installed: %v", err)
+	}
+	if !strings.Contains(string(got), "version: 5.0.0") {
+		t.Errorf("tilde-expanded body not landed; got %q", got)
+	}
+}
+
 // TestSetup_Skills_RecordsAuditLines pins the "No silent execution"
 // invariant for setup --skills: every install / update / skip
 // classification leaves a typed line in
