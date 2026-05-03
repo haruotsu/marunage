@@ -170,11 +170,12 @@ func TestRender_GeneratedAtFormatIsRFC3339UTC(t *testing.T) {
 	}
 }
 
-// R5: Done and failed tasks render with a checked box `[x]`; everything
-// else (pending / running / waiting_human / skipped) stays `[ ]`. The
-// distinction is what makes the cmux viewer visually scannable: terminal-
-// resolved rows look settled, in-flight rows look open.
-func TestRender_CheckboxStateReflectsCompletion(t *testing.T) {
+// R5: Only Done renders with a checked box `[x]`. Failed / pending /
+// running / waiting_human / skipped all stay `[ ]` because Failed is
+// "finished, but unsuccessful" — visually equating it with Done would
+// hide the failure. Section grouping (## Done vs ## Failed) carries the
+// status distinction; the checkbox carries the success/incomplete one.
+func TestRender_CheckboxIsCheckedOnlyForDone(t *testing.T) {
 	tasks := []store.Task{
 		{ID: 1, Source: "manual", Title: "p", Status: store.StatusPending},
 		{ID: 2, Source: "manual", Title: "r", Status: store.StatusRunning},
@@ -186,8 +187,8 @@ func TestRender_CheckboxStateReflectsCompletion(t *testing.T) {
 
 	got := Render(tasks, fixedClock)
 
-	wantChecked := []string{"- [x] #4", "- [x] #5"}
-	wantUnchecked := []string{"- [ ] #1", "- [ ] #2", "- [ ] #3", "- [ ] #6"}
+	wantChecked := []string{"- [x] #4"}
+	wantUnchecked := []string{"- [ ] #1", "- [ ] #2", "- [ ] #3", "- [ ] #5", "- [ ] #6"}
 	for _, w := range wantChecked {
 		if !strings.Contains(got, w) {
 			t.Errorf("expected checked row %q\n--- got ---\n%s", w, got)
@@ -197,6 +198,11 @@ func TestRender_CheckboxStateReflectsCompletion(t *testing.T) {
 		if !strings.Contains(got, w) {
 			t.Errorf("expected unchecked row %q\n--- got ---\n%s", w, got)
 		}
+	}
+	// Pin the negative explicitly: a checked Failed row would silently
+	// re-introduce the visual collision with Done.
+	if strings.Contains(got, "- [x] #5") {
+		t.Errorf("Failed row #5 must NOT be checked; it would visually collide with Done\n%s", got)
 	}
 }
 

@@ -102,13 +102,15 @@ func sortRows(rows []store.Task) {
 	})
 }
 
-// writeRow emits one checklist line for t. Done / failed rows show as
-// "[x]" so the viewer renders a checked box; everything else shows
-// "[ ]". Source is appended after an em-dash so the eye can scan
-// "what is this and where did it come from" in one glance.
+// writeRow emits one checklist line for t. Only Done renders "[x]";
+// every other status (including Failed) keeps "[ ]" so the checkbox
+// carries the success/incomplete distinction while section grouping
+// (## Done vs ## Failed) carries the status one. Source is appended
+// after an em-dash so the eye can scan "what is this and where did
+// it come from" in one glance.
 func writeRow(b *strings.Builder, t store.Task) {
 	box := "[ ]"
-	if t.Status == store.StatusDone || t.Status == store.StatusFailed {
+	if t.Status == store.StatusDone {
 		box = "[x]"
 	}
 	fmt.Fprintf(b, "- %s #%d %s — %s\n", box, t.ID, sanitizeInline(t.Title), t.Source)
