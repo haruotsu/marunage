@@ -81,6 +81,41 @@ func TestConfigSet_RejectsInvalidValue(t *testing.T) {
 	}
 }
 
+// TestConfigSet_InvalidLeavesExistingFileUntouched pins the rollback invariant
+// for the realistic case: a valid config already exists on disk, the user
+// fat-fingers a key, and the previously-saved file must come out byte-for-byte
+// unchanged. Without this assertion the regression where Save half-writes a
+// new file before validation would slip past TestConfigSet_RejectsInvalidValue
+// (which only checks that the file was not *created*).
+func TestConfigSet_InvalidLeavesExistingFileUntouched(t *testing.T) {
+	path := configPathFlag(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", path, "config", "set", "core.max_parallel", "7"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("seed config set exit=%d; stderr=%q", code, stderr.String())
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute([]string{"--config", path, "config", "set", "execution.permission_mode", "yolo"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("invalid config set exit=0; want non-zero")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config after invalid set: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("config file mutated by invalid set\nbefore=%q\nafter =%q", before, after)
+	}
+}
+
 // TestConfigSet_PermissionModeDerivesClaudeCommand exercises the spec rule
 // end-to-end through the CLI: setting the mode rewrites claude_command on
 // disk, which downstream `config get` then reflects.
