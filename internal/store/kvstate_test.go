@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,5 +233,45 @@ func TestKVStateRepoWithClockPinsUpdatedAt(t *testing.T) {
 	}
 	if !got.UpdatedAt.Equal(pinned) {
 		t.Errorf("updated_at = %v; want pinned %v", got.UpdatedAt, pinned)
+	}
+}
+
+//  13. Concurrent Set on the same key must not corrupt the table. SQLite +
+//     SetMaxOpenConns(1) serialises writers, so the formal contract is
+//     "after all goroutines return, exactly one row exists for the key and
+//     its value is one of the values written" — there must be no torn row,
+//     no duplicate, and no error.
+func TestKVStateRepoConcurrentSet(t *testing.T) {
+	f := newKVFixture(t)
+
+	const goroutines = 20
+	const writesPerGoroutine = 50
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	errs := make(chan error, goroutines*writesPerGoroutine)
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < writesPerGoroutine; i++ {
+				if err := f.repo.Set(f.ctx, "k", "v"); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent Set: %v", err)
+	}
+
+	got, err := f.repo.Get(f.ctx, "k")
+	if err != nil {
+		t.Fatalf("Get after concurrent Set: %v", err)
+	}
+	if got != "v" {
+		t.Errorf("value after concurrent Set = %q; want %q", got, "v")
 	}
 }
