@@ -40,19 +40,57 @@ func (r *htmlTemplateRenderer) Render(w http.ResponseWriter, name string, data a
 
 // newIndexHandler returns the GET / handler.  The handler primes the
 // CSRF cookie via TokenFor so a brand-new visitor always leaves with
-// a token in their cookie jar, then renders the dashboard
-// placeholder.  PR-63's dashboard will start binding template data;
-// for now there is nothing to bind, so the template gets nil.
-func newIndexHandler(renderer Renderer, csrf *CSRF) http.Handler {
+// a token in their cookie jar, snapshots the dashboard data, and
+// renders the full page (which embeds the dashboard fragment as the
+// initial state).  Provider errors degrade gracefully: rather than
+// surfacing a 500 on the landing page (which would make a fresh
+// install look broken when the SQLite is empty), we render the page
+// with a banner that records the failure so the operator can still
+// reach /healthz / /static.
+func newIndexHandler(renderer Renderer, csrf *CSRF, provider DashboardProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := csrf.TokenFor(w, r); err != nil {
 			http.Error(w, "csrf token issue failed", http.StatusInternalServerError)
 			return
 		}
-		if err := renderer.Render(w, "index.html", nil); err != nil {
+		page := indexPageData{}
+		snap, err := provider.Snapshot(r.Context())
+		if err != nil {
+			page.LoadError = err.Error()
+		} else {
+			page.Dashboard = newDashboardView(snap)
+		}
+		if err := renderer.Render(w, "index.html", page); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
+}
+
+// newDashboardPartialHandler returns GET /partials/dashboard. The
+// fragment is what the polling script swaps into the dashboard
+// container every few seconds; setting Cache-Control: no-store keeps
+// the browser from showing a stale snapshot when the user navigates
+// back.
+func newDashboardPartialHandler(renderer Renderer, provider DashboardProvider) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		snap, err := provider.Snapshot(r.Context())
+		if err != nil {
+			http.Error(w, "dashboard snapshot failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		view := newDashboardView(snap)
+		if err := renderer.Render(w, "dashboard.html", view); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+}
+
+// indexPageData is the top-level template payload: the rendered
+// dashboard view plus an optional load-error banner.
+type indexPageData struct {
+	Dashboard dashboardView
+	LoadError string
 }
 
 // newHealthzHandler returns the always-200 "ok" probe handler.
