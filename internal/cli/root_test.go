@@ -23,9 +23,9 @@ var requiredTopLevelSubcommands = []string{
 // PR-02 and therefore must report "not yet implemented" with a non-zero exit
 // code so users discover the missing feature immediately. As individual
 // commands ship (config in PR-05, doctor in PR-32, add/list/show in PR-20,
-// done/fail/rm/promote/reopen in PR-21, ...) they leave this list.
+// done/fail/rm/promote/reopen in PR-21, setup in PR-34, ...) they leave
+// this list.
 var leafStubSubcommands = []string{
-	"setup",
 	"discover", "run-all", "open", "notify",
 	"loop", "web", "review",
 }
