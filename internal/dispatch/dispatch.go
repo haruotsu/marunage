@@ -28,6 +28,72 @@ type Store interface {
 	UpdateStatus(ctx context.Context, id int64, newStatus string) error
 	SetStartedAt(ctx context.Context, id int64, t time.Time) error
 	MarkFailedWithReason(ctx context.Context, id int64, reason string) error
+	EscalateToHuman(ctx context.Context, id int64, reason string) error
+}
+
+// PermissionMatcher abstracts the auto-accept allowlist resolver. The
+// concrete implementation in internal/permission satisfies this; the
+// interface lives here so test fakes do not need to construct a real
+// permission.Matcher.
+type PermissionMatcher interface {
+	Allow(tool, args string) bool
+}
+
+// PermissionDecision is the dispatcher's verdict on one Claude tool
+// permission request. The cmux/MCP shim that actually intercepts the
+// prompt translates this into the protocol-level reply (allow / deny /
+// re-prompt). This type lives in dispatch because the policy lives
+// here too.
+type PermissionDecision int
+
+const (
+	// PermissionAllow: matcher accepted the (tool, args) pair.
+	PermissionAllow PermissionDecision = iota
+	// PermissionEscalate: matcher denied AND on_unknown_permission =
+	// "escalate"; the row has been moved to waiting_human and a
+	// dispatch.escalate audit event recorded.
+	PermissionEscalate
+	// PermissionFail: matcher denied AND on_unknown_permission =
+	// "fail"; the row has been moved to failed and a dispatch.fail
+	// audit event recorded.
+	PermissionFail
+	// PermissionAsk: the dispatcher will not decide. Either no matcher
+	// is configured (safe default) or the policy is "retry" — the
+	// caller is expected to surface the prompt back to a human or to
+	// a re-prompt loop.
+	PermissionAsk
+)
+
+// String aids debug output and -v test failure messages.
+func (d PermissionDecision) String() string {
+	switch d {
+	case PermissionAllow:
+		return "allow"
+	case PermissionEscalate:
+		return "escalate"
+	case PermissionFail:
+		return "fail"
+	case PermissionAsk:
+		return "ask"
+	}
+	return fmt.Sprintf("unknown(%d)", int(d))
+}
+
+// Permission policy strings recognised by WithOnUnknownPermission.
+// Mirrors config.allowedOnUnknownPermissions; the validation here is a
+// defence-in-depth against a CLI / test that bypasses Config.Validate.
+const (
+	policyEscalate = "escalate"
+	policyFail     = "fail"
+	policyRetry    = "retry"
+)
+
+func validPermissionPolicy(p string) bool {
+	switch p {
+	case "", policyEscalate, policyFail, policyRetry:
+		return true
+	}
+	return false
 }
 
 // SourceSkillFunc resolves the source-specific prompt skill (the
@@ -39,15 +105,17 @@ type SourceSkillFunc func(source string) string
 // Dispatcher ties the cmux client + store repo together with the
 // lock-key resolver and prompt builder.
 type Dispatcher struct {
-	store              Store
-	cmux               cmux.Client
-	now                func() time.Time
-	baseSkill          string
-	sourceSkill        SourceSkillFunc
-	lockKeys           map[string]string
-	claudeCommand      string
-	allowedCwdPrefixes []string
-	auditor            config.Auditor
+	store               Store
+	cmux                cmux.Client
+	now                 func() time.Time
+	baseSkill           string
+	sourceSkill         SourceSkillFunc
+	lockKeys            map[string]string
+	claudeCommand       string
+	allowedCwdPrefixes  []string
+	auditor             config.Auditor
+	matcher             PermissionMatcher
+	onUnknownPermission string
 }
 
 // Option mutates Dispatcher construction.
@@ -87,6 +155,24 @@ func WithClaudeCommand(s string) Option { return func(d *Dispatcher) { d.claudeC
 // that have not yet wired audit.log keep building.
 func WithAuditor(a config.Auditor) Option {
 	return func(d *Dispatcher) { d.auditor = a }
+}
+
+// WithPermissionMatcher installs the auto-accept allowlist resolver.
+// Optional; when nil, HandlePermissionRequest returns PermissionAsk for
+// every prompt (safe default — never silently allow). Production
+// callers wire `permission.New(cfg.Execution.AutoAcceptTools)`.
+func WithPermissionMatcher(m PermissionMatcher) Option {
+	return func(d *Dispatcher) { d.matcher = m }
+}
+
+// WithOnUnknownPermission selects the policy applied when the matcher
+// denies a request. Accepts the same strings config.toml's
+// execution.on_unknown_permission accepts: "escalate", "fail",
+// "retry". Empty / unset is treated as PermissionAsk (the dispatcher
+// abstains and the caller re-prompts the human). New() returns
+// ErrInvalidConfig for any other value.
+func WithOnUnknownPermission(p string) Option {
+	return func(d *Dispatcher) { d.onUnknownPermission = p }
 }
 
 // WithAllowedCwdPrefixes installs the cfg.Execution.AllowedCwdPrefixes
@@ -129,7 +215,60 @@ func New(opts ...Option) (*Dispatcher, error) {
 	if d.claudeCommand == "" {
 		return nil, fmt.Errorf("%w: WithClaudeCommand", ErrInvalidConfig)
 	}
+	if !validPermissionPolicy(d.onUnknownPermission) {
+		return nil, fmt.Errorf("%w: on_unknown_permission %q (want escalate / fail / retry / empty)",
+			ErrInvalidConfig, d.onUnknownPermission)
+	}
 	return d, nil
+}
+
+// HandlePermissionRequest is the dispatcher-side handler for one
+// Claude tool-permission request. The caller (a future cmux/MCP shim)
+// supplies the (tool, args) pair Claude wants to invoke; this method
+// consults the configured PermissionMatcher and on_unknown_permission
+// policy, mutates the row when the policy demands it, records an
+// audit entry, and returns the verdict.
+//
+// Decision matrix:
+//
+//	matcher.Allow(tool, args) == true       -> PermissionAllow (no row mutation)
+//	matcher == nil                          -> PermissionAsk   (safe default)
+//	matcher denies + policy "escalate"      -> EscalateToHuman + dispatch.escalate audit -> PermissionEscalate
+//	matcher denies + policy "fail"          -> MarkFailedWithReason + dispatch.fail audit -> PermissionFail
+//	matcher denies + policy "retry" or ""   -> PermissionAsk   (caller re-prompts)
+//
+// The reason string written to audit / judgment_reason runs through
+// logging.Redact so a tool args payload that happens to carry a Bearer
+// header / API key does not pin the secret into either sink.
+func (d *Dispatcher) HandlePermissionRequest(ctx context.Context, taskID int64, tool, args string) (PermissionDecision, error) {
+	if d.matcher == nil {
+		return PermissionAsk, nil
+	}
+	if d.matcher.Allow(tool, args) {
+		return PermissionAllow, nil
+	}
+	reason := logging.Redact(fmt.Sprintf("auto-accept denied: tool=%q args=%q", tool, args))
+	switch d.onUnknownPermission {
+	case policyEscalate:
+		if err := d.store.EscalateToHuman(ctx, taskID, reason); err != nil {
+			return PermissionAsk, fmt.Errorf("dispatch: EscalateToHuman id=%d: %w", taskID, err)
+		}
+		d.auditor.Record(config.AuditEvent{
+			Action: "dispatch.escalate",
+			Key:    "task:" + strconv.FormatInt(taskID, 10),
+			Value:  reason,
+		})
+		return PermissionEscalate, nil
+	case policyFail:
+		// markFailed already redacts; pass the un-prefixed reason so
+		// the on-disk text reads consistently with the escalate branch.
+		d.markFailed(ctx, taskID, reason)
+		return PermissionFail, nil
+	default:
+		// "retry" / "" / any future value validated by New: defer to
+		// the caller. Do not mutate the row.
+		return PermissionAsk, nil
+	}
 }
 
 // RunOptions controls one Run invocation.

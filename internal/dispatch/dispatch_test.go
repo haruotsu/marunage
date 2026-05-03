@@ -14,6 +14,7 @@ import (
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -910,6 +911,294 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 		t.Errorf("judgment_reason = %q; want to mention Send", row.JudgmentReason)
 	}
 }
+
+// I1-I8: permission.Matcher + on_unknown_permission policy.
+//
+// HandlePermissionRequest is the dispatcher-side handler for Claude
+// tool-permission prompts (the cmux/MCP layer that actually intercepts
+// the prompt is out of scope for PR-42b — see docs/pr_split_plan.md
+// PR-42 "スコープ非該当"). What this PR pins is the WIRING: the
+// matcher decides allow / deny; on deny the configured policy runs
+// (escalate -> EscalateToHuman + dispatch.escalate audit; fail ->
+// MarkFailedWithReason + dispatch.fail audit; retry -> defer to caller).
+
+func newPermissionFixture(t *testing.T, policy string, autoAccept []string) (dispatchFixture, int64) {
+	t.Helper()
+	m, err := permission.New(autoAccept)
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission(policy),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "perm test", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	// Move row into running so EscalateToHuman is allowed (it gates on
+	// status IN ('running', 'waiting_human')).
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+	f.cmux = nil // unused in these tests; HandlePermissionRequest is direct.
+	_ = au
+	return f, id
+}
+
+// I1: matcher allow -> PermissionAllow, no row mutation.
+func TestHandlePermissionRequestAllowsWhenMatched(t *testing.T) {
+	f, id := newPermissionFixture(t, "escalate", []string{"Read", "Bash(git status:*)"})
+	d, err := f.disp.HandlePermissionRequest(f.ctx, id, "Read", "/tmp/x")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if d != dispatch.PermissionAllow {
+		t.Errorf("decision = %v; want PermissionAllow", d)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want running (allow must not mutate)", row.Status)
+	}
+}
+
+// I2: matcher deny + escalate policy -> waiting_human + dispatch.escalate.
+func TestHandlePermissionRequestEscalatesOnDeny(t *testing.T) {
+	au := &fakeAuditor{}
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("escalate"),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "escalate me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "Bash", "rm -rf /")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionEscalate {
+		t.Errorf("decision = %v; want PermissionEscalate", dec)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusWaitingHuman {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusWaitingHuman)
+	}
+	for _, want := range []string{"Bash", "rm -rf"} {
+		if !strings.Contains(row.JudgmentReason, want) {
+			t.Errorf("judgment_reason = %q; want it to mention %q", row.JudgmentReason, want)
+		}
+	}
+	var sawEscalate bool
+	for _, e := range au.Events() {
+		if e.Action == "dispatch.escalate" {
+			sawEscalate = true
+			if !strings.Contains(e.Key, fmt.Sprintf("%d", id)) {
+				t.Errorf("escalate audit Key = %q; want it to mention id %d", e.Key, id)
+			}
+			if !strings.Contains(e.Value, "Bash") {
+				t.Errorf("escalate audit Value = %q; want it to mention denied tool", e.Value)
+			}
+		}
+	}
+	if !sawEscalate {
+		t.Errorf("no dispatch.escalate audit event recorded; got %+v", au.Events())
+	}
+}
+
+// I3: matcher deny + fail policy -> failed + dispatch.fail.
+func TestHandlePermissionRequestFailsOnDeny(t *testing.T) {
+	au := &fakeAuditor{}
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("fail"),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "fail me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "WebFetch", "https://example.com")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionFail {
+		t.Errorf("decision = %v; want PermissionFail", dec)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusFailed)
+	}
+}
+
+// I4: matcher deny + retry policy -> PermissionAsk, no mutation.
+func TestHandlePermissionRequestAsksOnRetryPolicy(t *testing.T) {
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("retry"),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "ask me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "Edit", "/tmp/x")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionAsk {
+		t.Errorf("decision = %v; want PermissionAsk", dec)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (retry policy must not mutate)", row.Status, store.StatusRunning)
+	}
+}
+
+// I5: no matcher configured -> PermissionAsk (safe default; never silently allow).
+func TestHandlePermissionRequestNoMatcherAsks(t *testing.T) {
+	f := newDispatchFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no matcher", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "Bash", "anything")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionAsk {
+		t.Errorf("decision = %v; want PermissionAsk (safe default)", dec)
+	}
+}
+
+// I7: an unknown on_unknown_permission value rejects construction.
+func TestNewRejectsUnknownPermissionPolicy(t *testing.T) {
+	_, err := dispatch.New(
+		dispatch.WithStore(stubStore{}),
+		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude"),
+		dispatch.WithOnUnknownPermission("nonsense"),
+	)
+	if err == nil {
+		t.Fatal("New with unknown on_unknown_permission = nil; want error")
+	}
+	if !errors.Is(err, dispatch.ErrInvalidConfig) {
+		t.Errorf("err = %v; want errors.Is(err, ErrInvalidConfig)", err)
+	}
+}
+
+// I8: the reason written into audit.log / judgment_reason on escalate
+// is sanitised by Redact, in case the tool args themselves carried a
+// secret (e.g. a Bash invocation that includes a curl with a Bearer
+// header).
+func TestHandlePermissionRequestRedactsReason(t *testing.T) {
+	au := &fakeAuditor{}
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("escalate"),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "secret in args", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+	args := "curl -H 'Authorization: Bearer " + leaked + "' https://api"
+
+	if _, err := f.disp.HandlePermissionRequest(f.ctx, id, "Bash", args); err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(row.JudgmentReason, leaked) {
+		t.Errorf("escalate reason leaked secret %q in:\n%s", leaked, row.JudgmentReason)
+	}
+	for _, e := range au.Events() {
+		if e.Action == "dispatch.escalate" && strings.Contains(e.Value, leaked) {
+			t.Errorf("escalate audit Value leaked secret %q: %q", leaked, e.Value)
+		}
+	}
+}
+
+// stubStore is a minimal Store impl that satisfies the interface for
+// construction-only tests (none of its methods are called).
+type stubStore struct{}
+
+func (stubStore) List(context.Context, store.ListFilter) ([]store.Task, error) {
+	return nil, nil
+}
+func (stubStore) Get(context.Context, int64) (store.Task, error)            { return store.Task{}, nil }
+func (stubStore) AcquireLock(context.Context, int64, string) error          { return nil }
+func (stubStore) ReleaseLock(context.Context, int64) error                  { return nil }
+func (stubStore) SetWorkspace(context.Context, int64, string) error         { return nil }
+func (stubStore) UpdateStatus(context.Context, int64, string) error         { return nil }
+func (stubStore) SetStartedAt(context.Context, int64, time.Time) error      { return nil }
+func (stubStore) MarkFailedWithReason(context.Context, int64, string) error { return nil }
+func (stubStore) EscalateToHuman(context.Context, int64, string) error      { return nil }
 
 // H6: dispatch failures may surface a cmux stderr / API error string
 // that contains a leaked token (e.g. an Authorization header echoed
