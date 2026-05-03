@@ -75,6 +75,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskPromoteCmd(&configPath))
 	root.AddCommand(newTaskReopenCmd(&configPath))
 	root.AddCommand(newTaskRmCmd(&configPath))
+	root.AddCommand(newTaskRenderCmd(&configPath))
 
 	return root
 }
@@ -93,7 +94,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"dispatch [<id>]", "Dispatch one or more pending tasks into cmux/Claude sessions."},
 		{"run-all", "Dispatch every pending task in priority order."},
 		{"status", "Show the running workspaces and their latest output."},
-		{"render", "Generate ~/.marunage/view.md for the cmux markdown viewer."},
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
 		{"notify", "Send completion / failure / waiting_human notifications."},
 		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
