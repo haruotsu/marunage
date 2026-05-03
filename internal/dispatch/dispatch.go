@@ -345,6 +345,12 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	// release any lock_key, no claim written. This keeps PR-44 reaper
 	// happy — no row enters running with a dangling sentinel target.
 	//
+	// Audit on failure: even though the row stays pending (and so will
+	// retry next round), we record a dispatch.fail entry so the failure
+	// is observable. requirement.md invariant #2 "No silent execution"
+	// would otherwise let a permission-denied / ENOTDIR mkdir loop
+	// forever with no trail in audit.log or judgment_reason.
+	//
 	// Chmod-after-MkdirAll: MkdirAll respects an existing directory's
 	// permissions verbatim, so a pre-existing 0o755 dir stays 0o755 and
 	// a hostile co-tenant could plant a symlink at <dir>/.exit_code
@@ -354,12 +360,16 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	if d.workspaceDirs != nil {
 		workspaceDir = d.workspaceDirs.Dir(task.ID)
 		if err := os.MkdirAll(workspaceDir, 0o700); err != nil {
+			d.recordAuditFail(task.ID,
+				fmt.Sprintf("dispatch: MkdirAll workspace dir failed: %v", err))
 			if lockKey != "" {
 				_ = d.store.ReleaseLock(ctx, task.ID)
 			}
 			return false, nil
 		}
 		if err := os.Chmod(workspaceDir, 0o700); err != nil {
+			d.recordAuditFail(task.ID,
+				fmt.Sprintf("dispatch: Chmod workspace dir failed: %v", err))
 			if lockKey != "" {
 				_ = d.store.ReleaseLock(ctx, task.ID)
 			}
