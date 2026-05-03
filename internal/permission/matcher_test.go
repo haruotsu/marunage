@@ -81,29 +81,27 @@ func TestMatcherArgPrefixWildcard(t *testing.T) {
 
 	deny := []string{
 		"git diff",
-		"git statusfoo", // prefix-but-no-boundary; we still treat as match per spec since ":*" is "any suffix"
 		"rm -rf /",
 	}
-	// "git statusfoo" matches because the ":*" wildcard does not require a
-	// word boundary; the spec text is "以降任意" (anything after). Pin the
-	// deny set excluding that ambiguous case but document the choice in a
-	// dedicated subtest below.
-	for _, args := range deny[:1] {
+	for _, args := range deny {
 		if m.Allow("Bash", args) {
 			t.Errorf("Allow(Bash, %q) = true; want false (different command)", args)
 		}
 	}
-	for _, args := range deny[2:] {
-		if m.Allow("Bash", args) {
-			t.Errorf("Allow(Bash, %q) = true; want false", args)
-		}
-	}
 
-	// Boundary-less wildcard is intentional. Documented here so a future
-	// reader does not "fix" the matcher to require a space after the
-	// prefix without first revising docs/requirement.md.
-	if !m.Allow("Bash", "git statusfoo") {
-		t.Errorf("Allow(Bash, %q) = false; the ':*' wildcard is suffix-any, not word-boundary", "git statusfoo")
+	// Boundary-less wildcard is intentional. Spec text is "以降任意"
+	// (anything after), with no word-boundary constraint. Pin the
+	// surprising-but-documented cases so a future reader cannot "fix"
+	// the matcher to require a space after the prefix without first
+	// revising docs/requirement.md.
+	allowBoundary := []string{
+		"git statusfoo",        // no separator after the prefix
+		"git status; rm -rf /", // shell metacharacter: prefix is literal
+	}
+	for _, args := range allowBoundary {
+		if !m.Allow("Bash", args) {
+			t.Errorf("Allow(Bash, %q) = false; the ':*' wildcard is suffix-any, not word-boundary", args)
+		}
 	}
 }
 
@@ -150,6 +148,47 @@ func TestMatcherMultipleRulesUnion(t *testing.T) {
 	}
 	if m.Allow("Bash", "git push") {
 		t.Errorf("Allow(Bash, \"git push\") = true; want false (no matching rule)")
+	}
+}
+
+// TestMatcherDegenerateWildcardAllowsAnyArgs pins the corner of the
+// grammar where args is just ":*". parseRule strips the wildcard suffix
+// and is left with prefix == "", which strings.HasPrefix treats as
+// always-true. The result is "Bash(:*)" being equivalent to bare "Bash".
+// The grammar permits this by construction; pin the equivalence so a
+// future tightening of parseRule (e.g. rejecting empty prefix) cannot
+// silently change the meaning of an in-the-wild config.toml entry.
+func TestMatcherDegenerateWildcardAllowsAnyArgs(t *testing.T) {
+	m, err := New([]string{"Bash(:*)"})
+	if err != nil {
+		t.Fatalf("New(Bash(:*)): %v", err)
+	}
+	allow := []string{"", "git status", "rm -rf /", "echo\nhello"}
+	for _, args := range allow {
+		if !m.Allow("Bash", args) {
+			t.Errorf("Allow(Bash, %q) = false; Bash(:*) should be a Bash-everything rule", args)
+		}
+	}
+	if m.Allow("Read", "anything") {
+		t.Errorf("Allow(Read, anything) = true; Bash(:*) must not bleed across tools")
+	}
+}
+
+// TestMatcherPrefixHandlesNewlineArgs documents that args matching is
+// byte-literal: a multi-line shell snippet matches a prefix rule iff its
+// leading bytes match. This matters because Claude can pass a heredoc or
+// a shell line with embedded \n; we must neither silently drop the rule
+// nor accidentally split on newlines and match each line independently.
+func TestMatcherPrefixHandlesNewlineArgs(t *testing.T) {
+	m, err := New([]string{"Bash(cat <<EOF:*)"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !m.Allow("Bash", "cat <<EOF\nhello\nEOF") {
+		t.Errorf("Allow(Bash, multiline) = false; prefix rule must accept embedded newlines after the prefix")
+	}
+	if m.Allow("Bash", "echo hi\ncat <<EOF\nhello\nEOF") {
+		t.Errorf("Allow(Bash, prefixed-by-other-cmd) = true; prefix rule must anchor at byte 0")
 	}
 }
 
