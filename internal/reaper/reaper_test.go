@@ -572,6 +572,56 @@ func TestRunDoesNotCrashWhenRowMovedConcurrently(t *testing.T) {
 	}
 }
 
+// Idempotency robustness: a row whose pre-existing JudgmentReason
+// happens to contain the warn token literal as a *substring of an
+// operator note* (e.g. "investigated [reaper] stuck running over 24h
+// false alarm") must still earn a warn — otherwise an attacker / over-
+// helpful operator could silently disable reaper warnings for a row by
+// pre-poisoning judgment_reason. The reaper's idempotency check must
+// match the warn token only when it appears as its own appended note,
+// not as embedded substring text.
+func TestRunWarnIsNotSuppressedByEmbeddedSubstring(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+
+	startedAt := f.now.Add(-25 * time.Hour)
+	id := f.seedRunning(t, "embedded", "workspace:1300", startedAt)
+	// Pre-poison judgment_reason with a literal that happens to contain
+	// the warn token as a substring inside operator prose.
+	embedded := "investigated [reaper] stuck running over 24h false alarm"
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, embedded); err != nil {
+		t.Fatalf("AppendJudgmentReason setup: %v", err)
+	}
+	f.cm.listResp = []cmux.Workspace{{ID: "workspace:1300"}}
+
+	if err := f.reaper.Run(f.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Embedded substring must not have suppressed the genuine append:
+	// the row's reason should now end with a real warn token, joined
+	// by "; " from the prior operator prose. The threshold renders as
+	// time.Duration.String() output, which keeps trailing zero units
+	// (24h0m0s rather than 24h) — that's the same literal idempotency
+	// matches against, so it does not affect the contract.
+	want := embedded + "; [reaper] stuck running over 24h0m0s"
+	if got.JudgmentReason != want {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, want)
+	}
+	warnEvents := 0
+	for _, e := range f.aud.snapshot() {
+		if e.Action == "reaper.warn" {
+			warnEvents++
+		}
+	}
+	if warnEvents != 1 {
+		t.Errorf("reaper.warn events = %d; want 1 (embedded substring must not suppress)", warnEvents)
+	}
+}
+
 // E1 (status guard): a "race latch" Store wrapper transitions the row
 // to done between List and the per-row markDisappeared call. The
 // status-guarded helper must refuse the failed write so the terminal

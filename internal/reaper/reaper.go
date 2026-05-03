@@ -200,7 +200,13 @@ func (r *Reaper) Run(ctx context.Context) error {
 		// Idempotency: a previous Run already appended the warn token,
 		// so skip the second write to keep audit.log and judgment_reason
 		// from ballooning under loop / cron invocations.
-		if strings.Contains(row.JudgmentReason, warnToken) {
+		//
+		// Match on the joined-segment level (split by judgmentReason
+		// separator "; ") rather than substring so an operator note
+		// that happens to embed the warn literal as prose
+		// ("investigated [reaper] stuck running over 24h false alarm")
+		// does NOT silently disable future genuine warns for the row.
+		if hasReaperWarnToken(row.JudgmentReason, warnToken) {
 			continue
 		}
 		r.markStuck(ctx, row, warnToken)
@@ -238,6 +244,20 @@ func (r *Reaper) markDisappeared(ctx context.Context, row store.Task) {
 	}
 	slog.Warn("reaper: failed to mark disappeared row failed",
 		"task_id", row.ID, "ws", row.WS, "err", err)
+}
+
+// hasReaperWarnToken returns true iff one of the "; "-joined segments
+// of judgmentReason equals warnToken exactly. This is the strict form
+// of strings.Contains used by the idempotency check — segment-level
+// match avoids the "operator quoted the warn literal in prose"
+// false-positive that would otherwise mute the next genuine warn.
+func hasReaperWarnToken(judgmentReason, warnToken string) bool {
+	for _, seg := range strings.Split(judgmentReason, "; ") {
+		if seg == warnToken {
+			return true
+		}
+	}
+	return false
 }
 
 // markStuck appends the warn token to judgment_reason (preserving any
