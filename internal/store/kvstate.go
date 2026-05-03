@@ -43,9 +43,10 @@ import (
 // reading a checkpoint and a task) can branch on the right one without
 // shadowing.
 var (
-	ErrKVNotFound    = errors.New("store: kv_state key not found")
-	ErrKVKeyRequired = errors.New("store: kv_state key is required")
-	ErrKVStaleValue  = errors.New("store: kv_state CompareAndSwap saw a stale value")
+	ErrKVNotFound      = errors.New("store: kv_state key not found")
+	ErrKVKeyRequired   = errors.New("store: kv_state key is required")
+	ErrKVValueRequired = errors.New("store: kv_state value is required")
+	ErrKVStaleValue    = errors.New("store: kv_state CompareAndSwap saw a stale value")
 )
 
 // KVStateRepo is the read/write gateway to the kv_state table. Mirrors
@@ -137,9 +138,17 @@ func (r *KVStateRepo) GetWithMeta(ctx context.Context, key string) (KVEntry, err
 // injected clock. Implemented as a single UPSERT so the "key exists?" /
 // "write" pair cannot tear: SQLite executes a single statement atomically,
 // so a crash between the conflict check and the write is impossible.
+//
+// An empty value is rejected with ErrKVValueRequired: the package godoc
+// promises "missing checkpoint is row absence, never NULL or empty value",
+// so a stored "" would shadow the ErrKVNotFound signal Discovery plugins
+// rely on for "first run, no checkpoint yet".
 func (r *KVStateRepo) Set(ctx context.Context, key, value string) error {
 	if key == "" {
 		return ErrKVKeyRequired
+	}
+	if value == "" {
+		return ErrKVValueRequired
 	}
 	now := formatTime(r.now().UTC())
 	const q = `INSERT INTO kv_state(key, value, updated_at) VALUES (?, ?, ?)
@@ -191,6 +200,11 @@ func (r *KVStateRepo) Delete(ctx context.Context, key string) error {
 func (r *KVStateRepo) CompareAndSwap(ctx context.Context, key, expected, newValue string) error {
 	if key == "" {
 		return ErrKVKeyRequired
+	}
+	if newValue == "" {
+		// Same invariant as Set: an empty stored value would later be
+		// indistinguishable from "row deleted" on a follow-up Get.
+		return ErrKVValueRequired
 	}
 	now := formatTime(r.now().UTC())
 	const q = `UPDATE kv_state
