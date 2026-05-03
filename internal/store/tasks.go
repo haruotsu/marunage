@@ -98,6 +98,12 @@ var (
 	// 202 line promises has nothing to show otherwise, so we fail loudly
 	// rather than silently accept a blank.
 	ErrReasonRequired = errors.New("store: reason is required")
+	// ErrDeadlineRequired is returned by bulk expiry helpers (PR-41
+	// ExpireWaitingHuman; future running-row reaper) when handed a
+	// time.Time zero value. Without this guard the helper would silently
+	// expire nothing (the epoch is the smallest representable time),
+	// masking a caller bug forever.
+	ErrDeadlineRequired = errors.New("store: deadline is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -449,6 +455,50 @@ func (r *TaskRepo) EscalateToHuman(ctx context.Context, id int64, reason string)
 		return fmt.Errorf("escalate to human probe: %w", err)
 	}
 	return fmt.Errorf("%w: cannot escalate from %q", ErrInvalidTransition, current)
+}
+
+// ExpireWaitingHuman flips every `waiting_human` row whose updated_at is
+// strictly before deadline into `failed`, and returns the number of rows
+// transitioned. This is the timeout half of the requirement.md L203
+// promise: "リストに合致しない確認プロンプトが出たとき … `human_wait_timeout`
+// で `failed` への遷移". The caller (PR-71 loop / daemon, or the reaper)
+// computes deadline as `now - config.execution.human_wait_timeout` and
+// calls this on each tick.
+//
+// Why deadline is exclusive: a row that flipped into waiting_human at
+// exactly `deadline` has not yet passed the timeout window. Using `<`
+// (rather than `<=`) keeps the boundary precise and matches how the
+// requirement reads ("経過したら" — after the elapsed window).
+//
+// Scope:
+//   - Only `waiting_human` rows are touched. running / pending have
+//     their own reaper paths (PR-44) and must not be mass-failed here.
+//   - judgment_reason is preserved so post-mortem in `marunage review`
+//     can still see why this row was escalated. The fact that it was
+//     also expired lives in the audit log (logged by the caller).
+//   - completed_at is intentionally not stamped here either; the
+//     dispatcher / `marunage fail` path owns terminal-state timestamps.
+//
+// Errors:
+//   - ErrDeadlineRequired when deadline is the zero value. Without the
+//     guard a caller bug (forgetting to compute the cutoff) would
+//     silently expire nothing forever.
+func (r *TaskRepo) ExpireWaitingHuman(ctx context.Context, deadline time.Time) (int64, error) {
+	if deadline.IsZero() {
+		return 0, ErrDeadlineRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ? WHERE status = ? AND updated_at < ?",
+		StatusFailed, StatusWaitingHuman, formatTime(deadline.UTC()),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("expire waiting_human: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("expire waiting_human rows: %w", err)
+	}
+	return n, nil
 }
 
 // SetWorkspace records the cmux ws reference for a dispatched task. It is
