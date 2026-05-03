@@ -74,6 +74,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskFailCmd(&configPath))
 	root.AddCommand(newTaskPromoteCmd(&configPath))
 	root.AddCommand(newTaskReopenCmd(&configPath))
+	root.AddCommand(newTaskRmCmd(&configPath))
 
 	return root
 }
@@ -88,7 +89,6 @@ func buildLeafStubs() []*cobra.Command {
 	specs := []stubSpec{
 		{"init", "Initialize ~/.marunage/, the SQLite store, and prompt for a permission mode."},
 		{"setup", "Run the OSS setup wizard: install Skills and authenticate sources."},
-		{"rm <id>", "Remove a task and propagate the deletion to the source mirror."},
 		{"discover", "Run the Discovery layer once and enqueue new tasks."},
 		{"dispatch [<id>]", "Dispatch one or more pending tasks into cmux/Claude sessions."},
 		{"run-all", "Dispatch every pending task in priority order."},
