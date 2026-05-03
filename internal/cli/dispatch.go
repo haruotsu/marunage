@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -11,8 +13,21 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
 )
+
+// workspaceDirs is the production WorkspaceDirs the dispatcher and the
+// PR-43 completion watcher share. Rooted at ~/.marunage/workspaces so
+// task <id>'s sentinel lives at ~/.marunage/workspaces/<id>/.exit_code,
+// matching docs/requirement.md ファイルレイアウト.
+type workspaceDirs struct {
+	root string
+}
+
+func (w workspaceDirs) Dir(id int64) string {
+	return filepath.Join(w.root, strconv.FormatInt(id, 10))
+}
 
 // dispatchRunner is the narrow surface newDispatchCmd needs from the
 // dispatcher. Keeping it as an interface is the test seam: production
@@ -85,6 +100,24 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		auditor = al
 	}
 
+	// Workspaces live alongside tasks.db so a single ~/.marunage tree
+	// holds the queue (tasks.db) and the per-task control directories
+	// (workspaces/<id>/) the PR-43 completion watcher polls.
+	//
+	// Pre-create the parent root with 0o700 so per-task subdirs inherit
+	// the tight permission.
+	wsRoot := filepath.Join(filepath.Dir(dbPath), "workspaces")
+	if err := os.MkdirAll(wsRoot, 0o700); err == nil {
+		_ = os.Chmod(wsRoot, 0o700)
+	}
+	dirs := workspaceDirs{root: wsRoot}
+
+	matcher, err := permission.New(cfg.Execution.AutoAcceptTools)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("permission.New: %w", err)
+	}
+
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
@@ -93,6 +126,10 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
 		dispatch.WithAuditor(auditor),
+		dispatch.WithWorkspaceDirs(dirs),
+		dispatch.WithPermissionMatcher(matcher),
+		dispatch.WithOnUnknownPermission(cfg.Execution.OnUnknownPermission),
+		dispatch.WithPermissionMode(cfg.Execution.PermissionMode),
 	)
 	if err != nil {
 		_ = db.Close()
