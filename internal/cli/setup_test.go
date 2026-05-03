@@ -200,6 +200,104 @@ func TestSetup_Skills_HelpDescribesFlags(t *testing.T) {
 	}
 }
 
+// TestSetup_Skills_RecordsAuditLines pins the "No silent execution"
+// invariant for setup --skills: every install / update / skip
+// classification leaves a typed line in
+// ~/.marunage/logs/audit.log so an operator can audit when each Skill
+// was provisioned. The precedent is `init.create` / `init.skip` from
+// internal/initialize.
+func TestSetup_Skills_RecordsAuditLines(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"setup", "--skills"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("setup --skills exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	auditPath := filepath.Join(home, ".marunage", "logs", "audit.log")
+	lines := readCLIAuditLines(t, auditPath)
+
+	var installs []cliAuditLine
+	for _, l := range lines {
+		if l.Action == "setup.skills.install" {
+			installs = append(installs, l)
+		}
+	}
+	if len(installs) != 3 {
+		t.Fatalf("setup.skills.install count = %d; want 3 (one per bundled skill); lines=%+v",
+			len(installs), lines)
+	}
+
+	wantNames := map[string]bool{"marunage-execute": true, "marunage-reflect": true, "marunage-triage": true}
+	for _, l := range installs {
+		if !wantNames[l.Name] {
+			t.Errorf("unexpected install Name=%q (want one of marunage-execute/-reflect/-triage)", l.Name)
+		}
+		want := filepath.Join(home, ".claude", "skills", l.Name, "SKILL.md")
+		if l.Path != want {
+			t.Errorf("install Path = %q; want %q", l.Path, want)
+		}
+	}
+}
+
+// TestSetup_Skills_AuditOnSkipAndUpdate pins that the rerun / force
+// classifications also land on disk, so an audit trail can distinguish
+// "marunage left this skill alone" from "marunage rewrote it" later.
+func TestSetup_Skills_AuditOnSkipAndUpdate(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	// Seed.
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"setup", "--skills"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("seed: %v", stderr.String())
+	}
+	// Re-run: same content -> 3 skips.
+	stdout.Reset()
+	stderr.Reset()
+	if code := Execute([]string{"setup", "--skills"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rerun: %v", stderr.String())
+	}
+	// Hand-edit triage to differ, then --force on all (triage updates,
+	// the rest stay byte-equal and skip).
+	skillPath := filepath.Join(home, ".claude", "skills", "marunage-triage", "SKILL.md")
+	edited := []byte("---\nname: marunage-triage\ndescription: edited\n---\n<!-- version: 0.1.0 -->\n# edit\n\n## 判定ロジック\nmine\n\n## 出力フォーマット\nmine\n")
+	if err := os.WriteFile(skillPath, edited, 0o600); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Execute([]string{"setup", "--skills", "--force"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("force: %v", stderr.String())
+	}
+
+	auditPath := filepath.Join(home, ".marunage", "logs", "audit.log")
+	lines := readCLIAuditLines(t, auditPath)
+
+	var installs, skips, updates int
+	for _, l := range lines {
+		switch l.Action {
+		case "setup.skills.install":
+			installs++
+		case "setup.skills.skip":
+			skips++
+		case "setup.skills.update":
+			updates++
+		}
+	}
+	if installs != 3 {
+		t.Errorf("install count = %d; want 3 (initial seed)", installs)
+	}
+	// rerun: 3 skip; force: 2 skip (execute/reflect unchanged) + 1 update (triage).
+	if skips != 5 {
+		t.Errorf("skip count = %d; want 5 (3 rerun + 2 force-on-unchanged)", skips)
+	}
+	if updates != 1 {
+		t.Errorf("update count = %d; want 1 (only edited triage)", updates)
+	}
+}
+
 // TestSetup_Skills_PermissionsOnDisk pins per-user secret hygiene at
 // the CLI layer so a regression in `internal/skills.writeSkill` would
 // surface in CI even if no one runs the unit tests directly.
