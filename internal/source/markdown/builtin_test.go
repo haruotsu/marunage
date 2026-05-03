@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/source"
@@ -75,7 +74,7 @@ func TestRegisterBuiltinAttachesAdapterAndPassesValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if !strings.HasPrefix(added.ExternalID, "") || added.Title != "hello" {
+	if added.ExternalID == "" || added.Title != "hello" {
 		t.Fatalf("Add returned %+v", added)
 	}
 }

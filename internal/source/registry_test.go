@@ -77,7 +77,9 @@ func TestRegistryNamesIsSorted(t *testing.T) {
 	t.Parallel()
 
 	r := NewRegistry()
-	for _, n := range []string{"gmail", "markdown", "slack"} {
+	// Register in deliberately non-sorted order so the assertion below
+	// would fail without the explicit sort.Strings inside Names().
+	for _, n := range []string{"slack", "gmail", "markdown"} {
 		if err := r.Register(&regStubPlugin{name: n}); err != nil {
 			t.Fatalf("Register %s: %v", n, err)
 		}
@@ -112,6 +114,47 @@ func TestRegistryConcurrentRegisterIsSafe(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestRegistryConcurrentDuplicateRegister hammers Register with goroutines
+// that all use the SAME name so the duplicate-detection path (registry.go's
+// "%w: %q" with ErrPluginAlreadyRegistered) is exercised under contention.
+// Exactly one Register must succeed; the rest must see the typed error.
+// Without this case the previous concurrent test only proved the lock
+// allowed safe map writes for *different* keys, leaving the duplicate
+// branch untested under race.
+func TestRegistryConcurrentDuplicateRegister(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	const n = 16
+	var (
+		wg        sync.WaitGroup
+		successMu sync.Mutex
+		successes int
+		dupCount  int
+	)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			err := r.Register(&regStubPlugin{name: "contended"})
+			successMu.Lock()
+			defer successMu.Unlock()
+			if err == nil {
+				successes++
+			} else if errors.Is(err, ErrPluginAlreadyRegistered) {
+				dupCount++
+			}
+		}()
+	}
+	wg.Wait()
+	if successes != 1 {
+		t.Fatalf("successes = %d, want exactly 1 (the rest must hit the duplicate guard)", successes)
+	}
+	if dupCount != n-1 {
+		t.Fatalf("ErrPluginAlreadyRegistered count = %d, want %d", dupCount, n-1)
+	}
 }
 
 func fixedName(i int) string {
@@ -167,6 +210,33 @@ func TestValidateAgainstManifestPassesWhenInterfacesMatch(t *testing.T) {
 	}
 	if err := ValidateAgainstManifest(p, m); err != nil {
 		t.Fatalf("ValidateAgainstManifest: %v", err)
+	}
+}
+
+// TestValidateAgainstManifestRejectsNil pins the early-guard branch
+// (registry.go's `if p == nil || m == nil` block). Without it, a caller
+// passing a nil manifest would fall through into a nil-deref on
+// p.Name() vs m.Name. Each combination is exercised so the test names
+// exactly which side was nil if a future refactor breaks one path.
+func TestValidateAgainstManifestRejectsNil(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		p    Plugin
+		m    *Manifest
+	}{
+		{"nil plugin", nil, &Manifest{Name: "x"}},
+		{"nil manifest", &regStubPlugin{name: "x"}, nil},
+		{"both nil", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateAgainstManifest(tc.p, tc.m)
+			if !errors.Is(err, ErrCapabilityMismatch) {
+				t.Fatalf("want ErrCapabilityMismatch, got %v", err)
+			}
+		})
 	}
 }
 
