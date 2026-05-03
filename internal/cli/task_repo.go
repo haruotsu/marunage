@@ -117,6 +117,11 @@ type taskRepo interface {
 	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
 	TransitionStatus(ctx context.Context, id int64, newStatus string) error
 	Delete(ctx context.Context, id int64) error
+	// SetWorkspace is the gateway PR-22 `marunage clean --apply` uses to
+	// drop a stale ws reference. Empty ws clears the column on the wire
+	// (NULL); the underlying *store.TaskRepo.SetWorkspace already honours
+	// that convention.
+	SetWorkspace(ctx context.Context, id int64, ws string) error
 }
 
 // taskRepoFactory opens a taskRepo plus a closer that the caller must run
