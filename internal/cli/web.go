@@ -25,12 +25,14 @@ type webRunner interface {
 }
 
 // WebFactoryOptions is the resolved input the CLI hands to the web
-// factory: the effective addr (after flag/config/--remote precedence)
-// plus the Remote flag itself so the factory can react to opt-in
-// publishing if it ever needs to (e.g. enabling auth in a later PR).
+// factory: the effective addr (after flag/config/--remote
+// precedence).  --remote awareness lives in the CLI layer (it
+// rewrites Addr to 0.0.0.0 + emits the warning banner) so the
+// factory does not need to know about it; if a later PR needs the
+// flag to switch behaviour (e.g. auth wiring) we can re-add the
+// field with a real consumer.
 type WebFactoryOptions struct {
-	Addr   string
-	Remote bool
+	Addr string
 }
 
 // webFactory builds a webRunner from the resolved options.  Mirrors
@@ -120,7 +122,15 @@ func newWebCmd(configPath *string) *cobra.Command {
 			if cmd.Flags().Changed("port") {
 				effectivePort = port
 			}
-			effectiveRemote := cfg.Web.Remote || remote
+			// CLI flag wins over [web].remote in either direction
+			// (just like --bind / --port) so an operator can flip
+			// behaviour without editing config.toml.  Without the
+			// Changed() check the boolean OR would forever stick
+			// remote=true after the config sets it once.
+			effectiveRemote := cfg.Web.Remote
+			if cmd.Flags().Changed("remote") {
+				effectiveRemote = remote
+			}
 			if effectiveRemote {
 				// Brief: --remote opts into 0.0.0.0 binding; auth
 				// itself is a separate PR.  Override the bind
@@ -131,8 +141,7 @@ func newWebCmd(configPath *string) *cobra.Command {
 			addr := net.JoinHostPort(effectiveBind, strconv.Itoa(effectivePort))
 
 			runner, err := activeWebFactory()(cmd.Context(), WebFactoryOptions{
-				Addr:   addr,
-				Remote: effectiveRemote,
+				Addr: addr,
 			})
 			if err != nil {
 				return err
