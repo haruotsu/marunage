@@ -1,0 +1,12 @@
+[plugin]
+name = "github"
+version = "0.1.0"
+description = "GitHub Discovery source (PR-83). Surfaces open issues and pull requests assigned to the authenticated user via the gh CLI."
+sync_mode = "bidirectional"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+    "since",
+    "complete",
+]
