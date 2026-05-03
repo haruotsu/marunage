@@ -419,6 +419,48 @@ func TestRunSkipsLockedRowAndContinues(t *testing.T) {
 	}
 }
 
+// D3: when dispatch fails AFTER the row already carries a triage /
+// orient judgment_reason (e.g. "phase1: markdown source bypass" set at
+// Insert time, or an EscalateToHuman reason left over from a prior
+// run), the dispatch failure reason must be APPENDED rather than
+// overwriting the original. requirement.md L567 designates triage /
+// EscalateToHuman as the only writers of judgment_reason; PR-42's
+// MarkFailedWithReason path must not silently destroy the triage trail
+// that `marunage review` relies on for post-mortem.
+func TestRunPreservesPriorJudgmentReasonOnFailure(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return errors.New("cmux send: exit 1")
+	}
+
+	const triageReason = "phase1: markdown source bypass"
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:         "markdown",
+		Title:          "preserve triage",
+		CWD:            "/tmp",
+		JudgmentReason: triageReason,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Fatalf("status = %q; want %q", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, triageReason) {
+		t.Errorf("judgment_reason = %q; want it to preserve the original triage reason %q", row.JudgmentReason, triageReason)
+	}
+	if !strings.Contains(row.JudgmentReason, "Send") {
+		t.Errorf("judgment_reason = %q; want it to also mention the dispatch Send failure", row.JudgmentReason)
+	}
+}
+
 // C2c: started_at must never be NULL while status=running. The dispatch
 // loop has multiple writes (SetWorkspace, UpdateStatus(running),
 // SetStartedAt). If SetStartedAt fails AFTER UpdateStatus(running),

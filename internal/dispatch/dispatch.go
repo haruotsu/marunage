@@ -179,6 +179,39 @@ func (d *Dispatcher) runOne(ctx context.Context, id int64) error {
 	return err
 }
 
+// markFailed records a dispatch-time failure on the row while
+// preserving any prior judgment_reason. requirement.md L567 reserves
+// judgment_reason writes to triage / EscalateToHuman; PR-42 inherits
+// the dispatcher's "fail loud" need without destroying the triage
+// trail that `marunage review` reads for post-mortem.
+//
+// Strategy: read the row first, prepend any non-empty existing reason
+// with "; " before the dispatch reason, then write back via
+// MarkFailedWithReason. The Get + Update pair is not atomic, but the
+// only writers that race here are EscalateToHuman (PR-71 daemon
+// concurrent escalation; not yet wired) and a duplicate dispatch run
+// (already prevented by the SetWorkspace + SetStartedAt + UpdateStatus
+// sequence). Best-effort fallback: if Get itself fails, write the
+// dispatch reason alone so we still surface the failure.
+//
+// Errors from MarkFailedWithReason are intentionally swallowed: we are
+// already in a failure path where surfacing a second error would mask
+// the original cmux/Send failure the caller is trying to record. A DB
+// failure here is observable through the row staying in running until
+// the next Run picks up the inconsistency.
+func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason string) {
+	cur, err := d.store.Get(ctx, id)
+	if err != nil {
+		_ = d.store.MarkFailedWithReason(ctx, id, dispatchReason)
+		return
+	}
+	reason := dispatchReason
+	if cur.JudgmentReason != "" {
+		reason = cur.JudgmentReason + "; " + dispatchReason
+	}
+	_ = d.store.MarkFailedWithReason(ctx, id, reason)
+}
+
 // dispatchOne handles a single candidate. Returns (true, nil) when the
 // row was successfully claimed and a Send was attempted (regardless of
 // whether the Send itself later failed — the row is no longer eligible
@@ -195,7 +228,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		// failed here keeps the dispatcher moving instead of blocking the
 		// whole queue on one bad row. The row stays in failed with the
 		// reason so `marunage review` surfaces it.
-		_ = d.store.MarkFailedWithReason(ctx, task.ID,
+		d.markFailed(ctx, task.ID,
 			fmt.Sprintf("dispatch: lock_key resolve failed: %v", err))
 		return false, nil
 	}
@@ -252,7 +285,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	}
 
 	if err := d.cmux.WaitReady(ctx, ws); err != nil {
-		_ = d.store.MarkFailedWithReason(ctx, task.ID,
+		d.markFailed(ctx, task.ID,
 			fmt.Sprintf("dispatch: WaitReady failed: %v", err))
 		return true, nil
 	}
@@ -263,7 +296,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		Task:           task,
 	})
 	if err := d.cmux.Send(ctx, ws, prompt); err != nil {
-		_ = d.store.MarkFailedWithReason(ctx, task.ID,
+		d.markFailed(ctx, task.ID,
 			fmt.Sprintf("dispatch: Send failed: %v", err))
 		return true, nil
 	}
