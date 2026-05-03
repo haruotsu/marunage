@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -332,6 +333,202 @@ func (p *Plugin) Since(ctx context.Context) ([]Task, error) {
 // our purposes, a brand new file).
 func checkpointKey(path string) string {
 	return "markdown:mtime:" + path
+}
+
+// Add appends a new checklist line to the first configured file and
+// returns the resulting Task. notes is currently ignored (reserved for
+// a follow-up that captures sub-indented detail lines); a non-empty
+// value is accepted today so the API does not need to change later.
+//
+// Why "first configured file" rather than "all of them": Add cannot
+// know which file the user thinks of as the active one when several
+// are configured, so the documented rule is "the head of WithFiles".
+// Callers that want different behaviour can construct a per-file
+// Plugin.
+func (p *Plugin) Add(ctx context.Context, title, _ string) (Task, error) {
+	if len(p.files) == 0 {
+		return Task{}, ErrNoFilesConfigured
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	path := p.files[0]
+	id, err := p.idGen()
+	if err != nil {
+		return Task{}, fmt.Errorf("generate id: %w", err)
+	}
+	mk := marker{Present: true, ID: id, Source: "markdown", Extra: map[string]string{}}
+	tl := taskLine{Title: title, Done: false, Marker: mk}
+	line := renderTaskLine(tl)
+
+	// Read current body (empty if missing) and append. A missing file
+	// is fine here — Setup is not strictly required before Add, and
+	// the user's intent is "make this task exist".
+	body, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return Task{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	newBody := appendLine(body, line)
+	if err := atomicWriteFile(path, newBody, 0o600); err != nil {
+		return Task{}, fmt.Errorf("write %s: %w", path, err)
+	}
+	// Re-parse so the returned LineNumber matches the on-disk file.
+	parsed, err := parse(path, newBody)
+	if err != nil {
+		return Task{}, err
+	}
+	for _, pt := range parsed {
+		if pt.Marker.ID == id {
+			return Task{
+				ExternalID: id,
+				Title:      pt.Title,
+				Done:       pt.Done,
+				SourcePath: path,
+				LineNumber: pt.LineNumber,
+			}, nil
+		}
+	}
+	// Should not happen unless the parser disagrees with the renderer.
+	return Task{}, fmt.Errorf("markdown: appended line not found by parser")
+}
+
+// Complete flips the checkbox of the line with the given ExternalID
+// from `[ ]` to `[x]`. ExternalID is matched across every configured
+// file so callers do not need to remember which file a task came from.
+func (p *Plugin) Complete(ctx context.Context, externalID string) error {
+	return p.mutateLine(ctx, externalID, func(parsed []parsedTask, idx int, body []byte) ([]byte, error) {
+		mk := parsed[idx].Marker
+		tl := taskLine{
+			Title:  parsed[idx].Title,
+			Done:   true,
+			Marker: mk,
+		}
+		// Preserve the original indent by re-reading it from the line.
+		lines := splitLines(body)
+		i := parsed[idx].LineNumber - 1
+		if m := checkboxLine.FindStringSubmatch(lines[i]); m != nil {
+			tl.Indent = m[1]
+		}
+		lines[i] = renderTaskLine(tl)
+		out := joinLines(lines)
+		if hadTrailingNewline(body) {
+			out = append(out, '\n')
+		}
+		return out, nil
+	})
+}
+
+// Delete removes the line carrying externalID. Surrounding lines and
+// prose are preserved verbatim; only the one matching line goes away.
+func (p *Plugin) Delete(ctx context.Context, externalID string) error {
+	return p.mutateLine(ctx, externalID, func(parsed []parsedTask, idx int, body []byte) ([]byte, error) {
+		lines := splitLines(body)
+		i := parsed[idx].LineNumber - 1
+		lines = append(lines[:i], lines[i+1:]...)
+		out := joinLines(lines)
+		if hadTrailingNewline(body) && (len(out) == 0 || out[len(out)-1] != '\n') {
+			out = append(out, '\n')
+		}
+		return out, nil
+	})
+}
+
+// Setup creates each configured file (and any missing parent dirs) if
+// it does not yet exist. Existing files are left untouched, making the
+// operation idempotent — the documented contract for the `setup`
+// subcommand in requirement.md lines 102-114.
+func (p *Plugin) Setup(ctx context.Context) error {
+	if len(p.files) == 0 {
+		return ErrNoFilesConfigured
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, path := range p.files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := os.Stat(path); err == nil {
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		dir := filepath.Dir(path)
+		if dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return fmt.Errorf("mkdir %s: %w", dir, err)
+			}
+		}
+		if err := atomicWriteFile(path, nil, 0o600); err != nil {
+			return fmt.Errorf("touch %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// mutateLine is the shared core for Complete and Delete: it scans every
+// configured file, locates the line whose marker.ID equals externalID,
+// hands the (parsed, body) pair to mutate to produce a new body, then
+// atomic-writes the result. Wrapping this pattern keeps both callers
+// honest about the same locking and "one matching line" invariants.
+func (p *Plugin) mutateLine(
+	ctx context.Context,
+	externalID string,
+	mutate func(parsed []parsedTask, idx int, body []byte) ([]byte, error),
+) error {
+	if len(p.files) == 0 {
+		return ErrNoFilesConfigured
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, path := range p.files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		parsed, err := parse(path, body)
+		if err != nil {
+			return err
+		}
+		for i := range parsed {
+			if parsed[i].Marker.ID != externalID {
+				continue
+			}
+			newBody, err := mutate(parsed, i, body)
+			if err != nil {
+				return err
+			}
+			if err := atomicWriteFile(path, newBody, 0o600); err != nil {
+				return fmt.Errorf("write %s: %w", path, err)
+			}
+			return nil
+		}
+	}
+	return ErrTaskNotFound
+}
+
+// appendLine returns body + line + "\n", inserting a separating
+// newline first if body did not already end with one. Empty body
+// produces just "line\n" — no leading blank line for fresh files.
+func appendLine(body []byte, line string) []byte {
+	out := make([]byte, 0, len(body)+len(line)+2)
+	out = append(out, body...)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	out = append(out, line...)
+	out = append(out, '\n')
+	return out
+}
+
+func hadTrailingNewline(body []byte) bool {
+	return len(body) > 0 && body[len(body)-1] == '\n'
 }
 
 // stableSortTasksByPathLine keeps List output deterministic when callers

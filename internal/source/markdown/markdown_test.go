@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -152,8 +153,8 @@ func TestListInvalidMarkerSurfacesTypedError(t *testing.T) {
 // separate PR). Storing values in a map mirrors the (key,string) shape
 // of kv_state exactly enough for these tests.
 type memCheckpointer struct {
-	mu  sync.Mutex
-	kv  map[string]string
+	mu sync.Mutex
+	kv map[string]string
 }
 
 func newMemCheckpointer() *memCheckpointer {
@@ -221,6 +222,161 @@ func TestSinceSkipsUnchangedFiles(t *testing.T) {
 		t.Fatalf("third Since should be empty, got %+v", got)
 	}
 }
+
+func TestAddAppendsTaskWithMarker(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md", "# Notes\n\n- [ ] existing\n")
+	p := New(WithFiles(path))
+
+	got, err := p.Add(context.Background(), "new task", "")
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got.Title != "new task" || got.Done || got.ExternalID == "" {
+		t.Fatalf("returned task = %+v", got)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "- [ ] new task <!-- marunage:id="+got.ExternalID) {
+		t.Fatalf("body missing new task line:\n%s", body)
+	}
+	// Existing content must be preserved.
+	if !strings.Contains(string(body), "- [ ] existing") {
+		t.Fatalf("existing line lost:\n%s", body)
+	}
+}
+
+func TestAddRequiresAtLeastOneFile(t *testing.T) {
+	t.Parallel()
+
+	p := New()
+	_, err := p.Add(context.Background(), "x", "")
+	if !errors.Is(err, ErrNoFilesConfigured) {
+		t.Fatalf("want ErrNoFilesConfigured, got %v", err)
+	}
+}
+
+func TestCompleteFlipsCheckbox(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md",
+		"- [ ] foo <!-- marunage:id=abc source=markdown -->\n")
+	p := New(WithFiles(path))
+
+	if err := p.Complete(context.Background(), "abc"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "- [x] foo") {
+		t.Fatalf("checkbox not flipped, body=%q", body)
+	}
+}
+
+func TestCompleteUnknownIDReturnsTyped(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md", "- [ ] foo\n")
+	p := New(WithFiles(path))
+
+	err := p.Complete(context.Background(), "missing-id")
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("want ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestDeleteRemovesLine(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md",
+		"# Notes\n\n- [ ] foo <!-- marunage:id=abc -->\n- [ ] bar <!-- marunage:id=def -->\n")
+	p := New(WithFiles(path))
+
+	if err := p.Delete(context.Background(), "abc"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	s := string(body)
+	if strings.Contains(s, "foo") {
+		t.Fatalf("foo line still present:\n%s", body)
+	}
+	if !strings.Contains(s, "bar") {
+		t.Fatalf("bar line accidentally deleted:\n%s", body)
+	}
+	// Surrounding prose preserved.
+	if !strings.Contains(s, "# Notes") {
+		t.Fatalf("heading removed:\n%s", body)
+	}
+}
+
+func TestSetupCreatesMissingFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "todo.md")
+	p := New(WithFiles(path))
+
+	if err := p.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file not created: %v", err)
+	}
+	// Idempotent: a second Setup with existing content must not clobber.
+	if err := os.WriteFile(path, []byte("- [ ] preserved\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := p.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup#2: %v", err)
+	}
+	body, _ := os.ReadFile(path)
+	if !strings.Contains(string(body), "preserved") {
+		t.Fatalf("Setup clobbered existing content: %q", body)
+	}
+}
+
+func TestConcurrentAddDoesNotCorrupt(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md", "")
+	p := New(WithFiles(path))
+
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			if _, err := p.Add(context.Background(), fmtN(i), ""); err != nil {
+				t.Errorf("Add#%d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != n {
+		t.Fatalf("want %d tasks, got %d (file content may be corrupt)", n, len(got))
+	}
+}
+
+func fmtN(i int) string { return "task-" + strconv.Itoa(i) }
 
 func TestSinceReturnsModifiedFilesOnly(t *testing.T) {
 	t.Parallel()
