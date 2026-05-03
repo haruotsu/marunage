@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -44,6 +46,7 @@ type Dispatcher struct {
 	lockKeys           map[string]string
 	claudeCommand      string
 	allowedCwdPrefixes []string
+	auditor            config.Auditor
 }
 
 // Option mutates Dispatcher construction.
@@ -75,6 +78,16 @@ func WithLockKeys(m map[string]string) Option { return func(d *Dispatcher) { d.l
 // workspace. Required.
 func WithClaudeCommand(s string) Option { return func(d *Dispatcher) { d.claudeCommand = s } }
 
+// WithAuditor installs the audit-log sink. Every dispatch start and
+// per-row failure records one event so requirement.md L29 invariant #2
+// "No silent execution" + L745 ("各ディスパッチで誰が何のタスクをいつ
+// 何にディスパッチしたか・どの権限モードで起動したかを残す") are
+// honoured. Defaults to config.NopAuditor so existing tests / CLI paths
+// that have not yet wired audit.log keep building.
+func WithAuditor(a config.Auditor) Option {
+	return func(d *Dispatcher) { d.auditor = a }
+}
+
 // WithAllowedCwdPrefixes installs the cfg.Execution.AllowedCwdPrefixes
 // allowlist. A row whose CWD does not start with any listed prefix is
 // failed before NewWorkspace, per requirement.md L687 / L774. An empty
@@ -98,6 +111,7 @@ func New(opts ...Option) (*Dispatcher, error) {
 	d := &Dispatcher{
 		now:         time.Now,
 		sourceSkill: func(string) string { return "" },
+		auditor:     config.NopAuditor{},
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -193,6 +207,34 @@ func (d *Dispatcher) runOne(ctx context.Context, id int64) error {
 	return err
 }
 
+// recordAuditStart appends one audit.log entry at the moment the row
+// transitions out of pending. Action is "dispatch.start"; Key carries
+// the task id; Value carries the cmux ws reference. Called AFTER
+// SetWorkspace + SetStartedAt + UpdateStatus(running) so a recorded
+// dispatch.start is always backed by a row that actually changed
+// state — readers can trust the audit trail.
+func (d *Dispatcher) recordAuditStart(taskID int64, ws string) {
+	d.auditor.Record(config.AuditEvent{
+		Action: "dispatch.start",
+		Key:    "task:" + strconv.FormatInt(taskID, 10),
+		Value:  ws,
+	})
+}
+
+// recordAuditFail appends one audit.log entry for any per-row dispatch
+// failure (lock_key resolve / WaitReady / Send). Action is
+// "dispatch.fail"; Key carries the task id; Value carries the failure
+// reason verbatim. Reason has already been written to judgment_reason
+// by markFailed; the audit entry is the historical, append-only twin
+// for forensics.
+func (d *Dispatcher) recordAuditFail(taskID int64, reason string) {
+	d.auditor.Record(config.AuditEvent{
+		Action: "dispatch.fail",
+		Key:    "task:" + strconv.FormatInt(taskID, 10),
+		Value:  reason,
+	})
+}
+
 // markFailed records a dispatch-time failure on the row while
 // preserving any prior judgment_reason. requirement.md L567 reserves
 // judgment_reason writes to triage / EscalateToHuman; PR-42 inherits
@@ -217,6 +259,7 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 	cur, err := d.store.Get(ctx, id)
 	if err != nil {
 		_ = d.store.MarkFailedWithReason(ctx, id, dispatchReason)
+		d.recordAuditFail(id, dispatchReason)
 		return
 	}
 	reason := dispatchReason
@@ -224,6 +267,7 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 		reason = cur.JudgmentReason + "; " + dispatchReason
 	}
 	_ = d.store.MarkFailedWithReason(ctx, id, reason)
+	d.recordAuditFail(id, dispatchReason)
 }
 
 // dispatchOne handles a single candidate. Returns (true, nil) when the
@@ -307,6 +351,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	if err := d.store.UpdateStatus(ctx, task.ID, store.StatusRunning); err != nil {
 		return false, fmt.Errorf("dispatch: UpdateStatus id=%d: %w", task.ID, err)
 	}
+	d.recordAuditStart(task.ID, ws.ID)
 
 	if err := d.cmux.WaitReady(ctx, ws); err != nil {
 		d.markFailed(ctx, task.ID,
