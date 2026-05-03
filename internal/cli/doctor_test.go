@@ -2,9 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/doctor"
 )
 
 // TestDoctor_RunsAndExits exercises the wired-in `marunage doctor` command
@@ -68,3 +72,89 @@ func TestDoctor_NoLongerLeafStub(t *testing.T) {
 		t.Errorf("doctor still routed to the not-yet-implemented stub\noutput:\n%s", combined)
 	}
 }
+
+// TestDoctor_RuntimeIsInjectable pins the seam the doctor.go comment
+// promises ("overridable in tests"). Tests must be able to swap in fake
+// Runner / SecretsProbe / OSDetector implementations without invoking
+// the real os/exec PATH lookup, otherwise the CLI layer's behavior is
+// host-dependent and cannot be exercised deterministically.
+func TestDoctor_RuntimeIsInjectable(t *testing.T) {
+	path := configPathFlag(t)
+
+	withDoctorRuntime(t, doctorRuntimeOverride{
+		Inputs: func(cfg config.Config) doctor.Inputs {
+			return doctor.Inputs{
+				Cfg: cfg,
+				Runner: stubRunner{
+					present: map[string]string{
+						"claude":  "/fake/claude",
+						"cmux":    "/fake/cmux",
+						"sqlite3": "/fake/sqlite3",
+						"python":  "/fake/python",
+					},
+					versions: map[string]string{
+						"claude":  "claude 1.0.0",
+						"cmux":    "cmux 0.4.0",
+						"sqlite3": "3.43.2",
+						"python":  "Python 3.12.1",
+					},
+				},
+				Secrets: stubSecrets{available: []string{"file"}},
+				OS:      stubOS{family: doctor.OSFamilyDarwin},
+			}
+		},
+		Family: func() doctor.OSFamily { return doctor.OSFamilyDarwin },
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", path, "doctor", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doctor with all-fake-present runtime exit=%d; want 0; stderr=%q", code, stderr.String())
+	}
+
+	body := stdout.String()
+	if !strings.Contains(body, `"name": "claude"`) {
+		t.Errorf("JSON body missing claude entry; body=%s", body)
+	}
+	// Critical: the path must be the FAKE path, proving the injected
+	// runner is what drove the result rather than the real os/exec.
+	if !strings.Contains(body, "/fake/claude") {
+		t.Errorf("JSON body did not include injected fake claude path; body=%s", body)
+	}
+}
+
+type stubRunner struct {
+	present  map[string]string
+	versions map[string]string
+}
+
+func (s stubRunner) LookPath(name string) (string, bool) {
+	p, ok := s.present[name]
+	return p, ok
+}
+
+func (s stubRunner) Version(_ context.Context, name string) (string, error) {
+	v, ok := s.versions[name]
+	if !ok {
+		return "", errStubMissing
+	}
+	return v, nil
+}
+
+var errStubMissing = errStub("stub: binary not present")
+
+type errStub string
+
+func (e errStub) Error() string { return string(e) }
+
+type stubSecrets struct{ available []string }
+
+func (s stubSecrets) AvailableBackends() []string {
+	out := make([]string, len(s.available))
+	copy(out, s.available)
+	return out
+}
+
+type stubOS struct{ family doctor.OSFamily }
+
+func (s stubOS) Family() doctor.OSFamily { return s.family }
