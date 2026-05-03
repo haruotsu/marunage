@@ -22,9 +22,10 @@ var requiredTopLevelSubcommands = []string{
 // leafStubSubcommands are the subcommands that have no further sub-tree in
 // PR-02 and therefore must report "not yet implemented" with a non-zero exit
 // code so users discover the missing feature immediately. As individual
-// commands ship (config in PR-05, doctor in PR-32, ...) they leave this list.
+// commands ship (config in PR-05, doctor in PR-32, add/list/show in PR-20,
+// ...) they leave this list.
 var leafStubSubcommands = []string{
-	"init", "setup", "add", "list", "show", "rm", "done", "fail",
+	"init", "setup", "rm", "done", "fail",
 	"discover", "dispatch", "run-all", "status", "render", "open", "notify",
 	"loop", "web", "promote", "reopen", "review", "clean", "export",
 }
