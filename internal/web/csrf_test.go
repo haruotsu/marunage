@@ -102,6 +102,33 @@ func TestCSRF_PostWithMismatchingTokenIs403(t *testing.T) {
 	}
 }
 
+// TestCSRF_CookieReusedOnSubsequentGET pins the early-return path in
+// ensureCookie: a request that already carries a valid cookie must
+// keep that exact value rather than receive a freshly minted token on
+// every read.  Rotating the token per-request would break long-lived
+// HTMX pages whose hidden field was rendered minutes earlier.
+func TestCSRF_CookieReusedOnSubsequentGET(t *testing.T) {
+	csrf, err := NewCSRF(testTokenSource)
+	if err != nil {
+		t.Fatalf("NewCSRF: %v", err)
+	}
+	h := csrf.Middleware(http.HandlerFunc(okHandler))
+
+	const existing = "previously-issued-token"
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: existing})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	cookie := findCookie(rec.Result().Cookies(), CSRFCookieName)
+	if cookie == nil {
+		t.Fatalf("missing %q cookie", CSRFCookieName)
+	}
+	if cookie.Value != existing {
+		t.Errorf("cookie value = %q; want %q (existing token must NOT rotate per-request)", cookie.Value, existing)
+	}
+}
+
 // TestCSRF_CookieSecureMirrorsTLS pins the contract that the CSRF
 // cookie carries the Secure attribute exactly when the request rode
 // in over TLS — without this guard the cookie would be readable in
