@@ -55,3 +55,31 @@ func SetAgeScryptLogNForTest(n int) func() {
 	ageScryptLogN = n
 	return func() { ageScryptLogN = prev }
 }
+
+// SetTTYHooksForTest swaps the IsTerminal and ReadPassword hooks the
+// production prompter calls, so passphrase_test.go can drive the
+// no-TTY / mismatch / match / no-confirm branches without a real
+// terminal. Returns a restore func() the test defers.
+func SetTTYHooksForTest(
+	isTerminal func(fd int) bool,
+	readPassword func(fd int) ([]byte, error),
+) func() {
+	prevIsTerm := isTerminalFunc
+	prevReadPw := readPasswordFunc
+	isTerminalFunc = isTerminal
+	readPasswordFunc = readPassword
+	return func() {
+		isTerminalFunc = prevIsTerm
+		readPasswordFunc = prevReadPw
+	}
+}
+
+// ReadPassphraseFromTTYForTest exposes the unexported
+// readPassphraseFromTTY function so its branches (IsTerminal=false,
+// confirm-mismatch, confirm-match, no-confirm) can be exercised
+// directly. Without this seam every code path inside passphrase.go
+// would have to be reached transitively through ageBackend, which
+// makes the no-TTY and mismatch branches awkward to isolate.
+func ReadPassphraseFromTTYForTest(needConfirm bool) (string, error) {
+	return readPassphraseFromTTY(needConfirm)
+}
