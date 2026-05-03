@@ -185,15 +185,17 @@ func TestTaskRepoInsertAndGetAllFields(t *testing.T) {
 
 // 4. Insert validates Source and Title at the repo boundary; the schema
 //    itself enforces NOT NULL but a Go-side error gives PR-20's CLI a
-//    clean message instead of a wrapped sqlite constraint string.
+//    clean message instead of a wrapped sqlite constraint string. The
+//    typed sentinels let the CLI render a flag-name-aware diagnostic
+//    without parsing the message.
 func TestTaskRepoInsertValidatesRequiredFields(t *testing.T) {
 	f := newRepoFixture(t)
 
-	if _, err := f.repo.Insert(f.ctx, store.Task{Title: "no source"}); err == nil {
-		t.Errorf("Insert without Source must fail")
+	if _, err := f.repo.Insert(f.ctx, store.Task{Title: "no source"}); !errors.Is(err, store.ErrSourceRequired) {
+		t.Errorf("Insert without Source: err = %v; want ErrSourceRequired", err)
 	}
-	if _, err := f.repo.Insert(f.ctx, store.Task{Source: "manual"}); err == nil {
-		t.Errorf("Insert without Title must fail")
+	if _, err := f.repo.Insert(f.ctx, store.Task{Source: "manual"}); !errors.Is(err, store.ErrTitleRequired) {
+		t.Errorf("Insert without Title: err = %v; want ErrTitleRequired", err)
 	}
 }
 
@@ -305,9 +307,14 @@ func equalStrings(a, b []string) bool {
 }
 
 // 8. List with no filter returns every row in dispatch order
-//    (priority DESC, created_at ASC). PR-42 and PR-60 both rely on this
-//    ordering so a `marunage list` call shows the same row a dispatcher
-//    would pick next.
+//    (priority DESC, created_at ASC, id ASC). PR-42 and PR-60 both rely
+//    on this ordering so `marunage list` shows the same row a dispatcher
+//    would pick next. The seed fixture exercises three laws at once:
+//    (a) priority DESC dominates so prio=5 rows come before prio=1/0;
+//    (b) within the same priority, created_at ASC orders the row that
+//        was inserted earlier first (g0 before s0 before g2);
+//    (c) the id tie-break only fires when (priority, created_at) match,
+//        which is covered separately by TestTaskRepoListTieBreaksById.
 func TestTaskRepoListNoFilterUsesDispatchOrder(t *testing.T) {
 	f := newRepoFixture(t)
 	seedListFixture(t, f)
@@ -610,15 +617,15 @@ func TestTaskRepoReleaseLockMissingReturnsErrNotFound(t *testing.T) {
 
 // 22. AcquireLock with an empty key is a programmer error — the schema
 //     would gladly store NULL, defeating every subsequent probe — so the
-//     repo rejects it loudly at the boundary.
+//     repo rejects it loudly at the boundary with a typed sentinel.
 func TestTaskRepoAcquireLockEmptyKeyValidates(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "t"})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if err := f.repo.AcquireLock(f.ctx, id, ""); err == nil {
-		t.Fatalf("AcquireLock with empty lockKey must fail")
+	if err := f.repo.AcquireLock(f.ctx, id, ""); !errors.Is(err, store.ErrLockKeyRequired) {
+		t.Fatalf("AcquireLock(empty key): err = %v; want ErrLockKeyRequired", err)
 	}
 }
 
