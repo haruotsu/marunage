@@ -26,6 +26,12 @@ import (
 //  12. WithKVClock pins updated_at deterministically
 //  13. Concurrent Set on the same key keeps the table consistent (last writer
 //      wins, no torn rows, count stays at 1)
+//  14. Set with empty value -> ErrKVValueRequired (keeps the "row absence
+//      means no checkpoint" invariant from kvstate.go's package godoc;
+//      otherwise an empty checkpoint would shadow ErrKVNotFound)
+//  15. CompareAndSwap with empty newValue -> ErrKVValueRequired (same
+//      invariant; CAS that lands an empty value is indistinguishable from
+//      "row was deleted")
 
 // kvFixture wires a KVStateRepo to a fresh on-disk SQLite plus a deterministic
 // clock so every test below can pin updated_at without sleeping.
@@ -233,6 +239,49 @@ func TestKVStateRepoWithClockPinsUpdatedAt(t *testing.T) {
 	}
 	if !got.UpdatedAt.Equal(pinned) {
 		t.Errorf("updated_at = %v; want pinned %v", got.UpdatedAt, pinned)
+	}
+}
+
+//  14. Set with an empty value violates the package invariant that a missing
+//     checkpoint is row absence, never an empty stored value. Without this
+//     guard a Discovery plugin Set("k", "") would later surface as Get -> ""
+//     which is indistinguishable from "no checkpoint yet" only by the
+//     accompanying ErrKVNotFound — and the empty-value path returns nil
+//     instead. Reject loudly at the boundary with a typed sentinel.
+func TestKVStateRepoSetEmptyValueValidates(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Set(f.ctx, "k", ""); !errors.Is(err, store.ErrKVValueRequired) {
+		t.Fatalf("Set(empty value): err = %v; want ErrKVValueRequired", err)
+	}
+	// And the row must not have been written: a follow-up Get must still
+	// surface ErrKVNotFound, not "" (which would mean Set partially succeeded).
+	if _, err := f.repo.Get(f.ctx, "k"); !errors.Is(err, store.ErrKVNotFound) {
+		t.Fatalf("Get after rejected Set: err = %v; want ErrKVNotFound", err)
+	}
+}
+
+//  15. CompareAndSwap with an empty newValue is the same invariant as Set:
+//     a CAS that lands an empty value is indistinguishable from "row was
+//     deleted" on the next Get, so reject it at the boundary instead of
+//     letting Discovery callers shadow ErrKVNotFound with a successful CAS.
+func TestKVStateRepoCompareAndSwapEmptyNewValueValidates(t *testing.T) {
+	f := newKVFixture(t)
+
+	if err := f.repo.Set(f.ctx, "k", "v1"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	err := f.repo.CompareAndSwap(f.ctx, "k", "v1", "")
+	if !errors.Is(err, store.ErrKVValueRequired) {
+		t.Fatalf("CompareAndSwap(empty newValue): err = %v; want ErrKVValueRequired", err)
+	}
+	// And the row must be unchanged (validation happens before the UPDATE).
+	got, err := f.repo.Get(f.ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "v1" {
+		t.Errorf("value after rejected CAS = %q; want unchanged %q", got, "v1")
 	}
 }
 
