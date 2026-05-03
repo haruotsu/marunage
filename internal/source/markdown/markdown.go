@@ -244,6 +244,96 @@ func (p *Plugin) listLocked(ctx context.Context, files []string) ([]Task, error)
 	return out, nil
 }
 
+// Since returns tasks from files whose mtime is strictly greater than
+// the checkpoint persisted last time Since ran. It is the optional
+// `since <checkpoint>` subcommand from requirement.md lines 102-114
+// recast as a Go method: the per-file checkpoint state lives in the
+// injected Checkpointer (PR-12's KVStateRepo at runtime, an in-memory
+// fake in tests).
+//
+// On first call (no checkpoint stored) Since behaves like List and
+// then writes the current mtime of every visited file. Files that
+// have been modified since are returned; files that have not are
+// skipped. Missing files are skipped, mirroring List.
+//
+// When no Checkpointer was supplied (single-shot CLI invocations),
+// Since degrades to List — there is no place to remember state, so
+// returning everything is the only safe answer.
+func (p *Plugin) Since(ctx context.Context) ([]Task, error) {
+	if p.checkpointer == nil {
+		return p.List(ctx)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var todo []string
+	mtimes := map[string]time.Time{}
+	for _, path := range p.files {
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		raw, err := p.checkpointer.Get(ctx, checkpointKey(path))
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint get %s: %w", path, err)
+		}
+		// Empty value means "no checkpoint yet"; treat as the zero
+		// time so every file is returned on first call.
+		var prev time.Time
+		if raw != "" {
+			t, err := time.Parse(time.RFC3339Nano, raw)
+			if err != nil {
+				return nil, fmt.Errorf("parse checkpoint for %s: %w", path, err)
+			}
+			prev = t
+		}
+		mtime := info.ModTime()
+		mtimes[path] = mtime
+		if mtime.After(prev) {
+			todo = append(todo, path)
+		}
+	}
+
+	tasks, err := p.listLocked(ctx, todo)
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist the new checkpoint AFTER listLocked, because listLocked
+	// may have rewritten the file to inject markers (which bumps mtime
+	// again). Re-stat so the stored value reflects the post-rewrite
+	// mtime; otherwise the next Since call would re-include the same
+	// file forever.
+	for _, path := range todo {
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("re-stat %s: %w", path, err)
+		}
+		mtimes[path] = info.ModTime()
+	}
+	for path, mtime := range mtimes {
+		if err := p.checkpointer.Set(ctx, checkpointKey(path), mtime.UTC().Format(time.RFC3339Nano)); err != nil {
+			return nil, fmt.Errorf("checkpoint set %s: %w", path, err)
+		}
+	}
+	return tasks, nil
+}
+
+// checkpointKey returns the kv_state key used to remember a file's last
+// scanned mtime. The key is namespaced with `markdown:` so it cannot
+// collide with future sources, and uses the absolute file path so
+// renaming a file invalidates the checkpoint (the renamed file is, for
+// our purposes, a brand new file).
+func checkpointKey(path string) string {
+	return "markdown:mtime:" + path
+}
+
 // stableSortTasksByPathLine keeps List output deterministic when callers
 // pass overlapping files (rare, but we sort defensively rather than
 // relying on map iteration order anywhere). Currently only used in

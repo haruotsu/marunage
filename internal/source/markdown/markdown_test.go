@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // writeFile is a small helper that creates a fresh Markdown file under
@@ -142,5 +144,113 @@ func TestListInvalidMarkerSurfacesTypedError(t *testing.T) {
 	_, err := p.List(context.Background())
 	if !errors.Is(err, ErrInvalidMarker) {
 		t.Fatalf("want ErrInvalidMarker, got %v", err)
+	}
+}
+
+// memCheckpointer is an in-memory Checkpointer that lets Since tests run
+// without standing up the SQLite-backed KVStateRepo (which lives in a
+// separate PR). Storing values in a map mirrors the (key,string) shape
+// of kv_state exactly enough for these tests.
+type memCheckpointer struct {
+	mu  sync.Mutex
+	kv  map[string]string
+}
+
+func newMemCheckpointer() *memCheckpointer {
+	return &memCheckpointer{kv: map[string]string{}}
+}
+
+func (m *memCheckpointer) Get(_ context.Context, key string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.kv[key], nil
+}
+
+func (m *memCheckpointer) Set(_ context.Context, key, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.kv[key] = value
+	return nil
+}
+
+func TestSinceFirstCallReturnsAllAndPersistsCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md", "- [ ] foo\n")
+
+	cp := newMemCheckpointer()
+	p := New(WithFiles(path), WithCheckpointer(cp))
+	got, err := p.Since(context.Background())
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "foo" {
+		t.Fatalf("first Since = %+v", got)
+	}
+	// Checkpoint must be set so the next Since call can compare against it.
+	v, _ := cp.Get(context.Background(), checkpointKey(path))
+	if v == "" {
+		t.Fatalf("checkpoint not persisted, kv=%v", cp.kv)
+	}
+}
+
+func TestSinceSkipsUnchangedFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md", "- [ ] foo\n")
+	cp := newMemCheckpointer()
+	p := New(WithFiles(path), WithCheckpointer(cp))
+
+	if _, err := p.Since(context.Background()); err != nil {
+		t.Fatalf("Since#1: %v", err)
+	}
+	// Second call without touching the file: the marker we just wrote
+	// did update the file, so the second call should still observe a
+	// change and return the marker-bearing version. The third call
+	// however should be empty.
+	if _, err := p.Since(context.Background()); err != nil {
+		t.Fatalf("Since#2: %v", err)
+	}
+	got, err := p.Since(context.Background())
+	if err != nil {
+		t.Fatalf("Since#3: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("third Since should be empty, got %+v", got)
+	}
+}
+
+func TestSinceReturnsModifiedFilesOnly(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	a := writeFile(t, dir, "a.md", "- [ ] alpha\n")
+	b := writeFile(t, dir, "b.md", "- [ ] beta\n")
+	cp := newMemCheckpointer()
+	p := New(WithFiles(a, b), WithCheckpointer(cp))
+
+	if _, err := p.Since(context.Background()); err != nil {
+		t.Fatalf("Since#1: %v", err)
+	}
+	// Drain the marker-injection follow-up so both checkpoints are caught up.
+	if _, err := p.Since(context.Background()); err != nil {
+		t.Fatalf("Since#drain: %v", err)
+	}
+
+	// Bump mtime of b only (a future timestamp keeps us safe from
+	// filesystem mtime resolution rounding).
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(b, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	got, err := p.Since(context.Background())
+	if err != nil {
+		t.Fatalf("Since#2: %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "beta" {
+		t.Fatalf("want only beta, got %+v", got)
 	}
 }
