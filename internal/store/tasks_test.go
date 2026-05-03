@@ -376,3 +376,101 @@ func TestTaskRepoListHonoursLimit(t *testing.T) {
 		t.Errorf("limit=2: got %v", got)
 	}
 }
+
+// 12. UpdateStatus pending -> running succeeds and the AFTER UPDATE trigger
+//     bumps updated_at. Pre-seeding an obviously-old timestamp removes any
+//     dependence on the test wall-clock resolution: any "now" the trigger
+//     stamps will be after 2020.
+func TestTaskRepoUpdateStatusSucceeds(t *testing.T) {
+	f := newRepoFixture(t)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source:    "manual",
+		Title:     "transition",
+		CreatedAt: old,
+		UpdatedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+
+	after, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get after: %v", err)
+	}
+	if after.Status != store.StatusRunning {
+		t.Errorf("status after UpdateStatus = %q; want %q", after.Status, store.StatusRunning)
+	}
+	if !after.UpdatedAt.After(old) {
+		t.Errorf("updated_at did not advance past seeded old time: got %v", after.UpdatedAt)
+	}
+}
+
+// 13. UpdateStatus rejects unknown values before talking to SQLite so the
+//     row is not even attempted, and the error is the typed sentinel.
+func TestTaskRepoUpdateStatusInvalidValueReturnsErr(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "bad"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.UpdateStatus(f.ctx, id, "complete"); !errors.Is(err, store.ErrInvalidStatus) {
+		t.Fatalf("UpdateStatus(invalid): err = %v; want ErrInvalidStatus", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusPending {
+		t.Errorf("status after rejected UpdateStatus = %q; want unchanged %q",
+			got.Status, store.StatusPending)
+	}
+}
+
+// 14. UpdateStatus on a missing id returns ErrNotFound rather than silently
+//     succeeding (which the bare UPDATE would do — RowsAffected=0 with no
+//     error).
+func TestTaskRepoUpdateStatusMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	if err := f.repo.UpdateStatus(f.ctx, 99999, store.StatusDone); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateStatus(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 15. SetWorkspace stores the ws reference. PR-42 calls this immediately
+//     after `cmux new-workspace` returns so the row is "claimed" before
+//     the next dispatch loop iteration runs (the soft de-dup the spec
+//     calls "ws参照を即座に DB に書き戻す").
+func TestTaskRepoSetWorkspaceStoresReference(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "claim me"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := f.repo.SetWorkspace(f.ctx, id, "workspace:42"); err != nil {
+		t.Fatalf("SetWorkspace: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:42" {
+		t.Errorf("ws = %q; want %q", got.WS, "workspace:42")
+	}
+}
+
+// 16. SetWorkspace on a missing id returns ErrNotFound. Same reasoning as
+//     UpdateStatus: silent no-op would mask a stale id in the dispatcher.
+func TestTaskRepoSetWorkspaceMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	if err := f.repo.SetWorkspace(f.ctx, 99999, "workspace:1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetWorkspace(missing): err = %v; want ErrNotFound", err)
+	}
+}
