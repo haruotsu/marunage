@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"modernc.org/sqlite"
@@ -233,6 +234,79 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (Task, error) {
 		return Task{}, err
 	}
 	return t, nil
+}
+
+// ListFilter narrows the rows List returns. Empty slices and zero Limit
+// mean "no constraint", matching the way `marunage list` falls back to a
+// full scan when no flags are passed.
+type ListFilter struct {
+	Statuses []string
+	Sources  []string
+	Limit    int
+}
+
+// List returns rows matching f, ordered the same way the dispatcher
+// scans the queue: priority DESC, created_at ASC, id ASC. PR-42 calls
+// this with Statuses=[pending] and Limit=N to pick the next batch; PR-60
+// renders the unfiltered call. Sharing the order keeps "what `list`
+// shows" and "what `dispatch` would pick" consistent.
+//
+// Unknown status / source values are not validated here — the empty
+// result set they produce is the right answer, and the CHECK constraint
+// in 0001_init.sql means a writer cannot persist them anyway.
+func (r *TaskRepo) List(ctx context.Context, f ListFilter) ([]Task, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	if len(f.Statuses) > 0 {
+		clauses = append(clauses, "status IN ("+placeholders(len(f.Statuses))+")")
+		for _, s := range f.Statuses {
+			args = append(args, s)
+		}
+	}
+	if len(f.Sources) > 0 {
+		clauses = append(clauses, "source IN ("+placeholders(len(f.Sources))+")")
+		for _, s := range f.Sources {
+			args = append(args, s)
+		}
+	}
+	q := "SELECT " + taskColumns + " FROM tasks"
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	q += " ORDER BY priority DESC, created_at ASC, id ASC"
+	if f.Limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, f.Limit)
+	}
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list scan: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list rows: %w", err)
+	}
+	return out, nil
+}
+
+// placeholders returns "?,?,?" with n entries for use in IN (...) clauses.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", n-1) + "?"
 }
 
 // rowScanner is the subset of *sql.Row / *sql.Rows scanTask needs.

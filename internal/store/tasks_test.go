@@ -237,3 +237,142 @@ func TestTaskRepoInsertRejectsInvalidStatus(t *testing.T) {
 		t.Fatalf("Insert(invalid status): err = %v; want ErrInvalidStatus", err)
 	}
 }
+
+// seedListFixture inserts a small dataset that exercises the dispatch
+// ordering (priority DESC, created_at ASC), two sources, and several
+// statuses. Returns the assigned IDs in seed order so the assertions can
+// reference rows without depending on autoincrement details.
+//
+// Layout (clock advances by 1m between inserts):
+//   index 0: gmail / pending / prio=5  (high priority, oldest)
+//   index 1: gmail / pending / prio=1
+//   index 2: slack / running / prio=5  (same prio as #0, but newer)
+//   index 3: slack / done    / prio=0
+//   index 4: gmail / pending / prio=5  (same prio as #0, newest)
+func seedListFixture(t *testing.T, f repoFixture) []int64 {
+	t.Helper()
+	rows := []store.Task{
+		{Source: "gmail", Title: "g0", Priority: 5},
+		{Source: "gmail", Title: "g1", Priority: 1},
+		{Source: "slack", Title: "s0", Priority: 5, Status: store.StatusRunning},
+		{Source: "slack", Title: "s1", Priority: 0, Status: store.StatusDone},
+		{Source: "gmail", Title: "g2", Priority: 5},
+	}
+	ids := make([]int64, len(rows))
+	for i, row := range rows {
+		id, err := f.repo.Insert(f.ctx, row)
+		if err != nil {
+			t.Fatalf("seed Insert #%d: %v", i, err)
+		}
+		ids[i] = id
+		*f.now = f.now.Add(time.Minute) // ensure created_at strictly increases
+	}
+	return ids
+}
+
+func titles(ts []store.Task) []string {
+	out := make([]string, len(ts))
+	for i, t := range ts {
+		out[i] = t.Title
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// 8. List with no filter returns every row in dispatch order
+//    (priority DESC, created_at ASC). PR-42 and PR-60 both rely on this
+//    ordering so a `marunage list` call shows the same row a dispatcher
+//    would pick next.
+func TestTaskRepoListNoFilterUsesDispatchOrder(t *testing.T) {
+	f := newRepoFixture(t)
+	seedListFixture(t, f)
+
+	got, err := f.repo.List(f.ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []string{"g0", "s0", "g2", "g1", "s1"}
+	if !equalStrings(titles(got), want) {
+		t.Errorf("dispatch order:\n got  %v\n want %v", titles(got), want)
+	}
+}
+
+// 9. List filters by status. Single and multi-status both go through
+//    one IN (?) path so we exercise both shapes.
+func TestTaskRepoListByStatus(t *testing.T) {
+	f := newRepoFixture(t)
+	seedListFixture(t, f)
+
+	pending, err := f.repo.List(f.ctx, store.ListFilter{
+		Statuses: []string{store.StatusPending},
+	})
+	if err != nil {
+		t.Fatalf("List(pending): %v", err)
+	}
+	if got := titles(pending); !equalStrings(got, []string{"g0", "g2", "g1"}) {
+		t.Errorf("pending only: got %v", got)
+	}
+
+	multi, err := f.repo.List(f.ctx, store.ListFilter{
+		Statuses: []string{store.StatusRunning, store.StatusDone},
+	})
+	if err != nil {
+		t.Fatalf("List(running+done): %v", err)
+	}
+	if got := titles(multi); !equalStrings(got, []string{"s0", "s1"}) {
+		t.Errorf("running+done: got %v", got)
+	}
+}
+
+// 10. List filters by source. Same shape as status; mostly here so a
+//     future "filter by both source and status" addition does not regress
+//     the AND wiring.
+func TestTaskRepoListBySource(t *testing.T) {
+	f := newRepoFixture(t)
+	seedListFixture(t, f)
+
+	gmail, err := f.repo.List(f.ctx, store.ListFilter{Sources: []string{"gmail"}})
+	if err != nil {
+		t.Fatalf("List(gmail): %v", err)
+	}
+	if got := titles(gmail); !equalStrings(got, []string{"g0", "g2", "g1"}) {
+		t.Errorf("gmail only: got %v", got)
+	}
+
+	mixed, err := f.repo.List(f.ctx, store.ListFilter{
+		Sources:  []string{"gmail", "slack"},
+		Statuses: []string{store.StatusPending},
+	})
+	if err != nil {
+		t.Fatalf("List(gmail+slack, pending): %v", err)
+	}
+	if got := titles(mixed); !equalStrings(got, []string{"g0", "g2", "g1"}) {
+		t.Errorf("gmail+slack pending: got %v", got)
+	}
+}
+
+// 11. List honours Limit. Combined with the dispatch order, this is what
+//     PR-42 calls when picking the next N candidates.
+func TestTaskRepoListHonoursLimit(t *testing.T) {
+	f := newRepoFixture(t)
+	seedListFixture(t, f)
+
+	top2, err := f.repo.List(f.ctx, store.ListFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("List(limit=2): %v", err)
+	}
+	if got := titles(top2); !equalStrings(got, []string{"g0", "s0"}) {
+		t.Errorf("limit=2: got %v", got)
+	}
+}
