@@ -15,6 +15,7 @@ package dispatch
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/store"
@@ -45,19 +46,80 @@ type PromptInputs struct {
 // cmux scrollback without inflating the byte count cmux send carries.
 const promptSeparator = "\n\n"
 
+// leftAngleRunRe matches any maximal run of "<" characters. We rewrite
+// runs of length >=2 so no two "<" can ever appear adjacent in the
+// escaped output — that is what guarantees an attacker cannot forge a
+// "<<label>>" fence-open or "<</label>>" fence-close inside their own
+// content. A naive single-pass `strings.ReplaceAll("<<", "<\<")` is
+// NOT idempotent: input like "<<<<" replaces left-to-right and leaves
+// adjacent "<" pairs at the seams (`<\<<\<` still contains "<<").
+// Using a regex on the maximal run lets us emit "<\<\<\..." in one
+// shot, with each "<" followed by a backslash so no two "<" remain
+// adjacent and the transformation is idempotent under repeated
+// application.
+var leftAngleRunRe = regexp.MustCompile(`<+`)
+
+// fenceEscape rewrites every multi-"<" run inside a user-derived value
+// so the downstream Claude session cannot be tricked into treating
+// attacker content as a fence boundary. The escape is idempotent (a
+// second pass changes nothing) so a future refactor that accidentally
+// double-applies it does not progressively corrupt the prompt.
+//
+// Trusted sections (Base / SourceSpecific from skills/) skip this pass
+// — they are not under attacker control. Per-character `<` (run of
+// length 1) is left untouched because it appears legitimately in many
+// task bodies (HTML snippets, "<3", code fragments).
+//
+// Note on coverage: only the "<<" pattern is escaped, NOT "</" alone.
+// The fence-close token is "<</label>>", which always contains "<<"
+// at its head; breaking "<<" therefore breaks every closing fence too.
+func fenceEscape(s string) string {
+	return leftAngleRunRe.ReplaceAllStringFunc(s, func(run string) string {
+		if len(run) < 2 {
+			return run
+		}
+		// Separate each "<" with a backslash so no two "<" remain
+		// adjacent. Length grows by len(run); the cost is bounded by
+		// the size of the user-derived field.
+		return strings.Repeat(`<\`, len(run))
+	})
+}
+
+// fenced wraps the (already-escaped) value in <<label>>...<</label>>.
+// Empty values still produce a fence pair so a downstream parser can
+// distinguish "absent field" (fence empty) from "no fence at all"
+// (field never rendered). The label is required to be a literal
+// ASCII identifier under this package's control — we never interpolate
+// untrusted data into it.
+func fenced(label, value string) string {
+	return fmt.Sprintf("<<%s>>\n%s\n<</%s>>", label, value, label)
+}
+
 // BuildPrompt concatenates the (Base, SourceSpecific, Task) sections in
 // that fixed order. Empty sections drop out cleanly so a source without
 // a dedicated skill produces "Base + Task" with one separator, not two.
+//
+// User-derived fields (Source, ExternalID, ExternalURL, Title, Body) go
+// through fenceEscape so a malicious payload cannot splice a forged
+// fence-close + override into the prompt. requirement.md L29 invariant
+// #2 ("No silent execution") is the upstream policy this satisfies:
+// the receiving Claude session can refuse to follow instructions that
+// originate from inside a `<<body>>` / `<<title>>` fence.
 //
 // The Send wrapper in internal/cmux collapses any embedded \r\n run into
 // a single space before handing the payload to cmux; preserving the
 // original line breaks here keeps the prompt readable when the caller
 // inspects it via `marunage show <id>` or the Web UI.
 func BuildPrompt(in PromptInputs) string {
-	taskBlock := fmt.Sprintf(
-		"## Task #%d (source: %s)\n\nTitle: %s\n\n%s",
-		in.Task.ID, in.Task.Source, in.Task.Title, in.Task.Body,
-	)
+	taskHeader := fmt.Sprintf("## Task #%d", in.Task.ID)
+	taskBlock := strings.Join([]string{
+		taskHeader,
+		fenced("source", fenceEscape(in.Task.Source)),
+		fenced("external_id", fenceEscape(in.Task.ExternalID)),
+		fenced("origin", fenceEscape(in.Task.ExternalURL)),
+		fenced("title", fenceEscape(in.Task.Title)),
+		fenced("body", fenceEscape(in.Task.Body)),
+	}, "\n\n")
 
 	parts := make([]string, 0, 3)
 	if s := strings.TrimSpace(in.Base); s != "" {
