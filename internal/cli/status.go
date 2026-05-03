@@ -76,6 +76,11 @@ func defaultStatusTicker(d time.Duration) (<-chan time.Time, func()) {
 // context.Background() (which would otherwise block the loop forever).
 // nil falls through to the cobra-supplied context wrapped with a
 // signal.NotifyContext so production honours Ctrl+C.
+//
+// Like every other test seam in this package (taskRepoFactoryHook,
+// statusTickerHook, viewPathHook), this is plain global state — status
+// tests must NOT use t.Parallel() until the seam is wrapped in a sync
+// primitive.
 var statusContextHook context.Context
 
 func withStatusContext(t interface{ Cleanup(func()) }, ctx context.Context) {
@@ -114,10 +119,11 @@ func newTaskStatusCmd(configPath *string) *cobra.Command {
 			defer func() { _ = closer() }()
 
 			if !watch {
-				return writeStatusOnce(cmd.OutOrStdout(), cmd.Context(), repo, asJSON)
+				return writeStatusOnce(cmd.Context(), cmd.OutOrStdout(), repo, asJSON)
 			}
 
-			ctx := watchContext(cmd.Context())
+			ctx, stop := watchContext(cmd.Context())
+			defer stop()
 			return runStatusWatch(ctx, cmd.OutOrStdout(), repo, statusWatchOpts{
 				interval:  interval,
 				newTicker: activeStatusTicker(),
@@ -133,18 +139,17 @@ func newTaskStatusCmd(configPath *string) *cobra.Command {
 }
 
 // watchContext returns the cancellable context the watch loop should
-// use. The test hook short-circuits production wiring; otherwise we
-// derive a child context that cancels on the first Ctrl+C so the loop
-// shuts down cleanly. The signal handler is intentionally NOT undone on
-// return because the loop owns the process lifetime in --watch mode and
-// any further SIGINT after the loop returns should hit Go's default
-// terminator.
-func watchContext(parent context.Context) context.Context {
+// use plus a stop function the caller must defer. The test hook
+// short-circuits production wiring; otherwise we derive a child context
+// that cancels on the first Ctrl+C. Returning stop (rather than dropping
+// it) lets the caller un-register the signal handler when the loop
+// exits, so a future in-process re-use of `marunage status` cannot have
+// its SIGINT silently captured by a stale handler from a prior run.
+func watchContext(parent context.Context) (context.Context, func()) {
 	if statusContextHook != nil {
-		return statusContextHook
+		return statusContextHook, func() {}
 	}
-	ctx, _ := signal.NotifyContext(parent, os.Interrupt)
-	return ctx
+	return signal.NotifyContext(parent, os.Interrupt)
 }
 
 // statusWatchOpts collects the dependencies runStatusWatch needs. Kept
@@ -172,7 +177,7 @@ func runStatusWatch(ctx context.Context, w io.Writer, repo taskRepo, opts status
 	tickC, stop := factory(opts.interval)
 	defer stop()
 
-	if err := writeStatusFrame(w, ctx, repo); err != nil {
+	if err := writeStatusFrame(ctx, w, repo); err != nil {
 		return err
 	}
 	for {
@@ -180,7 +185,7 @@ func runStatusWatch(ctx context.Context, w io.Writer, repo taskRepo, opts status
 		case <-ctx.Done():
 			return nil
 		case <-tickC:
-			if err := writeStatusFrame(w, ctx, repo); err != nil {
+			if err := writeStatusFrame(ctx, w, repo); err != nil {
 				return err
 			}
 		}
@@ -190,7 +195,7 @@ func runStatusWatch(ctx context.Context, w io.Writer, repo taskRepo, opts status
 // writeStatusFrame emits one full screen: the clear sequence followed
 // by the table. The clear is part of the same Write so a partial
 // terminal flush cannot leave the cursor on a half-cleared screen.
-func writeStatusFrame(w io.Writer, ctx context.Context, repo taskRepo) error {
+func writeStatusFrame(ctx context.Context, w io.Writer, repo taskRepo) error {
 	rows, err := repo.List(ctx, store.ListFilter{Statuses: statusFilterStatuses})
 	if err != nil {
 		return translateRepoError(err)
@@ -207,7 +212,7 @@ func writeStatusFrame(w io.Writer, ctx context.Context, repo taskRepo) error {
 // writeStatusOnce is the one-shot path: read once, render once, exit.
 // Lives next to writeStatusFrame because the two share writeStatusText
 // / writeStatusJSON underneath; only the surrounding wrapper differs.
-func writeStatusOnce(w io.Writer, ctx context.Context, repo taskRepo, asJSON bool) error {
+func writeStatusOnce(ctx context.Context, w io.Writer, repo taskRepo, asJSON bool) error {
 	rows, err := repo.List(ctx, store.ListFilter{Statuses: statusFilterStatuses})
 	if err != nil {
 		return translateRepoError(err)
@@ -264,6 +269,13 @@ func statusSummary(t store.Task) string {
 // space so the result fits on one tabwriter row. Leading / trailing
 // whitespace is trimmed so the column stays left-aligned even when the
 // upstream summary had a trailing newline.
+//
+// Near-duplicate of internal/render.sanitizeInline (which the render
+// package keeps unexported). The two diverge only in that this one
+// also collapses \t — required here because the Summary column is
+// inside a tabwriter and a literal tab would split it across cells.
+// If a third caller needs the same routine, lift one to internal/textutil
+// and have both packages depend on it.
 func collapseWhitespace(s string) string {
 	if !strings.ContainsAny(s, "\n\r\t\f") {
 		return s
