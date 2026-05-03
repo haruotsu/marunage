@@ -56,10 +56,15 @@ func (a *Adapter) List(ctx context.Context) ([]source.Task, error) {
 	return convertTasks(inner), nil
 }
 
-// Setup forwards to the inner Plugin. opts is currently ignored (Setup is
-// non-interactive for markdown — it only mkdir+touch — so NonInteractive is
-// always satisfied), but accepting it keeps the source.Plugin shape.
-func (a *Adapter) Setup(ctx context.Context, _ source.SetupOptions) error {
+// Setup forwards to the inner Plugin. The markdown source is inherently
+// non-interactive (it just mkdir+touch on the configured paths), so every
+// SetupOptions value the contract currently defines is naturally
+// satisfied — there is nothing for the adapter to translate. The
+// argument is named (not blanked with `_`) so a future PR-71 field that
+// the adapter cannot honour produces a compile-error or test failure
+// here, not a silent drop.
+func (a *Adapter) Setup(ctx context.Context, opts source.SetupOptions) error {
+	_ = opts // markdown setup is always non-interactive; no field to forward today.
 	return a.inner.Setup(ctx)
 }
 
