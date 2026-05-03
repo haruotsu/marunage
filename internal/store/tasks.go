@@ -469,6 +469,75 @@ func (r *TaskRepo) ExpireWaitingHuman(ctx context.Context, deadline time.Time) (
 	return n, nil
 }
 
+// ErrStartedAtRequired guards SetStartedAt against a zero time.Time
+// silently leaving started_at NULL. The reaper's 24h-stuck probe relies
+// on started_at; an unstamped row would never trip the timeout.
+var ErrStartedAtRequired = errors.New("store: started_at is required")
+
+// SetStartedAt stamps started_at on a row. PR-42 dispatch calls this when
+// claiming pending -> running so the reaper (PR-44) can later detect a
+// row that has been running past the 24h threshold. The package godoc on
+// UpdateStatus deliberately defers this write to a caller-owned helper
+// rather than trying to infer started_at from a status transition; this
+// is that helper.
+//
+// Zero time.Time rejects with ErrStartedAtRequired: a fresh time.Time{}
+// would silently become NULL on the wire (see formatTime), and the
+// resulting "stamp succeeded" return would mask the missing dispatcher
+// clock. ErrNotFound surfaces a stale id the same way SetWorkspace does.
+func (r *TaskRepo) SetStartedAt(ctx context.Context, id int64, t time.Time) error {
+	if t.IsZero() {
+		return ErrStartedAtRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET started_at = ? WHERE id = ?", formatTime(t.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("set started_at: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set started_at rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkFailedWithReason flips a row to failed and records reason into
+// judgment_reason atomically. PR-42 dispatch uses this when SetWorkspace
+// + UpdateStatus(running) have already committed but Send / WaitReady
+// then fail: leaving the row in running with a ws reference would be a
+// "phantom" the reaper has to wait for, so we mark it failed loudly here
+// instead.
+//
+// reason is required (ErrReasonRequired on empty) so `marunage review`
+// always has something to display in the post-mortem column. Missing id
+// surfaces ErrNotFound. There is intentionally no source-state guard:
+// the dispatcher's failure path can fire from running, but
+// MarkFailedWithReason is also reusable from non-dispatch error sinks
+// (e.g. a future "abort" CLI), so the matrix lives in TransitionStatus
+// and this helper is the unguarded escape hatch.
+func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason string) error {
+	if reason == "" {
+		return ErrReasonRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ?, judgment_reason = ? WHERE id = ?",
+		StatusFailed, reason, id)
+	if err != nil {
+		return fmt.Errorf("mark failed with reason: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark failed with reason rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetWorkspace records the cmux ws reference for a dispatched task. It is
 // the immediate "claim" PR-42 writes after `cmux new-workspace` returns so
 // a parallel dispatch loop iteration cannot pick the same row twice.
