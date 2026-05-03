@@ -92,6 +92,12 @@ func translateRepoError(err error) error {
 		return fmt.Errorf("title: %w", err)
 	case errors.Is(err, store.ErrInvalidStatus):
 		return fmt.Errorf("--status: %w", err)
+	case errors.Is(err, store.ErrInvalidTransition):
+		// ErrInvalidTransition already carries the (from, to) pair via
+		// fmt.Errorf in the store layer; the prefix tells the operator
+		// which lever to pull next ("you cannot mark a done task as
+		// failed; reopen it first").
+		return fmt.Errorf("cannot transition: %w", err)
 	default:
 		return err
 	}
@@ -109,6 +115,8 @@ type taskRepo interface {
 	Insert(ctx context.Context, t store.Task) (int64, error)
 	Get(ctx context.Context, id int64) (store.Task, error)
 	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
+	TransitionStatus(ctx context.Context, id int64, newStatus string) error
+	Delete(ctx context.Context, id int64) error
 }
 
 // taskRepoFactory opens a taskRepo plus a closer that the caller must run
