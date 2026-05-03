@@ -1248,7 +1248,6 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-
 // 47 (PR-42b): ClaimWorkspace atomically attaches a ws reference to a
 // pending row with no prior claim.
 func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
