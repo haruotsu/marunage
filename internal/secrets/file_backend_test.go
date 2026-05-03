@@ -114,3 +114,30 @@ func TestFileBackendPermsTighten(t *testing.T) {
 		t.Errorf("secret file perm = %o; want 0600 (tokens live here)", perm)
 	}
 }
+
+// TestFileBackendTightensMarunageHomeDir pins the parent-of-parent
+// invariant: ~/.marunage itself must end up 0700, not just the
+// ~/.marunage/secrets subdir. Otherwise a wider umask (or a directory
+// pre-created by `marunage init` at 0755) would leave the umbrella
+// directory world-readable, defeating defense-in-depth even though the
+// secrets file/dir are properly tightened. Mirrors the same guard added
+// to internal/store/store.go in commit 9948899.
+func TestFileBackendTightensMarunageHomeDir(t *testing.T) {
+	home := t.TempDir()
+	marunageDir := filepath.Join(home, ".marunage")
+	if err := os.MkdirAll(marunageDir, 0o755); err != nil {
+		t.Fatalf("seed marunage dir at 0755: %v", err)
+	}
+
+	if _, err := secrets.Open(secrets.Config{Backend: "file", HomeDir: home}); err != nil {
+		t.Fatalf("Open(file): %v", err)
+	}
+
+	info, err := os.Stat(marunageDir)
+	if err != nil {
+		t.Fatalf("stat ~/.marunage: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("~/.marunage perm = %o; want 0700 (must not be world-readable)", perm)
+	}
+}
