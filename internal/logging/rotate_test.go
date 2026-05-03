@@ -111,6 +111,93 @@ func TestRotatingFilePrunesBackups(t *testing.T) {
 	}
 }
 
+// TestRotatingFileWriteBoundary table-pins the rotation threshold around the
+// off-by-one boundary. The goal is to make the contract explicit: rotation
+// triggers only when the *next* write to a *non-empty* file would push the
+// total past MaxBytes. Two consequences fall out of that rule that earlier
+// tests did not pin:
+//
+//  1. Writes that bring the total to *exactly* MaxBytes do not rotate; the
+//     file is allowed to sit precisely at the limit.
+//  2. A single write whose payload alone exceeds MaxBytes is accepted as-is
+//     against an empty file. Rotating an empty file would just create an
+//     empty backup without bringing the new file under the limit, so the
+//     writer chooses to delay rotation until the next non-empty write.
+//
+// Each case asserts the rotation outcome explicitly via the backup count so a
+// future change that flips either branch fails loudly.
+func TestRotatingFileWriteBoundary(t *testing.T) {
+	cases := []struct {
+		name        string
+		maxBytes    int64
+		writes      []string
+		wantBackups int
+		wantCurrent string
+	}{
+		{
+			name:        "exact_boundary_does_not_rotate",
+			maxBytes:    10,
+			writes:      []string{"01234", "56789"}, // 5 + 5 = 10 exactly
+			wantBackups: 0,
+			wantCurrent: "0123456789",
+		},
+		{
+			name:        "one_byte_over_rotates",
+			maxBytes:    10,
+			writes:      []string{"01234", "56789X"}, // 5 + 6 = 11 -> rotate before 2nd
+			wantBackups: 1,
+			wantCurrent: "56789X",
+		},
+		{
+			name:        "single_oversize_write_against_empty_is_accepted",
+			maxBytes:    10,
+			writes:      []string{"0123456789ABCDE"}, // 15 bytes vs maxBytes=10
+			wantBackups: 0,
+			wantCurrent: "0123456789ABCDE",
+		},
+		{
+			name:        "write_after_oversize_triggers_rotation",
+			maxBytes:    10,
+			writes:      []string{"0123456789ABCDE", "z"}, // 15 then 1 -> rotate before z
+			wantBackups: 1,
+			wantCurrent: "z",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "daemon.log")
+
+			r, err := logging.NewRotatingFile(path, tc.maxBytes, 5)
+			if err != nil {
+				t.Fatalf("NewRotatingFile: %v", err)
+			}
+			t.Cleanup(func() { _ = r.Close() })
+
+			for i, payload := range tc.writes {
+				if _, err := r.Write([]byte(payload)); err != nil {
+					t.Fatalf("Write %d (%q): %v", i, payload, err)
+				}
+			}
+			if err := r.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			current, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile current: %v", err)
+			}
+			if string(current) != tc.wantCurrent {
+				t.Errorf("current = %q; want %q", current, tc.wantCurrent)
+			}
+			backups := backupsOf(t, path)
+			if len(backups) != tc.wantBackups {
+				t.Fatalf("backups = %v; want %d", backups, tc.wantBackups)
+			}
+		})
+	}
+}
+
 // TestRotatingFileAppendsToExistingFile guards the daemon-restart case: a
 // previously-written daemon.log must be re-opened in append mode so the
 // freshly-started process does not blow away earlier entries.

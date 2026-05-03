@@ -48,10 +48,18 @@ func NewRotatingFile(path string, maxBytes int64, maxBackups int) (*RotatingFile
 	}, nil
 }
 
-// Write rotates first if the incoming payload would push the file past
-// MaxBytes, then forwards the bytes to the active file. The "rotate before
-// write" order keeps the on-disk file at-or-below the configured limit at
-// every observable moment.
+// Write rotates first if the incoming payload would push a non-empty file
+// past MaxBytes, then forwards the bytes to the active file. The
+// "rotate before write" order keeps the file at-or-below MaxBytes at the
+// start of each Write call. Two corner cases follow from that rule and are
+// pinned by TestRotatingFileWriteBoundary:
+//
+//   - A Write that brings the total to exactly MaxBytes does not rotate;
+//     the file is allowed to sit precisely at the limit.
+//   - A single Write whose payload alone exceeds MaxBytes is accepted as-is
+//     against an empty file. Rotating an empty file would just create an
+//     empty backup without bringing the new file under the limit, so the
+//     writer delays rotation until the next non-empty Write.
 func (r *RotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
