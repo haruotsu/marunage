@@ -152,16 +152,36 @@ func TestSet(t *testing.T) {
 // TestSetPermissionModeDerivesClaudeCommand: changing permission_mode to a
 // non-custom value rewrites claude_command so the two stay consistent. This
 // matches the spec note "permission_mode から自動生成、custom 時のみ手書き".
+//
+// Covers all four canonical modes through Set so the CLI path
+// (`marunage config set execution.permission_mode <mode>`) cannot regress for
+// any mode without a test failing — `bypass` is the default, but a user who
+// switches off it and back must see the bypass command resurface verbatim.
 func TestSetPermissionModeDerivesClaudeCommand(t *testing.T) {
-	c := Default() // starts at "bypass"
-	if err := Set(&c, "execution.permission_mode", "default"); err != nil {
-		t.Fatalf("Set permission_mode = %v", err)
+	cases := []struct {
+		mode        string
+		wantCommand string
+	}{
+		{"bypass", "claude --dangerously-skip-permissions"},
+		{"default", "claude"},
+		{"acceptEdits", "claude --permission-mode acceptEdits"},
+		{"plan", "claude --permission-mode plan"},
 	}
-	if c.Execution.PermissionMode != "default" {
-		t.Errorf("PermissionMode = %q; want %q", c.Execution.PermissionMode, "default")
-	}
-	if c.Execution.ClaudeCommand != "claude" {
-		t.Errorf("ClaudeCommand = %q; want auto-derived %q", c.Execution.ClaudeCommand, "claude")
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			c := Default()
+			// Move off the default so a no-op assignment cannot mask a bug.
+			c.Execution.ClaudeCommand = "claude --stale-marker"
+			if err := Set(&c, "execution.permission_mode", tc.mode); err != nil {
+				t.Fatalf("Set permission_mode=%q = %v", tc.mode, err)
+			}
+			if c.Execution.PermissionMode != tc.mode {
+				t.Errorf("PermissionMode = %q; want %q", c.Execution.PermissionMode, tc.mode)
+			}
+			if c.Execution.ClaudeCommand != tc.wantCommand {
+				t.Errorf("ClaudeCommand = %q; want auto-derived %q", c.Execution.ClaudeCommand, tc.wantCommand)
+			}
+		})
 	}
 }
 
