@@ -1,0 +1,165 @@
+// Package cli builds the marunage CLI surface using spf13/cobra.
+//
+// PR-02 wires every Phase 1 subcommand defined in docs/requirement.md as a
+// stub returning notImplementedError. The real behavior lands in subsequent
+// PRs, but `marunage --help` already renders the complete UX skeleton.
+package cli
+
+import (
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/haruotsu/marunage/internal/version"
+)
+
+// Execute runs the marunage CLI with args, writing output to stdout/stderr,
+// and returns the process exit code. Returning rather than calling os.Exit
+// keeps the function easy to drive from tests.
+func Execute(args []string, stdout, stderr io.Writer) int {
+	cmd := newRootCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	if err := cmd.Execute(); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// notImplementedError is returned by stub subcommands. cobra will prefix it
+// with "Error: " when printing to stderr.
+type notImplementedError struct {
+	command string
+}
+
+func (e notImplementedError) Error() string {
+	return fmt.Sprintf("marunage %s: not yet implemented (see docs/pr_split_plan.md)", e.command)
+}
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "marunage",
+		Short: "Autonomous task-execution OSS that delegates inbound work to Claude sessions.",
+		Long: "marunage runs an OODA loop on top of Claude Code sessions managed by cmux:\n" +
+			"a Discovery layer polls Slack/Gmail/GitHub/etc., a Queue layer triages and\n" +
+			"prioritises tasks in a local SQLite store, and an Execution layer dispatches\n" +
+			"each task into its own interactive Claude session — observable and reversible\n" +
+			"at every step. See docs/requirement.md for the full design.",
+		Version: version.Version(),
+		// Suppress the auto-printed usage banner on RunE errors so the
+		// "not yet implemented" message is not buried under help text.
+		SilenceUsage: true,
+	}
+	root.SetVersionTemplate("{{.Version}}\n")
+
+	for _, c := range buildLeafStubs() {
+		root.AddCommand(c)
+	}
+	root.AddCommand(newDaemonCmd())
+	root.AddCommand(newConfigCmd())
+
+	return root
+}
+
+// stubSpec describes a leaf subcommand that PR-02 ships as a stub.
+type stubSpec struct {
+	use   string // cobra Use string, may include argument hints
+	short string
+}
+
+func buildLeafStubs() []*cobra.Command {
+	specs := []stubSpec{
+		{"init", "Initialize ~/.marunage/, the SQLite store, and prompt for a permission mode."},
+		{"doctor [--fix]", "Check that claude / cmux / sqlite3 / gh / gws / jq are installed and usable."},
+		{"setup", "Run the OSS setup wizard: install Skills and authenticate sources."},
+		{"add <title>", "Add a task manually to the queue."},
+		{"list", "List tasks (defaults to pending and running)."},
+		{"show <id>", "Show full details of a task."},
+		{"rm <id>", "Remove a task and propagate the deletion to the source mirror."},
+		{"done <id>", "Mark a task as done manually."},
+		{"fail <id>", "Mark a task as failed manually."},
+		{"discover", "Run the Discovery layer once and enqueue new tasks."},
+		{"dispatch [<id>]", "Dispatch one or more pending tasks into cmux/Claude sessions."},
+		{"run-all", "Dispatch every pending task in priority order."},
+		{"status", "Show the running workspaces and their latest output."},
+		{"render", "Generate ~/.marunage/view.md for the cmux markdown viewer."},
+		{"open", "Render view.md and open it in cmux's markdown viewer."},
+		{"notify", "Send completion / failure / waiting_human notifications."},
+		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
+		{"web", "Start the local Web UI (defaults to 127.0.0.1:7777)."},
+		{"promote <id>", "Promote a skipped task back to pending."},
+		{"reopen <id>", "Reopen a done task."},
+		{"review", "Review past skipped tasks for triage feedback."},
+		{"clean", "Reap dead workspace references (manual trigger of the reaper)."},
+		{"export", "Export every task in JSON or Markdown."},
+	}
+
+	cmds := make([]*cobra.Command, 0, len(specs))
+	for _, s := range specs {
+		cmds = append(cmds, newStubCmd(s, ""))
+	}
+	return cmds
+}
+
+// newStubCmd builds a leaf subcommand whose RunE returns notImplementedError.
+// parentPath, when non-empty, is prepended to the displayed command path
+// (e.g. "daemon" so the error reads "marunage daemon start: ...").
+func newStubCmd(spec stubSpec, parentPath string) *cobra.Command {
+	name := commandNameFromUse(spec.use)
+	displayed := name
+	if parentPath != "" {
+		displayed = parentPath + " " + name
+	}
+	return &cobra.Command{
+		Use:   spec.use,
+		Short: spec.short,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return notImplementedError{command: displayed}
+		},
+	}
+}
+
+func newDaemonCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the marunage background daemon (LaunchAgent / systemd / cron).",
+	}
+	for _, s := range []stubSpec{
+		{"start", "Start the marunage daemon."},
+		{"stop", "Stop the marunage daemon."},
+		{"status", "Show the marunage daemon status."},
+	} {
+		cmd.AddCommand(newStubCmd(s, "daemon"))
+	}
+	return cmd
+}
+
+func newConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect or modify ~/.marunage/config.toml.",
+	}
+	for _, s := range []stubSpec{
+		{"get <key>", "Print the value of a single config key."},
+		{"set <key> <value>", "Set a single config key (non-interactive)."},
+		{"edit", "Open ~/.marunage/config.toml in $EDITOR with schema validation on save."},
+		{"wizard", "Run the interactive config wizard."},
+	} {
+		cmd.AddCommand(newStubCmd(s, "config"))
+	}
+	return cmd
+}
+
+// commandNameFromUse extracts the bare command name from a cobra Use string
+// such as "add <title>" or "doctor [--fix]".
+func commandNameFromUse(use string) string {
+	fields := strings.Fields(use)
+	if len(fields) == 0 {
+		return use
+	}
+	return fields[0]
+}
