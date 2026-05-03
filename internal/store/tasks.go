@@ -82,6 +82,9 @@ var (
 	ErrDuplicateExternalID = errors.New("store: duplicate (source, external_id)")
 	ErrLockHeld            = errors.New("store: lock_key is held by another running task")
 	ErrInvalidStatus       = errors.New("store: invalid status value")
+	ErrSourceRequired      = errors.New("store: Source is required")
+	ErrTitleRequired       = errors.New("store: Title is required")
+	ErrLockKeyRequired     = errors.New("store: lockKey is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -168,10 +171,10 @@ func isUniqueViolation(err error) bool {
 // rely on this for idempotency (invariant #4).
 func (r *TaskRepo) Insert(ctx context.Context, t Task) (int64, error) {
 	if t.Source == "" {
-		return 0, fmt.Errorf("store: Source is required")
+		return 0, ErrSourceRequired
 	}
 	if t.Title == "" {
-		return 0, fmt.Errorf("store: Title is required")
+		return 0, ErrTitleRequired
 	}
 	if t.Status == "" {
 		t.Status = StatusPending
@@ -224,6 +227,15 @@ func (r *TaskRepo) Insert(ctx context.Context, t Task) (int64, error) {
 
 // taskColumns is the canonical SELECT projection used by every read path
 // so Get / List share scanTask and stay in sync with the column order.
+//
+// MAINTAINER NOTE: column changes touch THREE places that must all move
+// together:
+//   1. migrations/0001_init.sql (or a new migration adding the column)
+//   2. this constant (which scanTask iterates positionally)
+//   3. Insert's INSERT statement column list + the matching VALUES
+//      placeholder count + ExecContext arg list
+// TestTaskRepoInsertAndGetAllFields catches a mismatch by round-tripping
+// every column; this comment is the diff-reviewer-facing reminder.
 const taskColumns = `id, source, external_id, external_url, title, body, notes,
 	status, judgment_reason, priority, lock_key, cwd, ws,
 	result_summary, reflection,
@@ -304,7 +316,7 @@ func (r *TaskRepo) UpdateStatus(ctx context.Context, id int64, newStatus string)
 // recovery path relies on this.
 func (r *TaskRepo) AcquireLock(ctx context.Context, id int64, lockKey string) error {
 	if lockKey == "" {
-		return fmt.Errorf("store: lockKey is required")
+		return ErrLockKeyRequired
 	}
 
 	const q = `
