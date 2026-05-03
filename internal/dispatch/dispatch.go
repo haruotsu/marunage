@@ -20,6 +20,7 @@ type Store interface {
 	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
 	Get(ctx context.Context, id int64) (store.Task, error)
 	AcquireLock(ctx context.Context, id int64, lockKey string) error
+	ReleaseLock(ctx context.Context, id int64) error
 	SetWorkspace(ctx context.Context, id int64, ws string) error
 	UpdateStatus(ctx context.Context, id int64, newStatus string) error
 	SetStartedAt(ctx context.Context, id int64, t time.Time) error
@@ -219,7 +220,13 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	if err != nil {
 		// No claim has been written yet (SetWorkspace happens AFTER
 		// NewWorkspace returns), so the row is safely retryable on the
-		// next Run. Leave it as pending and move on.
+		// next Run. Release any lock_key we just acquired so a sibling
+		// row sharing the same resolved key is not blocked indefinitely
+		// (AcquireLock treats pending rows as holders, so without this
+		// release the failed row keeps the key while sitting in pending).
+		if lockKey != "" {
+			_ = d.store.ReleaseLock(ctx, task.ID)
+		}
 		return false, nil
 	}
 
