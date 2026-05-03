@@ -8,10 +8,77 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/store"
 )
+
+// taskJSON is the JSON serialisation shape every PR-20 subcommand emits
+// under --json. It is a stable wire contract: the Web UI (PR-50+) and any
+// CI tooling that pipes `marunage list --json | jq` rely on these field
+// names. Keep it close to store.Task but use snake_case keys so the JSON
+// matches the TOML / SQL world the rest of marunage speaks.
+//
+// Times serialise as RFC3339 UTC strings; zero values become null so
+// consumers can distinguish "not started yet" from a real timestamp.
+type taskJSON struct {
+	ID             int64   `json:"id"`
+	Source         string  `json:"source"`
+	ExternalID     string  `json:"external_id,omitempty"`
+	ExternalURL    string  `json:"external_url,omitempty"`
+	Title          string  `json:"title"`
+	Body           string  `json:"body,omitempty"`
+	Notes          string  `json:"notes,omitempty"`
+	Status         string  `json:"status"`
+	JudgmentReason string  `json:"judgment_reason,omitempty"`
+	Priority       int     `json:"priority"`
+	LockKey        string  `json:"lock_key,omitempty"`
+	CWD            string  `json:"cwd,omitempty"`
+	WS             string  `json:"ws,omitempty"`
+	ResultSummary  string  `json:"result_summary,omitempty"`
+	Reflection     string  `json:"reflection,omitempty"`
+	CreatedAt      *string `json:"created_at,omitempty"`
+	UpdatedAt      *string `json:"updated_at,omitempty"`
+	StartedAt      *string `json:"started_at,omitempty"`
+	CompletedAt    *string `json:"completed_at,omitempty"`
+}
+
+// taskFromStore projects a store.Task into the JSON shape, encoding zero
+// times as null (omitempty drops them) and non-zero ones as RFC3339.
+func taskFromStore(t store.Task) taskJSON {
+	return taskJSON{
+		ID:             t.ID,
+		Source:         t.Source,
+		ExternalID:     t.ExternalID,
+		ExternalURL:    t.ExternalURL,
+		Title:          t.Title,
+		Body:           t.Body,
+		Notes:          t.Notes,
+		Status:         t.Status,
+		JudgmentReason: t.JudgmentReason,
+		Priority:       t.Priority,
+		LockKey:        t.LockKey,
+		CWD:            t.CWD,
+		WS:             t.WS,
+		ResultSummary:  t.ResultSummary,
+		Reflection:     t.Reflection,
+		CreatedAt:      timePtr(t.CreatedAt),
+		UpdatedAt:      timePtr(t.UpdatedAt),
+		StartedAt:      timePtr(t.StartedAt),
+		CompletedAt:    timePtr(t.CompletedAt),
+	}
+}
+
+// timePtr returns nil for zero times so omitempty drops the field in
+// JSON; non-zero times become RFC3339 UTC strings.
+func timePtr(t time.Time) *string {
+	if t.IsZero() {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339Nano)
+	return &s
+}
 
 // translateRepoError converts the typed store sentinels into CLI-shaped
 // error messages. ErrNotFound carries an id so the caller forms the final
