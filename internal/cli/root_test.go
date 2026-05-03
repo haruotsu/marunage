@@ -23,11 +23,11 @@ var requiredTopLevelSubcommands = []string{
 // PR-02 and therefore must report "not yet implemented" with a non-zero exit
 // code so users discover the missing feature immediately. As individual
 // commands ship (config in PR-05, doctor in PR-32, add/list/show in PR-20,
-// ...) they leave this list.
+// done/fail/rm/promote/reopen in PR-21, ...) they leave this list.
 var leafStubSubcommands = []string{
-	"init", "setup", "rm", "done", "fail",
+	"init", "setup",
 	"discover", "dispatch", "run-all", "status", "render", "open", "notify",
-	"loop", "web", "promote", "reopen", "review", "clean", "export",
+	"loop", "web", "review", "clean", "export",
 }
 
 func TestExecute_Help_ListsAllRequiredSubcommands(t *testing.T) {

@@ -86,7 +86,11 @@ var (
 	ErrTitleRequired       = errors.New("store: Title is required")
 	ErrLockKeyRequired     = errors.New("store: lockKey is required")
 	// ErrInvalidTransition is returned when a status-changing helper is
-	// called from a state it does not service.
+	// called from a state it does not service. Distinct from
+	// ErrInvalidStatus: that one means "the name is not a valid status
+	// at all", whereas this one means "the name is fine but the move
+	// from the row's current state is not allowed by policy". CLI exit
+	// messages for the two diverge.
 	ErrInvalidTransition = errors.New("store: status transition is not allowed from the current state")
 	// ErrReasonRequired is returned when a reason-recording helper gets
 	// an empty string; the Web UI / Slack DM has nothing to show then.
@@ -629,4 +633,91 @@ func scanTask(row rowScanner) (Task, error) {
 		return Task{}, fmt.Errorf("parse completed_at: %w", err)
 	}
 	return t, nil
+}
+
+// allowedTransitions is the (from -> set of to) policy matrix the CLI
+// `done` / `fail` / `promote` / `reopen` subcommands enforce. Lifecycle
+// moves owned by other PRs intentionally stay out of this map so a future
+// feature cannot bypass them by routing through TransitionStatus:
+//
+//   - pending -> running is PR-42's dispatch responsibility.
+//   - any -> waiting_human is PR-41's permission/escalation responsibility.
+//   - any -> skipped is the discovery / triage path (PR-30 / PR-31).
+//
+// docs/pr_split_plan.md PR-21 is the authoritative source for this table;
+// keep this comment and that section in sync.
+var allowedTransitions = map[string]map[string]struct{}{
+	StatusPending: {
+		StatusDone:   {},
+		StatusFailed: {},
+	},
+	StatusRunning: {
+		StatusDone:   {},
+		StatusFailed: {},
+	},
+	StatusWaitingHuman: {
+		StatusDone:   {},
+		StatusFailed: {},
+	},
+	StatusDone: {
+		StatusPending: {},
+	},
+	StatusFailed: {
+		StatusPending: {},
+	},
+	StatusSkipped: {
+		StatusPending: {},
+	},
+}
+
+// TransitionStatus is the policy-aware sibling of UpdateStatus. It loads
+// the row's current status, checks (current, newStatus) against
+// allowedTransitions, and only then performs the UPDATE. Callers that
+// need to bypass policy (PR-42 dispatch, PR-41 escalation, migrations)
+// continue to use UpdateStatus directly.
+//
+// Errors:
+//   - ErrInvalidStatus  : newStatus is not a known status name
+//   - ErrNotFound       : id does not exist
+//   - ErrInvalidTransition : (current, newStatus) is not in the allow-list
+func (r *TaskRepo) TransitionStatus(ctx context.Context, id int64, newStatus string) error {
+	if _, ok := validStatuses[newStatus]; !ok {
+		return ErrInvalidStatus
+	}
+	current, err := r.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	allowed, ok := allowedTransitions[current.Status]
+	if !ok {
+		return fmt.Errorf("%w: from %q to %q", ErrInvalidTransition, current.Status, newStatus)
+	}
+	if _, ok := allowed[newStatus]; !ok {
+		return fmt.Errorf("%w: from %q to %q", ErrInvalidTransition, current.Status, newStatus)
+	}
+	return r.UpdateStatus(ctx, id, newStatus)
+}
+
+// Delete removes the row with the given id regardless of status. Callers
+// (the `marunage rm` CLI, the reaper) get ErrNotFound when the id does
+// not exist so a stale id in a script does not silently no-op.
+//
+// Soft-delete is intentionally not used: docs/requirement.md invariant
+// "Reversibility" is satisfied at the source-of-truth level (the upstream
+// markdown / Slack thread / etc.), not at the local SQLite mirror. A
+// re-discovery run will re-insert the row if it is still relevant
+// upstream.
+func (r *TaskRepo) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, "DELETE FROM tasks WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete task rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

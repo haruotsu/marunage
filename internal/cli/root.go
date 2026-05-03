@@ -70,6 +70,11 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskAddCmd(&configPath))
 	root.AddCommand(newTaskListCmd(&configPath))
 	root.AddCommand(newTaskShowCmd(&configPath))
+	root.AddCommand(newTaskDoneCmd(&configPath))
+	root.AddCommand(newTaskFailCmd(&configPath))
+	root.AddCommand(newTaskPromoteCmd(&configPath))
+	root.AddCommand(newTaskReopenCmd(&configPath))
+	root.AddCommand(newTaskRmCmd(&configPath))
 
 	return root
 }
@@ -84,9 +89,6 @@ func buildLeafStubs() []*cobra.Command {
 	specs := []stubSpec{
 		{"init", "Initialize ~/.marunage/, the SQLite store, and prompt for a permission mode."},
 		{"setup", "Run the OSS setup wizard: install Skills and authenticate sources."},
-		{"rm <id>", "Remove a task and propagate the deletion to the source mirror."},
-		{"done <id>", "Mark a task as done manually."},
-		{"fail <id>", "Mark a task as failed manually."},
 		{"discover", "Run the Discovery layer once and enqueue new tasks."},
 		{"dispatch [<id>]", "Dispatch one or more pending tasks into cmux/Claude sessions."},
 		{"run-all", "Dispatch every pending task in priority order."},
@@ -96,8 +98,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"notify", "Send completion / failure / waiting_human notifications."},
 		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
 		{"web", "Start the local Web UI (defaults to 127.0.0.1:7777)."},
-		{"promote <id>", "Promote a skipped task back to pending."},
-		{"reopen <id>", "Reopen a done task."},
 		{"review", "Review past skipped tasks for triage feedback."},
 		{"clean", "Reap dead workspace references (manual trigger of the reaper)."},
 		{"export", "Export every task in JSON or Markdown."},
