@@ -20,7 +20,7 @@ func newTaskFailCmd(configPath *string) *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return transitionRunner(cmd, args, *configPath, store.StatusFailed,
+			return transitionRunner(cmd, args, *configPath, store.StatusFailed, nil,
 				func(ctx context.Context, m Mirror, t store.Task) error {
 					return m.OnDone(ctx, t)
 				})
