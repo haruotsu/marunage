@@ -6,7 +6,7 @@
 > within reach.
 
 `marunage` runs an OODA loop on top of Claude Code sessions managed by
-[`cmux`](https://github.com/haruotsu/cmux): a Discovery layer polls each
+[`cmux`](https://github.com/manaflow-ai/cmux): a Discovery layer polls each
 configured source, an Orient/Decide layer triages and prioritises tasks in a
 local SQLite queue, and an Execution layer launches one interactive Claude
 session per task in an isolated cmux workspace.
