@@ -110,3 +110,90 @@ func TestTaskRepoGetMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("Get(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// 2. Every column must round-trip. The point is to catch a future column
+//    addition that someone wires into Insert but forgets in scanTask (or
+//    vice-versa) — that asymmetry would silently drop data on read.
+func TestTaskRepoInsertAndGetAllFields(t *testing.T) {
+	f := newRepoFixture(t)
+
+	want := store.Task{
+		Source:         "gmail",
+		ExternalID:     "thread-42",
+		ExternalURL:    "https://mail.example/t/42",
+		Title:          "Re: contract review",
+		Body:           "please review the attached PDF by Friday.",
+		Notes:          `{"channel":"#legal","sender":"alice@example"}`,
+		Status:         store.StatusRunning,
+		JudgmentReason: "directly addressed to me",
+		Priority:       7,
+		LockKey:        "repo:acme/web",
+		CWD:            "/Users/me/works/acme",
+		WS:             "workspace:101",
+		ResultSummary:  "drafted reply, awaiting send",
+		Reflection:     "next time, ask sender for the PDF inline",
+		// Times must be UTC + millisecond precision to round-trip exactly
+		// through the stored TEXT format.
+		CreatedAt:   time.Date(2026, 5, 3, 10, 0, 0, 123_000_000, time.UTC),
+		UpdatedAt:   time.Date(2026, 5, 3, 10, 5, 0, 456_000_000, time.UTC),
+		StartedAt:   time.Date(2026, 5, 3, 10, 1, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, 5, 3, 10, 4, 0, 0, time.UTC),
+	}
+
+	id, err := f.repo.Insert(f.ctx, want)
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	want.ID = id
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.CreatedAt.Equal(want.CreatedAt) ||
+		!got.UpdatedAt.Equal(want.UpdatedAt) ||
+		!got.StartedAt.Equal(want.StartedAt) ||
+		!got.CompletedAt.Equal(want.CompletedAt) {
+		t.Errorf("time fields drifted:\n got  CreatedAt=%v UpdatedAt=%v StartedAt=%v CompletedAt=%v\n want CreatedAt=%v UpdatedAt=%v StartedAt=%v CompletedAt=%v",
+			got.CreatedAt, got.UpdatedAt, got.StartedAt, got.CompletedAt,
+			want.CreatedAt, want.UpdatedAt, want.StartedAt, want.CompletedAt)
+	}
+	// Compare the rest by zeroing time so we can use a single equality check.
+	gotCmp, wantCmp := got, want
+	gotCmp.CreatedAt, gotCmp.UpdatedAt = time.Time{}, time.Time{}
+	gotCmp.StartedAt, gotCmp.CompletedAt = time.Time{}, time.Time{}
+	wantCmp.CreatedAt, wantCmp.UpdatedAt = time.Time{}, time.Time{}
+	wantCmp.StartedAt, wantCmp.CompletedAt = time.Time{}, time.Time{}
+	if gotCmp != wantCmp {
+		t.Errorf("scalar fields drifted:\n got  %+v\n want %+v", gotCmp, wantCmp)
+	}
+}
+
+// 4. Insert validates Source and Title at the repo boundary; the schema
+//    itself enforces NOT NULL but a Go-side error gives PR-20's CLI a
+//    clean message instead of a wrapped sqlite constraint string.
+func TestTaskRepoInsertValidatesRequiredFields(t *testing.T) {
+	f := newRepoFixture(t)
+
+	if _, err := f.repo.Insert(f.ctx, store.Task{Title: "no source"}); err == nil {
+		t.Errorf("Insert without Source must fail")
+	}
+	if _, err := f.repo.Insert(f.ctx, store.Task{Source: "manual"}); err == nil {
+		t.Errorf("Insert without Title must fail")
+	}
+}
+
+// 5. Insert rejects an unknown Status before reaching SQLite so callers see
+//    the typed sentinel rather than a generic CHECK violation.
+func TestTaskRepoInsertRejectsInvalidStatus(t *testing.T) {
+	f := newRepoFixture(t)
+
+	_, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "bad status",
+		Status: "completed", // typo for "done"
+	})
+	if !errors.Is(err, store.ErrInvalidStatus) {
+		t.Fatalf("Insert(invalid status): err = %v; want ErrInvalidStatus", err)
+	}
+}
