@@ -968,9 +968,11 @@ func TestTaskRepoEscalateToHumanMissingReturnsErrNotFound(t *testing.T) {
 //  40. judgment_reason is preserved on expiry. The reason that caused
 //      escalation must remain visible after the human window elapses, so
 //      the post-mortem in `marunage review` can see why this row landed
-//      on the human queue in the first place.
+//      on the human queue in the first place. (Verified inline inside
+//      #35-#37 rather than as a standalone test, so the preservation
+//      assertion shares the same fixture as the row that did flip.)
 
-// 35-37. ExpireWaitingHuman flips only the right rows.
+// 35-37 (and 40 inline). ExpireWaitingHuman flips only the right rows.
 func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 	f := newRepoFixture(t)
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
