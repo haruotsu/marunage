@@ -94,8 +94,16 @@ func newTaskRenderCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve view path: %w", err)
 			}
-			if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+			parent := filepath.Dir(dest)
+			if err := os.MkdirAll(parent, 0o700); err != nil {
 				return fmt.Errorf("create view dir: %w", err)
+			}
+			// MkdirAll does not narrow an existing directory's mode, so
+			// retighten in case a previous run (or the user's umask) left
+			// it world-readable. Mirrors internal/secrets/file_backend.go's
+			// parent-tighten pattern for the rest of ~/.marunage/.
+			if err := os.Chmod(parent, 0o700); err != nil {
+				return fmt.Errorf("chmod view dir: %w", err)
 			}
 			if err := atomicWriteViewFile(dest, []byte(body)); err != nil {
 				return err

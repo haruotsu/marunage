@@ -89,8 +89,12 @@ func groupByStatus(tasks []store.Task) map[string][]store.Task {
 // which is already in this order, but a caller could pass a hand-built
 // slice (tests, future composite sources) and the file we write should
 // stay deterministic regardless.
+//
+// sort.Slice (not Stable) is sufficient: the id ASC tail clause makes
+// the comparator a total order, so two rows are never "equal" from the
+// sort's point of view and stability is irrelevant.
 func sortRows(rows []store.Task) {
-	sort.SliceStable(rows, func(i, j int) bool {
+	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if a.Priority != b.Priority {
 			return a.Priority > b.Priority

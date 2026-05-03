@@ -201,3 +201,89 @@ func TestTaskRender_PropagatesRepoErrors(t *testing.T) {
 		t.Errorf("view file should not exist after repo error; stat err=%v", err)
 	}
 }
+
+// C7: A repo.List failure (after the factory succeeded) must also leave
+// no view file behind. C6 only covers the factory-open path; the read
+// path is the second window where a partial write could appear if the
+// SUT ever pre-truncated the destination.
+func TestTaskRender_NoViewFileWrittenOnListError(t *testing.T) {
+	repo, dest := installRenderHarness(t)
+	repo.listErr = errBoom
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"render"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Errorf("view file should not exist after List error; stat err=%v", err)
+	}
+}
+
+// C8b: A pre-existing parent directory with a wider mode (e.g. the
+// user ran `mkdir -m 755 ~/.marunage` by hand, or a previous version
+// of marunage created it under a relaxed umask) gets retightened to
+// 0o700. MkdirAll alone does not narrow an existing dir, so `marunage
+// render` must follow the same Chmod-after-Mkdir pattern that
+// internal/secrets/file_backend.go uses for ~/.marunage/secrets.
+func TestTaskRender_RetightensExistingParentDirectory(t *testing.T) {
+	installFakeRepo(t)
+	root := t.TempDir()
+	parent := filepath.Join(root, "marunage")
+	dest := filepath.Join(parent, "view.md")
+	withViewPath(t, dest)
+
+	// Pre-create the parent with the deliberately wide mode the bug
+	// shape would leave behind. Mkdir is also subject to umask, so
+	// chmod separately to be sure we measure the assertion target.
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("seed parent dir: %v", err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatalf("seed chmod parent: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"render"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("render exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("stat parent: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("parent perm = %v; want 0o700 (render must retighten existing dir)", perm)
+	}
+}
+
+// C8: When the destination's parent directory does not yet exist (the
+// first ever `marunage render` against a fresh ~/.marunage/ tree), the
+// SUT creates it with mode 0o700. ~/.marunage/ holds tasks.db plus
+// secrets fallbacks, so a world-readable parent dir would defeat the
+// 0o600 view file protection.
+func TestTaskRender_CreatesParentDirectoryWith0700(t *testing.T) {
+	installFakeRepo(t)
+	root := t.TempDir()
+	dest := filepath.Join(root, "fresh", "marunage", "view.md")
+	withViewPath(t, dest)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"render"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("render exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	// Both the leaf parent and any intermediate dir must end up 0o700,
+	// so a world-readable middle dir does not leak the file name.
+	for _, dir := range []string{filepath.Dir(dest), filepath.Dir(filepath.Dir(dest))} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Errorf("dir %s perm = %v; want 0o700", dir, perm)
+		}
+	}
+}
