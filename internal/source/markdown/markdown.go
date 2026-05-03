@@ -404,15 +404,16 @@ func (p *Plugin) Complete(ctx context.Context, externalID string) error {
 			Marker: mk,
 		}
 		// Preserve the original indent by re-reading it from the line.
+		eol := detectEOL(body)
 		lines := splitLines(body)
 		i := parsed[idx].LineNumber - 1
 		if m := checkboxLine.FindStringSubmatch(lines[i]); m != nil {
 			tl.Indent = m[1]
 		}
 		lines[i] = renderTaskLine(tl)
-		out := joinLines(lines)
+		out := joinLines(lines, eol)
 		if hadTrailingNewline(body) {
-			out = append(out, '\n')
+			out = append(out, eol...)
 		}
 		return out, nil
 	})
@@ -422,12 +423,13 @@ func (p *Plugin) Complete(ctx context.Context, externalID string) error {
 // prose are preserved verbatim; only the one matching line goes away.
 func (p *Plugin) Delete(ctx context.Context, externalID string) error {
 	return p.mutateLine(ctx, externalID, func(parsed []parsedTask, idx int, body []byte) ([]byte, error) {
+		eol := detectEOL(body)
 		lines := splitLines(body)
 		i := parsed[idx].LineNumber - 1
 		lines = append(lines[:i], lines[i+1:]...)
-		out := joinLines(lines)
+		out := joinLines(lines, eol)
 		if hadTrailingNewline(body) && (len(out) == 0 || out[len(out)-1] != '\n') {
-			out = append(out, '\n')
+			out = append(out, eol...)
 		}
 		return out, nil
 	})
@@ -513,17 +515,19 @@ func (p *Plugin) mutateLine(
 	return ErrTaskNotFound
 }
 
-// appendLine returns body + line + "\n", inserting a separating
-// newline first if body did not already end with one. Empty body
-// produces just "line\n" — no leading blank line for fresh files.
+// appendLine returns body + line + eol, inserting a separating eol
+// first if body did not already end with a newline. Empty body
+// produces just "line<eol>" — no leading blank line for fresh files.
+// eol is detected from body so a CRLF file stays CRLF after Add.
 func appendLine(body []byte, line string) []byte {
-	out := make([]byte, 0, len(body)+len(line)+2)
+	eol := detectEOL(body)
+	out := make([]byte, 0, len(body)+len(line)+2*len(eol))
 	out = append(out, body...)
 	if len(out) > 0 && out[len(out)-1] != '\n' {
-		out = append(out, '\n')
+		out = append(out, eol...)
 	}
 	out = append(out, line...)
-	out = append(out, '\n')
+	out = append(out, eol...)
 	return out
 }
 
