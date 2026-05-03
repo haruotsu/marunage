@@ -37,9 +37,6 @@ func TestWeb_FactoryReceivesEffectiveAddress(t *testing.T) {
 	if captured.Addr != "127.0.0.1:0" {
 		t.Errorf("Addr = %q; want 127.0.0.1:0 (CLI flags must override [web])", captured.Addr)
 	}
-	if captured.Remote {
-		t.Errorf("Remote = true; want false when --remote not set")
-	}
 }
 
 // TestWeb_DefaultsFromConfig pins that, with no flag overrides, the
@@ -83,8 +80,55 @@ func TestWeb_RemoteBindsToAllInterfaces(t *testing.T) {
 	if captured.Addr != "0.0.0.0:7777" {
 		t.Errorf("Addr = %q; want 0.0.0.0:7777 when --remote", captured.Addr)
 	}
-	if !captured.Remote {
-		t.Errorf("Remote = false; want true")
+}
+
+// TestWeb_RemoteFlagOverridesConfigTrue pins the bidirectional
+// precedence: when [web].remote=true, an explicit --remote=false on
+// the CLI must flip the binary back to loopback.  Without
+// cmd.Flags().Changed("remote") the boolean OR would lock the
+// process into 0.0.0.0 once the config opted in.
+func TestWeb_RemoteFlagOverridesConfigTrue(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+	if err := os.WriteFile(cfgPath, []byte(`[core]
+db_path = "~/.marunage/tasks.db"
+max_parallel = 1
+log_level = "info"
+
+[execution]
+permission_mode = "bypass"
+claude_command = "claude --dangerously-skip-permissions"
+startup_timeout = 60
+on_unknown_permission = "escalate"
+human_wait_timeout = "30m"
+reaper_stuck_threshold = "24h"
+
+[discovery]
+interval = "10m"
+
+[web]
+bind = "127.0.0.1"
+port = 7777
+remote = true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var captured WebFactoryOptions
+	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, error) {
+		captured = opts
+		return immediateExitWebRunner{}, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web", "--remote=false"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
+	}
+	if captured.Addr != "127.0.0.1:7777" {
+		t.Errorf("Addr = %q; want 127.0.0.1:7777 (--remote=false must override config)", captured.Addr)
+	}
+	if strings.Contains(stderr.String(), "WARNING") {
+		t.Errorf("stderr unexpectedly carries WARNING when --remote=false; got %q", stderr.String())
 	}
 }
 

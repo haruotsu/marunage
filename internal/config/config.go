@@ -198,9 +198,8 @@ func Default() Config {
 			OnFailure:  true,
 		},
 		Web: WebConfig{
-			Bind:   "127.0.0.1",
-			Port:   7777,
-			Remote: false,
+			Bind: "127.0.0.1",
+			Port: 7777,
 		},
 	}
 }
