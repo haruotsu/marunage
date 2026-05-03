@@ -70,11 +70,12 @@ type Manifest struct {
 	Capabilities []Capability
 }
 
-// HasCapability reports whether the manifest declares cap. Linear scan is
+// HasCapability reports whether the manifest declares want. Linear scan is
 // fine — the capability list never grows beyond a handful of entries.
-func (m Manifest) HasCapability(cap Capability) bool {
+// (`want` rather than `cap` to avoid shadowing the builtin cap().)
+func (m Manifest) HasCapability(want Capability) bool {
 	for _, c := range m.Capabilities {
-		if c == cap {
+		if c == want {
 			return true
 		}
 	}
