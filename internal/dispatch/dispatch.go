@@ -10,6 +10,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -256,6 +257,11 @@ func (d *Dispatcher) recordAuditFail(taskID int64, reason string) {
 // failure here is observable through the row staying in running until
 // the next Run picks up the inconsistency.
 func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason string) {
+	// Strip leaked tokens (cmux stderr can echo back Authorization
+	// headers, an Anthropic / GitHub API failure can include the offending
+	// key, etc.). Redacting before BOTH the DB write and the audit
+	// append keeps secrets out of the persistent and append-only sinks.
+	dispatchReason = logging.Redact(dispatchReason)
 	cur, err := d.store.Get(ctx, id)
 	if err != nil {
 		_ = d.store.MarkFailedWithReason(ctx, id, dispatchReason)
