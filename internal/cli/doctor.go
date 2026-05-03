@@ -14,11 +14,14 @@ import (
 // logic lives in internal/doctor; this file is just CLI plumbing so the
 // flag layer stays thin and the doctor package can be reused from the Web
 // UI without dragging cobra along.
+//
+// Tests inject fake Runner / SecretsProbe / OSDetector implementations by
+// calling withDoctorRuntime; production callers leave doctorRuntimeHook
+// nil and get the real os/exec / filesystem-backed implementations.
 func newDoctorCmd(configPath *string) *cobra.Command {
 	var (
-		fix     bool
-		asJSON  bool
-		runtime = doctorRuntime{} // overridable in tests via doctorRuntime
+		fix    bool
+		asJSON bool
 	)
 
 	cmd := &cobra.Command{
@@ -42,7 +45,9 @@ func newDoctorCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load %s: %w", *configPath, err)
 			}
-			rep := doctor.Run(cmd.Context(), runtime.Inputs(cfg))
+
+			rt := activeDoctorRuntime()
+			rep := doctor.Run(cmd.Context(), rt.Inputs(cfg))
 
 			if asJSON {
 				data, err := doctor.MarshalJSON(rep)
@@ -55,7 +60,7 @@ func newDoctorCmd(configPath *string) *cobra.Command {
 			}
 
 			if fix {
-				printFixHints(cmd.OutOrStdout(), rep, runtime.OS().Family())
+				printFixHints(cmd.OutOrStdout(), rep, rt.Family())
 			}
 
 			if !rep.OK {
@@ -81,13 +86,54 @@ func newDoctorCmd(configPath *string) *cobra.Command {
 // printing a redundant "Error: ..." banner over the human report.
 var errDoctorFailed = fmt.Errorf("doctor: one or more required checks failed")
 
-// doctorRuntime bundles the production implementations of doctor's
-// dependencies. Splitting this off keeps newDoctorCmd small and makes it
-// easy to override in a future test by assigning a different value before
-// cmd.Execute.
-type doctorRuntime struct{}
+// doctorRuntimeOverride is the test injection seam. Each non-nil field
+// replaces the corresponding production implementation. Production code
+// (newDoctorCmd) sees doctorRuntimeHook == nil and falls through to
+// productionDoctorRuntime.
+type doctorRuntimeOverride struct {
+	Inputs func(cfg config.Config) doctor.Inputs
+	Family func() doctor.OSFamily
+}
 
-func (doctorRuntime) Inputs(cfg config.Config) doctor.Inputs {
+// doctorRuntimeHook is the package-private slot tests use via
+// withDoctorRuntime. Assigning here directly is intentionally not
+// thread-safe; tests run in a single goroutine before Execute and call
+// withDoctorRuntime which restores the previous value via t.Cleanup.
+var doctorRuntimeHook *doctorRuntimeOverride
+
+// withDoctorRuntime swaps in test fakes and restores the prior hook on
+// test completion. The closure-of-Cleanup pattern keeps tests isolated
+// even if they fail mid-way.
+func withDoctorRuntime(t interface{ Cleanup(func()) }, override doctorRuntimeOverride) {
+	prev := doctorRuntimeHook
+	doctorRuntimeHook = &override
+	t.Cleanup(func() { doctorRuntimeHook = prev })
+}
+
+// activeDoctorRuntime returns the current runtime: the test override
+// when one is installed, otherwise the production implementation.
+func activeDoctorRuntime() doctorRuntime {
+	if doctorRuntimeHook != nil {
+		return doctorRuntime{
+			inputs: doctorRuntimeHook.Inputs,
+			family: doctorRuntimeHook.Family,
+		}
+	}
+	return doctorRuntime{}
+}
+
+// doctorRuntime bundles the dependencies newDoctorCmd needs. The zero
+// value resolves to the production implementations via Inputs / Family;
+// tests substitute either or both via withDoctorRuntime.
+type doctorRuntime struct {
+	inputs func(cfg config.Config) doctor.Inputs
+	family func() doctor.OSFamily
+}
+
+func (r doctorRuntime) Inputs(cfg config.Config) doctor.Inputs {
+	if r.inputs != nil {
+		return r.inputs(cfg)
+	}
 	runner := doctor.ExecRunner{}
 	return doctor.Inputs{
 		Cfg:     cfg,
@@ -97,8 +143,11 @@ func (doctorRuntime) Inputs(cfg config.Config) doctor.Inputs {
 	}
 }
 
-func (doctorRuntime) OS() doctor.OSDetector {
-	return doctor.RealOSDetector{}
+func (r doctorRuntime) Family() doctor.OSFamily {
+	if r.family != nil {
+		return r.family()
+	}
+	return doctor.RealOSDetector{}.Family()
 }
 
 // printTextReport renders a one-line-per-check human view. The format is
