@@ -89,6 +89,12 @@ var ErrUnsupported = errors.New("secrets backend not available in this environme
 // out of scope and would be lost on restart anyway.
 var ErrReadOnly = errors.New("secrets backend is read-only")
 
+// ErrUnknownBackend is returned by Open when cfg.Backend is not one of the
+// documented values (auto/keyring/pass/age/file/env). Surfaced as a typed
+// sentinel so CLI callers (e.g. `marunage config set secrets.backend ...`)
+// can branch on errors.Is rather than substring-matching the message.
+var ErrUnknownBackend = errors.New("secrets: unknown backend")
+
 // allowedBackends is the validated set of cfg.Backend values. Kept
 // in-sync with config.allowedSecretsBackends — the config package owns
 // the schema-level validation, this list is a defensive second check so
@@ -158,7 +164,7 @@ func openWithFactories(cfg Config, factories map[string]backendFactory) (Store, 
 		cfg.Backend = "auto"
 	}
 	if _, ok := allowedBackends[cfg.Backend]; !ok {
-		return nil, fmt.Errorf("secrets: unknown backend %q (want one of auto/keyring/pass/age/file/env)", cfg.Backend)
+		return nil, fmt.Errorf("%w %q (want one of auto/keyring/pass/age/file/env)", ErrUnknownBackend, cfg.Backend)
 	}
 
 	if cfg.Backend != "auto" {
