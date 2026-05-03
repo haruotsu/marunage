@@ -85,6 +85,19 @@ var (
 	ErrSourceRequired      = errors.New("store: Source is required")
 	ErrTitleRequired       = errors.New("store: Title is required")
 	ErrLockKeyRequired     = errors.New("store: lockKey is required")
+	// ErrInvalidTransition is returned when a status-changing helper is
+	// called from a state that the helper does not service. PR-41
+	// EscalateToHuman uses this for "escalate from done/failed/skipped"
+	// (those rows must not be reanimated by a stale dispatcher); future
+	// helpers (PR-21 reopen / promote) will reuse the same sentinel for
+	// their own transition rules.
+	ErrInvalidTransition = errors.New("store: status transition is not allowed from the current state")
+	// ErrReasonRequired is returned when a helper that records a human-
+	// readable reason (PR-41 EscalateToHuman, future review/promote) is
+	// called with an empty string. The Web UI / Slack DM the requirement.md
+	// 202 line promises has nothing to show otherwise, so we fail loudly
+	// rather than silently accept a blank.
+	ErrReasonRequired = errors.New("store: reason is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -375,6 +388,67 @@ func (r *TaskRepo) ReleaseLock(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// EscalateToHuman flips a row from `running` (or already `waiting_human`)
+// into `waiting_human` and records why. PR-42 dispatch calls this when the
+// auto-accept matcher (`internal/permission`) declines a Claude permission
+// prompt and `execution.on_unknown_permission = "escalate"` — the row is
+// then surfaced to the human via Web UI / Slack DM per requirement.md
+// 200-205.
+//
+// Allowed source states: `running` and `waiting_human` (idempotent re-call
+// for the same prompt firing twice). Any other state returns
+// ErrInvalidTransition with the row untouched, so a stale dispatcher
+// cannot reanimate a `done` / `failed` / `skipped` row.
+//
+// reason is required (ErrReasonRequired) — escalation with no reason is
+// useless to the human reading the queue and breaks the audit trail.
+//
+// Atomicity follows the AcquireLock pattern: a single UPDATE with a status
+// guard does the conflict check and the write together; a follow-up
+// SELECT distinguishes "row absent" (ErrNotFound) from "transition
+// forbidden" (ErrInvalidTransition) when RowsAffected reports zero.
+//
+// updated_at is bumped by the tasks_set_updated_at trigger; this method
+// intentionally does not stamp completed_at, since waiting_human is not a
+// terminal state.
+func (r *TaskRepo) EscalateToHuman(ctx context.Context, id int64, reason string) error {
+	if reason == "" {
+		return ErrReasonRequired
+	}
+
+	const q = `
+		UPDATE tasks
+		   SET status = ?, judgment_reason = ?
+		 WHERE id = ?
+		   AND status IN ('running', 'waiting_human')`
+	res, err := r.db.ExecContext(ctx, q, StatusWaitingHuman, reason, id)
+	if err != nil {
+		return fmt.Errorf("escalate to human: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("escalate to human rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+
+	// RowsAffected == 0: either id is missing, or current status falls
+	// outside {running, waiting_human}. Probe to give the caller the
+	// precise sentinel — same disambiguation pattern AcquireLock uses.
+	var current string
+	err = r.db.QueryRowContext(ctx,
+		"SELECT status FROM tasks WHERE id = ?", id,
+	).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("escalate to human probe: %w", err)
+	}
+	return fmt.Errorf("%w: cannot escalate from %q", ErrInvalidTransition, current)
 }
 
 // SetWorkspace records the cmux ws reference for a dispatched task. It is
