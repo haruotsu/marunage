@@ -1272,26 +1272,89 @@ func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
 	}
 }
 
+// 48 (PR-42b): a duplicate ClaimWorkspace returns claimed=false without
+// touching the existing ws.
+func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "second claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1"); err != nil {
+		t.Fatalf("first ClaimWorkspace: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:2")
+	if err != nil {
+		t.Fatalf("second ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false on duplicate claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws after rejected claim = %q; want preserved %q", got.WS, "workspace:1")
+	}
+}
+
+// 49 (PR-42b): ClaimWorkspace on a non-pending row returns claimed=false.
+func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "post-claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false (row is already running)")
+	}
+}
+
+// 50 (PR-42b): ClaimWorkspace on a missing id returns ErrNotFound.
+func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	_, err := f.repo.ClaimWorkspace(f.ctx, 99999, "workspace:1")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ClaimWorkspace(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 51 (PR-42b): ClaimWorkspace with empty ws is rejected.
+func TestTaskRepoClaimWorkspaceRejectsEmptyWS(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "empty ws"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	_, err = f.repo.ClaimWorkspace(f.ctx, id, "")
+	if !errors.Is(err, store.ErrWSRequired) {
+		t.Fatalf("ClaimWorkspace(empty ws): err = %v; want ErrWSRequired", err)
+	}
+}
+
 // PR-43 S1: MarkDoneWithSummary stamps status=done, result_summary, and
 // completed_at in a single UPDATE.
 func TestTaskRepoMarkDoneWithSummaryStampsAllFields(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
-		Source: "manual",
-		Title:  "completion test",
-		Status: store.StatusRunning,
+		Source: "manual", Title: "completion test", Status: store.StatusRunning,
 	})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-
 	const summary = "Done. PR opened: https://example.com/pr/1"
 	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
-
 	if err := f.repo.MarkDoneWithSummary(f.ctx, id, summary, completedAt); err != nil {
 		t.Fatalf("MarkDoneWithSummary: %v", err)
 	}
-
 	got, err := f.repo.Get(f.ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -1402,71 +1465,169 @@ func TestTaskRepoSetCompletedAtRejectsZeroTime(t *testing.T) {
 	}
 }
 
-// 48 (PR-42b): a duplicate ClaimWorkspace returns claimed=false without
-// touching the existing ws.
-func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
+// AppendJudgmentReason (PR-44 reaper helper).
+
+func TestTaskRepoAppendJudgmentReasonOnEmpty(t *testing.T) {
 	f := newRepoFixture(t)
-	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "second claim"})
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no prior note", Status: store.StatusRunning,
+	})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if _, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1"); err != nil {
-		t.Fatalf("first ClaimWorkspace: %v", err)
-	}
-
-	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:2")
-	if err != nil {
-		t.Fatalf("second ClaimWorkspace: %v", err)
-	}
-	if claimed {
-		t.Errorf("claimed = true; want false on duplicate claim")
+	const suffix = "[reaper] stuck running over 24h"
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, suffix); err != nil {
+		t.Fatalf("AppendJudgmentReason: %v", err)
 	}
 	got, err := f.repo.Get(f.ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.WS != "workspace:1" {
-		t.Errorf("ws after rejected claim = %q; want preserved %q", got.WS, "workspace:1")
+	if got.JudgmentReason != suffix {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, suffix)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("status = %q; want running (append must not transition)", got.Status)
 	}
 }
 
-// 49 (PR-42b): ClaimWorkspace on a non-pending row returns claimed=false.
-func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
+func TestTaskRepoAppendJudgmentReasonPreservesExisting(t *testing.T) {
 	f := newRepoFixture(t)
-	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "post-claim"})
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "had a note", Status: store.StatusRunning,
+		JudgmentReason: "operator note",
+	})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
-		t.Fatalf("UpdateStatus: %v", err)
+	const suffix = "[reaper] stuck running over 24h"
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, suffix); err != nil {
+		t.Fatalf("AppendJudgmentReason: %v", err)
 	}
-	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	got, err := f.repo.Get(f.ctx, id)
 	if err != nil {
-		t.Fatalf("ClaimWorkspace: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
-	if claimed {
-		t.Errorf("claimed = true; want false (row is already running)")
+	want := "operator note; " + suffix
+	if got.JudgmentReason != want {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, want)
 	}
 }
 
-// 50 (PR-42b): ClaimWorkspace on a missing id returns ErrNotFound.
-func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
+func TestTaskRepoAppendJudgmentReasonRejectsEmptySuffix(t *testing.T) {
 	f := newRepoFixture(t)
-	_, err := f.repo.ClaimWorkspace(f.ctx, 99999, "workspace:1")
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "x", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.AppendJudgmentReason(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("AppendJudgmentReason(empty): err = %v; want ErrReasonRequired", err)
+	}
+}
+
+func TestTaskRepoAppendJudgmentReasonMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.AppendJudgmentReason(f.ctx, 9999, "x")
 	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("ClaimWorkspace(missing): err = %v; want ErrNotFound", err)
+		t.Fatalf("AppendJudgmentReason(missing): err = %v; want ErrNotFound", err)
 	}
 }
 
-// 51 (PR-42b): ClaimWorkspace with empty ws is rejected.
-func TestTaskRepoClaimWorkspaceRejectsEmptyWS(t *testing.T) {
+// MarkFailedFromRunningWithReason (PR-44 reaper helper).
+
+func TestTaskRepoMarkFailedFromRunningWithReasonHappyPath(t *testing.T) {
 	f := newRepoFixture(t)
-	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "empty ws"})
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "running row", Status: store.StatusRunning,
+	})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	_, err = f.repo.ClaimWorkspace(f.ctx, id, "")
-	if !errors.Is(err, store.ErrWSRequired) {
-		t.Fatalf("ClaimWorkspace(empty ws): err = %v; want ErrWSRequired", err)
+	const reason = "workspace disappeared (reaper)"
+	if err := f.repo.MarkFailedFromRunningWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkFailedFromRunningWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("status = %q; want failed", got.Status)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, reason)
+	}
+}
+
+func TestTaskRepoMarkFailedFromRunningWithReasonAppendsToExisting(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "had triage note", Status: store.StatusRunning,
+		JudgmentReason: "operator triage note",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const reason = "workspace disappeared (reaper)"
+	if err := f.repo.MarkFailedFromRunningWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkFailedFromRunningWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("status = %q; want failed", got.Status)
+	}
+	want := "operator triage note; " + reason
+	if got.JudgmentReason != want {
+		t.Errorf("judgment_reason = %q; want %q (must append, not overwrite)", got.JudgmentReason, want)
+	}
+}
+
+func TestTaskRepoMarkFailedFromRunningWithReasonRefusesNonRunning(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "already done", Status: store.StatusDone,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	err = f.repo.MarkFailedFromRunningWithReason(f.ctx, id, "should be skipped")
+	if !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("err = %v; want ErrInvalidTransition", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want done (untouched)", got.Status)
+	}
+	if got.JudgmentReason != "" {
+		t.Errorf("judgment_reason = %q; want empty (untouched)", got.JudgmentReason)
+	}
+}
+
+func TestTaskRepoMarkFailedFromRunningWithReasonRejectsEmptyReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "x", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkFailedFromRunningWithReason(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("err = %v; want ErrReasonRequired", err)
+	}
+}
+
+func TestTaskRepoMarkFailedFromRunningWithReasonMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.MarkFailedFromRunningWithReason(f.ctx, 9999, "x")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v; want ErrNotFound", err)
 	}
 }

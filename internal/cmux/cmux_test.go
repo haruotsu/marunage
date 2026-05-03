@@ -40,6 +40,14 @@ import (
 //      ErrTimeout when the probe never goes ready.
 //  12. WaitReady returns ctx.Err() immediately when the parent context is
 //      cancelled, even if the timeout has not expired.
+//  14. ListWorkspaces shells out to `cmux list-workspaces` (no flags).
+//  15. ListWorkspaces parses every line-leading "workspace:NNN" token into
+//      the returned []Workspace.
+//  16. ListWorkspaces returns an empty (non-nil) slice for empty stdout so
+//      callers can range without a nil check.
+//  17. ListWorkspaces maps a missing cmux binary to ErrCmuxNotFound.
+//  18. ListWorkspaces wraps a non-zero exit with a stderr-bearing diagnostic
+//      so the operator can see what cmux complained about.
 
 // callRecord captures one Runner.Run invocation so assertions can inspect
 // argv ordering. The struct is exported only to the test file; the fake
@@ -391,6 +399,119 @@ func TestWaitReadyHonoursContextCancel(t *testing.T) {
 	err := c.WaitReady(ctx, cmux.Workspace{ID: "workspace:1"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v; want context.Canceled", err)
+	}
+}
+
+// 14 + 15: ListWorkspaces shells out with the documented argv and parses
+// every line-leading "workspace:NNN" token from stdout.
+func TestListWorkspacesShellsOutAndParsesIDs(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Stdout: "workspace:101\nworkspace:202\n"})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	ws, err := c.ListWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	if len(ws) != 2 {
+		t.Fatalf("len(ws) = %d; want 2 (got %v)", len(ws), ws)
+	}
+	if ws[0].ID != "workspace:101" || ws[1].ID != "workspace:202" {
+		t.Errorf("ws = %v; want IDs [workspace:101 workspace:202]", ws)
+	}
+	calls := r.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d; want 1", len(calls))
+	}
+	if calls[0].Name != "cmux" {
+		t.Errorf("Calls()[0].Name = %q; want %q", calls[0].Name, "cmux")
+	}
+	want := []string{"list-workspaces"}
+	if !equalArgs(calls[0].Args, want) {
+		t.Errorf("Args = %v; want %v", calls[0].Args, want)
+	}
+}
+
+// 15b: a workspace banner that follows dashboard markers ("* workspace:7")
+// or indentation must still be recognised. The leading-anchor regex is
+// shared with the CLI clean path so both layers see the same set.
+func TestListWorkspacesParsesIndentedBanners(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Stdout: "* workspace:7 my-task\n  workspace:9 other\n"})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	ws, err := c.ListWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	if len(ws) != 2 || ws[0].ID != "workspace:7" || ws[1].ID != "workspace:9" {
+		t.Errorf("ws = %v; want [workspace:7 workspace:9]", ws)
+	}
+}
+
+// 16: empty stdout returns an empty (non-nil) slice so callers can
+// `for _, w := range ws` without a nil check.
+func TestListWorkspacesEmptyStdoutReturnsEmptySlice(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Stdout: ""})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	ws, err := c.ListWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	if ws == nil {
+		t.Fatalf("ws = nil; want non-nil empty slice")
+	}
+	if len(ws) != 0 {
+		t.Errorf("len(ws) = %d; want 0", len(ws))
+	}
+}
+
+// 17: missing cmux binary surfaces as the typed sentinel.
+func TestListWorkspacesMapsMissingBinaryToErrCmuxNotFound(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Err: &exec.Error{Name: "cmux", Err: exec.ErrNotFound}})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	_, err := c.ListWorkspaces(context.Background())
+	if !errors.Is(err, cmux.ErrCmuxNotFound) {
+		t.Fatalf("ListWorkspaces error = %v; want ErrCmuxNotFound", err)
+	}
+}
+
+// 18b: cmux output containing duplicate "workspace:NNN" lines (an
+// artifact of dashboard rendering or a future cmux variant) must not
+// crash; the reaper turns the slice into a set anyway, but pinning
+// "duplicates pass through verbatim" keeps the contract explicit so
+// later set-construction logic stays opt-in.
+func TestListWorkspacesPreservesDuplicates(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Stdout: "workspace:7\nworkspace:7\nworkspace:9\n"})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	ws, err := c.ListWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	if len(ws) != 3 {
+		t.Fatalf("len(ws) = %d; want 3 (duplicates preserved)", len(ws))
+	}
+}
+
+// 18: a non-zero exit surfaces with stderr included in the message so
+// the operator can diagnose without re-running cmux by hand.
+func TestListWorkspacesWrapsExitErrorWithStderr(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Stderr: "permission denied", Err: errors.New("exit 1")})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	_, err := c.ListWorkspaces(context.Background())
+	if err == nil {
+		t.Fatalf("ListWorkspaces err = nil; want error wrapping stderr")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("err = %v; want it to mention stderr", err)
 	}
 }
 
