@@ -166,18 +166,26 @@ func skillsTargetDir() (string, error) {
 // resolveSkillSource picks between the //go:embed bundle (default) and
 // a user-supplied directory. Returning an `fs.FS` keeps the boundary
 // the same in either case so the installer does not need to branch.
+//
+// Leading `~` / `~/` in fromDir is expanded so `--from-dir ~/my-skills`
+// works without the shell pre-expanding the tilde (single-quoted
+// invocations in scripts are the obvious case).
 func resolveSkillSource(fromDir string) (fs.FS, error) {
 	if fromDir == "" {
 		return skills.EmbeddedFS(), nil
 	}
-	info, err := os.Stat(fromDir)
+	expanded, err := expandHome(fromDir)
 	if err != nil {
 		return nil, fmt.Errorf("--from-dir %s: %w", fromDir, err)
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("--from-dir %s: not a directory", fromDir)
+	info, err := os.Stat(expanded)
+	if err != nil {
+		return nil, fmt.Errorf("--from-dir %s: %w", expanded, err)
 	}
-	return os.DirFS(fromDir), nil
+	if !info.IsDir() {
+		return nil, fmt.Errorf("--from-dir %s: not a directory", expanded)
+	}
+	return os.DirFS(expanded), nil
 }
 
 // printSkillsResult renders the per-bucket summary so a user can see
