@@ -96,9 +96,16 @@ type TaskRepo struct {
 // room for future knobs (e.g. a logger) without breaking callers.
 type Option func(*TaskRepo)
 
-// WithClock injects a deterministic clock. Tests use this to pin the
-// timestamps Insert / UpdateStatus / SetWorkspace stamp on rows so they
-// can assert exact values without sleeping.
+// WithClock injects a deterministic clock. Insert reads from it to fill
+// CreatedAt / UpdatedAt when the caller leaves them zero, so tests can
+// assert exact timestamps without sleeping.
+//
+// UpdateStatus / SetWorkspace do NOT consult this clock: their UPDATE
+// fires the tasks_set_updated_at trigger in 0001_init.sql, which calls
+// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') against SQLite's wall clock.
+// Tests that need to observe updated_at moving compare against a far-
+// past pre-seeded value (see TestTaskRepoUpdateStatusSucceeds) rather
+// than against the injected clock.
 func WithClock(now func() time.Time) Option {
 	return func(r *TaskRepo) { r.now = now }
 }
@@ -242,11 +249,20 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (Task, error) {
 // missing ids surface ErrNotFound rather than silently succeeding (which
 // a naked UPDATE would do — RowsAffected=0 with no error).
 //
-// PR-11 keeps this method strictly status-only. The dispatcher
-// (PR-42) sets started_at as part of its claim, and PR-43's atomic
-// sentinel sets completed_at when it sees `.exit_code` materialise. That
-// split means tests for those side effects live with the code that
-// performs them, not here.
+// Scope: PR-11 keeps this method strictly status-only. started_at and
+// completed_at are filled in by the callers that own the matching life-
+// cycle moment so PR-11 does not have to encode a (status -> timestamp)
+// map that PR-42 / PR-43 / PR-21 each disagree about subtly:
+//
+//   - PR-42 dispatch sets started_at when claiming pending -> running
+//   - PR-43 atomic sentinel sets completed_at on done / failed
+//   - PR-21 CLI manual `done` / `fail` sets completed_at the same way
+//     as PR-43, and the eventual `reopen` clears it
+//
+// Future PRs will add SetStartedAt / SetCompletedAt helpers on this repo
+// when those callers land. Inferring the timestamp from newStatus would
+// also defeat the legitimate "force-set status without touching the
+// time line" use case the import / migration tooling needs.
 func (r *TaskRepo) UpdateStatus(ctx context.Context, id int64, newStatus string) error {
 	if _, ok := validStatuses[newStatus]; !ok {
 		return ErrInvalidStatus
