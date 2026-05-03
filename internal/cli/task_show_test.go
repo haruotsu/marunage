@@ -41,6 +41,12 @@ func TestTaskShow_PrintsAllFields(t *testing.T) {
 }
 
 // 2. Missing id -> exit 1, stderr message references the id.
+//
+// Pinning extra: cobra would normally prepend "Error: " to a non-nil RunE
+// error. show.go silences errors and prints the friendly line itself so the
+// stderr is a single human sentence; this test makes sure the silencing
+// stays in place (a future refactor that drops cmd.SilenceErrors=true would
+// double-print as "Task #999 not found.\nError: show: task not found").
 func TestTaskShow_NotFoundExit1(t *testing.T) {
 	installFakeRepo(t)
 
@@ -54,6 +60,9 @@ func TestTaskShow_NotFoundExit1(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "not found") {
 		t.Errorf("stderr should say 'not found'; got %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Error:") {
+		t.Errorf("stderr should not contain cobra's 'Error:' prefix; got %q", stderr.String())
 	}
 }
 

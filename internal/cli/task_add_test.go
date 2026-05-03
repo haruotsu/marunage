@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -208,6 +211,65 @@ func TestTaskAdd_BodyAndBodyEditAreMutuallyExclusive(t *testing.T) {
 	code := Execute([]string{"add", "x", "--body", "x", "--body-edit"}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit; stdout=%q", stdout.String())
+	}
+}
+
+// 4c. --body-stdin and --body-edit are also mutually exclusive — the third
+// pair the cli.go selected counter has to handle. Pinning each pair keeps a
+// future "switch on flag bitmask" rewrite from accidentally allowing one
+// combination through.
+func TestTaskAdd_BodyStdinAndBodyEditAreMutuallyExclusive(t *testing.T) {
+	installFakeRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"add", "x", "--body-stdin", "--body-edit"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Errorf("stderr should mention 'mutually exclusive'; got %q", stderr.String())
+	}
+}
+
+// --body-edit honours $EDITOR by running it on a temp file and feeding the
+// post-edit content into Task.Body. The test installs a fake $EDITOR shell
+// script that simply writes a known string to its argv[1]; if the CLI ever
+// regresses to reading the wrong file (or skips the editor entirely) the
+// saved Body diverges from the canary.
+//
+// Skipped on Windows because the harness uses /bin/sh; the editor seam
+// itself is platform-neutral, only the test fixture is POSIX-only.
+func TestTaskAdd_BodyEditReadsFromEditorOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake EDITOR shell script is POSIX-only")
+	}
+	repo := installFakeRepo(t)
+
+	dir := t.TempDir()
+	editorPath := filepath.Join(dir, "fake-editor.sh")
+	const canary = "from fake editor"
+	// printf instead of echo to avoid a trailing newline the test would
+	// have to compensate for; the body string saved by --body-edit is
+	// exactly what the editor leaves in the temp file.
+	script := "#!/bin/sh\nprintf '%s' '" + canary + "' > \"$1\"\n"
+	if err := os.WriteFile(editorPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake editor: %v", err)
+	}
+	t.Setenv("EDITOR", editorPath)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"add", "edit-task", "--body-edit"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("add --body-edit exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	if len(repo.rows) != 1 {
+		t.Fatalf("repo rows = %d; want 1", len(repo.rows))
+	}
+	for _, saved := range repo.rows {
+		if saved.Body != canary {
+			t.Errorf("Body = %q; want %q", saved.Body, canary)
+		}
 	}
 }
 
