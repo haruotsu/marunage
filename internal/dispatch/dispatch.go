@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,18 @@ type Store interface {
 // the section cleanly.
 type SourceSkillFunc func(source string) string
 
+// WorkspaceDirs resolves the per-task on-disk control directory marunage
+// owns (typically ~/.marunage/workspaces/<id>). Used by the dispatcher
+// to mkdir the dir before NewWorkspace and to embed the sentinel-write
+// path in the prompt. Production wires the same concrete implementation
+// the PR-43 completion watcher reads from, so the two layers cannot
+// disagree on the path. The interface intentionally mirrors
+// completion.WorkspaceDirs (same shape, same method) without importing
+// it, to keep the dispatch -> completion dependency direction clean.
+type WorkspaceDirs interface {
+	Dir(taskID int64) string
+}
+
 // Dispatcher ties the cmux client + store repo together with the
 // lock-key resolver and prompt builder.
 type Dispatcher struct {
@@ -47,6 +60,7 @@ type Dispatcher struct {
 	claudeCommand      string
 	allowedCwdPrefixes []string
 	auditor            config.Auditor
+	workspaceDirs      WorkspaceDirs
 }
 
 // Option mutates Dispatcher construction.
@@ -86,6 +100,18 @@ func WithClaudeCommand(s string) Option { return func(d *Dispatcher) { d.claudeC
 // that have not yet wired audit.log keep building.
 func WithAuditor(a config.Auditor) Option {
 	return func(d *Dispatcher) { d.auditor = a }
+}
+
+// WithWorkspaceDirs installs the per-task control-directory provider.
+// When set, the dispatcher mkdirs Dir(task.ID) before NewWorkspace and
+// passes the same path into BuildPrompt so the dispatched Claude
+// session writes its sentinel into the dir the PR-43 completion watcher
+// is polling. Optional: when absent, the dispatcher behaves exactly as
+// PR-42 shipped (no mkdir, no sentinel section in the prompt) — this
+// is the back-compat path for tests and CLI flows that have not yet
+// wired completion.
+func WithWorkspaceDirs(d WorkspaceDirs) Option {
+	return func(disp *Dispatcher) { disp.workspaceDirs = d }
 }
 
 // WithAllowedCwdPrefixes installs the cfg.Execution.AllowedCwdPrefixes
@@ -313,6 +339,22 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		}
 	}
 
+	// Materialise the per-task control directory BEFORE NewWorkspace so
+	// the prompt's sentinel-write instruction has a real target. Failure
+	// here is treated like NewWorkspace failure: leave the row pending,
+	// release any lock_key, no claim written. This keeps PR-44 reaper
+	// happy — no row enters running with a dangling sentinel target.
+	workspaceDir := ""
+	if d.workspaceDirs != nil {
+		workspaceDir = d.workspaceDirs.Dir(task.ID)
+		if err := os.MkdirAll(workspaceDir, 0o700); err != nil {
+			if lockKey != "" {
+				_ = d.store.ReleaseLock(ctx, task.ID)
+			}
+			return false, nil
+		}
+	}
+
 	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
 		CWD:     task.CWD,
 		Command: d.claudeCommand,
@@ -363,6 +405,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		Base:           d.baseSkill,
 		SourceSpecific: d.sourceSkill(task.Source),
 		Task:           task,
+		WorkspaceDir:   workspaceDir,
 	})
 	if err := d.cmux.Send(ctx, ws, prompt); err != nil {
 		d.markFailed(ctx, task.ID,

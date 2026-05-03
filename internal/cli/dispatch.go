@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -13,6 +14,18 @@ import (
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
+
+// workspaceDirs is the production WorkspaceDirs the dispatcher and the
+// PR-43 completion watcher share. Rooted at ~/.marunage/workspaces so
+// task <id>'s sentinel lives at ~/.marunage/workspaces/<id>/.exit_code,
+// matching docs/requirement.md ファイルレイアウト.
+type workspaceDirs struct {
+	root string
+}
+
+func (w workspaceDirs) Dir(id int64) string {
+	return filepath.Join(w.root, strconv.FormatInt(id, 10))
+}
 
 // dispatchRunner is the narrow surface newDispatchCmd needs from the
 // dispatcher. Keeping it as an interface is the test seam: production
@@ -85,6 +98,12 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		auditor = al
 	}
 
+	// Workspaces live alongside tasks.db so a single ~/.marunage tree
+	// holds the queue (tasks.db) and the per-task control directories
+	// (workspaces/<id>/) the PR-43 completion watcher polls.
+	wsRoot := filepath.Join(filepath.Dir(dbPath), "workspaces")
+	dirs := workspaceDirs{root: wsRoot}
+
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
@@ -93,6 +112,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
 		dispatch.WithAuditor(auditor),
+		dispatch.WithWorkspaceDirs(dirs),
 	)
 	if err != nil {
 		_ = db.Close()

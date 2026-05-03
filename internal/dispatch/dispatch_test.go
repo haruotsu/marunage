@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -907,5 +908,123 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 	if !strings.Contains(row.JudgmentReason, "send") && !strings.Contains(row.JudgmentReason, "Send") {
 		t.Errorf("judgment_reason = %q; want to mention Send", row.JudgmentReason)
+	}
+}
+
+// F-series: PR-43 wires the workspace-dir provider through the
+// dispatcher so the prompt can embed the sentinel-write path AND the
+// per-task control directory exists on disk before Claude starts. The
+// same provider must be shared with the completion watcher (otherwise
+// the dispatcher and watcher disagree on the path and the sentinel is
+// never detected).
+//
+//   F1. WithWorkspaceDirs makes the dispatcher mkdir the per-task dir
+//       BEFORE NewWorkspace, then pass the dir into BuildPrompt so the
+//       sentinel section appears in the Send payload.
+//   F2. Mkdir failure leaves the row pending (retryable next round) —
+//       same semantics as NewWorkspace failure.
+//   F3. No WithWorkspaceDirs keeps PR-42's wire format intact: no mkdir,
+//       no sentinel section in the prompt.
+
+// fakeDirs records the paths the dispatcher requested so F1 can assert
+// (a) the dir was created and (b) the prompt embeds the same path.
+type fakeDirs struct {
+	root string
+}
+
+func (d fakeDirs) Dir(id int64) string {
+	return filepath.Join(d.root, fmt.Sprintf("%d", id))
+}
+
+// F1: dir created + prompt embeds sentinel path.
+func TestRunCreatesWorkspaceDirAndEmbedsSentinelPath(t *testing.T) {
+	root := t.TempDir()
+	dirs := fakeDirs{root: root}
+	f := newDispatchFixture(t, dispatch.WithWorkspaceDirs(dirs))
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "with sentinel", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantDir := dirs.Dir(id)
+	info, err := os.Stat(wantDir)
+	if err != nil {
+		t.Fatalf("workspace dir %q not created: %v", wantDir, err)
+	}
+	if !info.IsDir() {
+		t.Errorf("workspace path %q is not a directory", wantDir)
+	}
+
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	wantSentinel := filepath.Join(wantDir, ".exit_code")
+	if !strings.Contains(payload, wantSentinel) {
+		t.Errorf("Send payload does not embed sentinel path %q; got:\n%s", wantSentinel, payload)
+	}
+}
+
+// F2: mkdir failure leaves the row pending. Inject a provider whose
+// Dir() returns a path under a directory we have created as a regular
+// file (so MkdirAll fails with ENOTDIR-style error).
+func TestRunLeavesRowPendingWhenWorkspaceMkdirFails(t *testing.T) {
+	root := t.TempDir()
+	// Create a regular file at <root>/blocker so mkdir <root>/blocker/<id>
+	// fails reliably across platforms.
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	dirs := fakeDirs{root: blocker}
+	f := newDispatchFixture(t, dispatch.WithWorkspaceDirs(dirs))
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "mkdir fails", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status after mkdir failure = %q; want still %q (retryable)", row.Status, store.StatusPending)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+		t.Errorf("NewWorkspace calls = %d; want 0 (mkdir must precede NewWorkspace)", got)
+	}
+}
+
+// F3: no WithWorkspaceDirs keeps PR-42 wire format intact.
+func TestRunOmitsSentinelSectionWhenWorkspaceDirsUnset(t *testing.T) {
+	f := newDispatchFixture(t) // no WithWorkspaceDirs
+
+	if _, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no sentinel", CWD: "/tmp",
+	}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	for _, banned := range []string{".exit_code", ".result_summary"} {
+		if strings.Contains(payload, banned) {
+			t.Errorf("Send payload unexpectedly contains %q (sentinel section should be off when WorkspaceDirs is unset):\n%s", banned, payload)
+		}
 	}
 }

@@ -15,6 +15,7 @@ package dispatch
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/store"
@@ -38,6 +39,14 @@ type PromptInputs struct {
 	// Title / Body and renders them into a labelled task block so the
 	// receiving Claude session can quote them back deterministically.
 	Task store.Task
+	// WorkspaceDir is marunage's per-task control directory (typically
+	// ~/.marunage/workspaces/<id>). When non-empty, BuildPrompt appends
+	// a sentinel-write instruction telling Claude to publish completion
+	// via `echo $? > .exit_code.tmp && mv .exit_code.tmp .exit_code`
+	// inside this dir so the PR-43 completion watcher polling the same
+	// path can detect exit. Empty disables the section entirely
+	// (back-compat for callers that have not wired completion yet).
+	WorkspaceDir string
 }
 
 // promptSeparator is the delimiter between adjacent prompt sections.
@@ -45,9 +54,10 @@ type PromptInputs struct {
 // cmux scrollback without inflating the byte count cmux send carries.
 const promptSeparator = "\n\n"
 
-// BuildPrompt concatenates the (Base, SourceSpecific, Task) sections in
-// that fixed order. Empty sections drop out cleanly so a source without
-// a dedicated skill produces "Base + Task" with one separator, not two.
+// BuildPrompt concatenates the (Base, SourceSpecific, Task, Sentinel)
+// sections in that fixed order. Empty sections drop out cleanly so a
+// source without a dedicated skill produces "Base + Task" with one
+// separator, not two.
 //
 // The Send wrapper in internal/cmux collapses any embedded \r\n run into
 // a single space before handing the payload to cmux; preserving the
@@ -59,7 +69,7 @@ func BuildPrompt(in PromptInputs) string {
 		in.Task.ID, in.Task.Source, in.Task.Title, in.Task.Body,
 	)
 
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if s := strings.TrimSpace(in.Base); s != "" {
 		parts = append(parts, s)
 	}
@@ -67,5 +77,41 @@ func BuildPrompt(in PromptInputs) string {
 		parts = append(parts, s)
 	}
 	parts = append(parts, taskBlock)
+	if s := sentinelInstruction(in.WorkspaceDir); s != "" {
+		parts = append(parts, s)
+	}
 	return strings.Join(parts, promptSeparator)
+}
+
+// sentinelInstruction renders the closing block that tells Claude how to
+// publish completion atomically. Two-step contract:
+//
+//  1. Write `<dir>/.result_summary` with the trimmed final summary.
+//  2. Write `<dir>/.exit_code.tmp` then `mv` it to `<dir>/.exit_code`.
+//
+// The mv is the publish barrier: same-FS rename is atomic on POSIX, so
+// the PR-43 completion watcher polling `<dir>/.exit_code` either sees
+// the final byte or no file at all — never a half-written sentinel.
+// Writing `.result_summary` first guarantees the watcher reading both
+// files after the rename always finds a complete summary.
+//
+// Empty workspaceDir returns "" so the section is omitted entirely
+// (back-compat for callers that have not wired completion yet).
+func sentinelInstruction(workspaceDir string) string {
+	if workspaceDir == "" {
+		return ""
+	}
+	exitPath := filepath.Join(workspaceDir, ".exit_code")
+	tmpPath := filepath.Join(workspaceDir, ".exit_code.tmp")
+	summaryPath := filepath.Join(workspaceDir, ".result_summary")
+	return fmt.Sprintf(
+		"## Completion sentinel\n\n"+
+			"When this task is complete (success OR failure), publish the outcome by running:\n\n"+
+			"  printf '%%s' \"<one-line summary>\" > %s\n"+
+			"  echo $? > %s && mv %s %s\n\n"+
+			"The mv is the publish barrier — the marunage completion watcher polls %s "+
+			"and treats its presence as the signal that this task has exited. Do not write %s "+
+			"directly; always go through the .tmp + mv so the reader never sees a half-written file.",
+		summaryPath, tmpPath, tmpPath, exitPath, exitPath, exitPath,
+	)
 }
