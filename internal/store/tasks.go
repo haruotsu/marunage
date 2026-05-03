@@ -611,6 +611,28 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 	return nil
 }
 
+// SetReflection writes reflection text on a row. The PR-102 reflection
+// hook (internal/dispatch/reflection.go) calls this from its async
+// goroutine after Claude has written its review answer to the workspace
+// dir. Empty text clears the column to NULL so a re-run that produced no
+// answer does not leave a stale value behind. Missing id surfaces
+// ErrNotFound the same way SetWorkspace / SetCompletedAt do.
+func (r *TaskRepo) SetReflection(ctx context.Context, id int64, text string) error {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET reflection = ? WHERE id = ?", nullable(text), id)
+	if err != nil {
+		return fmt.Errorf("set reflection: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set reflection rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // JudgmentReasonSeparator is the canonical join token between the prior
 // judgment_reason and any newly appended note.
 const JudgmentReasonSeparator = "; "
