@@ -378,6 +378,44 @@ func TestConcurrentAddDoesNotCorrupt(t *testing.T) {
 
 func fmtN(i int) string { return "task-" + strconv.Itoa(i) }
 
+// TestListPreservesPartialMarkerFieldsWhenInjectingID locks in the contract
+// that a hand-edited line carrying a partial marunage marker (e.g.
+// "<!-- marunage:source=upstream -->" with no id=) keeps its existing
+// source / extra metadata when List injects the missing id. Without this
+// guarantee, the user's bookkeeping silently disappears the first time
+// List runs over a file someone curated by hand.
+func TestListPreservesPartialMarkerFieldsWhenInjectingID(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md",
+		"- [ ] foo <!-- marunage:source=upstream extra1=value1 -->\n")
+	p := New(WithFiles(path))
+
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].ExternalID == "" {
+		t.Fatalf("List returned %+v", got)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, "source=upstream") {
+		t.Errorf("source=upstream lost after marker injection:\n%s", body)
+	}
+	if !strings.Contains(s, "extra1=value1") {
+		t.Errorf("extra1=value1 lost after marker injection:\n%s", body)
+	}
+	if !strings.Contains(s, "id="+got[0].ExternalID) {
+		t.Errorf("id= not added:\n%s", body)
+	}
+}
+
 // TestCompletePreservesCRLF guards against silent line-ending rewrites on
 // Windows-authored files. A user editing todo.md on Windows expects mutations
 // (Complete / Delete / List's marker injection) to keep the file's CRLF

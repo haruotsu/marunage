@@ -222,7 +222,19 @@ func (p *Plugin) listLocked(ctx context.Context, files []string) ([]Task, error)
 			if err != nil {
 				return nil, fmt.Errorf("generate id: %w", err)
 			}
-			mk := marker{Present: true, ID: id, Source: "markdown", Extra: map[string]string{}}
+			// Preserve any existing partial marker fields (source /
+			// external_id / Extra). Without this merge, a hand-edited
+			// "<!-- marunage:source=upstream -->" would lose the
+			// source attribution the moment List runs over it.
+			mk := parsed[i].Marker
+			mk.Present = true
+			mk.ID = id
+			if mk.Source == "" {
+				mk.Source = "markdown"
+			}
+			if mk.Extra == nil {
+				mk.Extra = map[string]string{}
+			}
 			parsed[i].Marker = mk
 			newBody = injectMarker(newBody, parsed[i].LineNumber, mk)
 			mutated = true
