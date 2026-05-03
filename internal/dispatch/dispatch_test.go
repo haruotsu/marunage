@@ -748,8 +748,17 @@ func TestRunNoRunningWithoutStartedAtOnSetStartedAtFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
+	// Two assertions to keep this from passing vacuously: (a) the
+	// invariant itself, and (b) that the failure injection actually
+	// fired by checking the row did NOT reach running.
 	if row.Status == store.StatusRunning && row.StartedAt.IsZero() {
 		t.Errorf("invariant violated: row is running with started_at IS NULL — reaper cannot detect this stuck row")
+	}
+	if row.Status == store.StatusRunning {
+		t.Errorf("row reached running despite SetStartedAt failure: SetStartedAt must precede UpdateStatus(running) so the failure leaves the row pending and retryable")
+	}
+	if !wrapped.failedOnce {
+		t.Errorf("SetStartedAt failure injection never fired; the test was vacuous")
 	}
 }
 
