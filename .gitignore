@@ -45,5 +45,6 @@ Thumbs.db
 # 設計ドキュメント (ローカル管理)
 docs/pr_split_plan.md
 docs/requirement.md
+docs/*.review.md
 
 CLAUDE.local.md
