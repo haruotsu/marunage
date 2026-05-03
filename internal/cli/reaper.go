@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -88,6 +89,14 @@ func productionReaperFactory(_ context.Context, configPath string) (reaperRunner
 	var auditor config.Auditor = config.NopAuditor{}
 	if al, alErr := logging.NewAuditLog(auditPath); alErr == nil {
 		auditor = al
+	} else {
+		// requirement.md invariant #2 "No silent execution": never let
+		// reaper run without surfacing the lost audit channel. We still
+		// fall back to NopAuditor so the orphan rows the sweep would
+		// catch are not stranded by the same disk problem, but the
+		// operator (or daemon log scraper) gets a structured warn here.
+		slog.Warn("reaper: audit.log open failed; continuing without audit",
+			"path", auditPath, "err", alErr)
 	}
 
 	r, err := reaper.New(
