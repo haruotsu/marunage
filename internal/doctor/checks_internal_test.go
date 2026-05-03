@@ -35,11 +35,11 @@ func TestExtractSemver(t *testing.T) {
 
 func TestParseMajorMinor(t *testing.T) {
 	cases := []struct {
-		name      string
-		in        string
-		major     int
-		minor     int
-		wantOK    bool
+		name   string
+		in     string
+		major  int
+		minor  int
+		wantOK bool
 	}{
 		{"x.y.z", "3.12.1", 3, 12, true},
 		{"x.y", "3.11", 3, 11, true},
