@@ -6,11 +6,11 @@
 //
 // The package is intentionally split:
 //   - prompt.go   — pure prompt assembly (BuildPrompt). No I/O so it can
-//                   be unit-tested without spinning up cmux / sqlite.
+//     be unit-tested without spinning up cmux / sqlite.
 //   - lockkey.go  — notes.lock_hint -> [execution.lock_keys] resolver.
 //   - dispatch.go — Run / Dispatcher: ties the cmux client + store repo
-//                   together with the lock-key resolver and prompt
-//                   builder.
+//     together with the lock-key resolver and prompt
+//     builder.
 package dispatch
 
 import (
