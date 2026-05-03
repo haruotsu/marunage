@@ -11,6 +11,7 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -85,6 +86,12 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		auditor = al
 	}
 
+	matcher, err := permission.New(cfg.Execution.AutoAcceptTools)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("permission.New: %w", err)
+	}
+
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
@@ -93,6 +100,9 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
 		dispatch.WithAuditor(auditor),
+		dispatch.WithPermissionMatcher(matcher),
+		dispatch.WithOnUnknownPermission(cfg.Execution.OnUnknownPermission),
+		dispatch.WithPermissionMode(cfg.Execution.PermissionMode),
 	)
 	if err != nil {
 		_ = db.Close()

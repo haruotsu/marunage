@@ -10,6 +10,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -23,10 +24,89 @@ type Store interface {
 	Get(ctx context.Context, id int64) (store.Task, error)
 	AcquireLock(ctx context.Context, id int64, lockKey string) error
 	ReleaseLock(ctx context.Context, id int64) error
+	ClaimWorkspace(ctx context.Context, id int64, ws string) (bool, error)
 	SetWorkspace(ctx context.Context, id int64, ws string) error
 	UpdateStatus(ctx context.Context, id int64, newStatus string) error
 	SetStartedAt(ctx context.Context, id int64, t time.Time) error
 	MarkFailedWithReason(ctx context.Context, id int64, reason string) error
+	EscalateToHuman(ctx context.Context, id int64, reason string) error
+}
+
+// PermissionMatcher abstracts the auto-accept allowlist resolver. The
+// concrete implementation in internal/permission satisfies this; the
+// interface lives here so test fakes do not need to construct a real
+// permission.Matcher.
+//
+// EXPORT NOTE: this interface is currently consumed only by the
+// dispatcher itself. The eventual external consumer is the cmux/MCP
+// shim PR (not yet on the plan) that intercepts Claude's tool prompts
+// and forwards them to HandlePermissionRequest. If that PR slips
+// indefinitely, consider re-narrowing this surface.
+type PermissionMatcher interface {
+	Allow(tool, args string) bool
+}
+
+// PermissionDecision is the dispatcher's verdict on one Claude tool
+// permission request. The cmux/MCP shim that actually intercepts the
+// prompt translates this into the protocol-level reply (allow / deny /
+// re-prompt). This type lives in dispatch because the policy lives
+// here too.
+//
+// EXPORT NOTE: same as PermissionMatcher above — the only call site is
+// internal until the cmux/MCP shim PR lands.
+type PermissionDecision int
+
+const (
+	// PermissionAllow: matcher accepted the (tool, args) pair.
+	PermissionAllow PermissionDecision = iota
+	// PermissionEscalate: matcher denied AND on_unknown_permission =
+	// "escalate"; the row has been moved to waiting_human and a
+	// dispatch.escalate audit event recorded.
+	PermissionEscalate
+	// PermissionFail: matcher denied AND on_unknown_permission =
+	// "fail"; the row has been moved to failed and a dispatch.fail
+	// audit event recorded.
+	PermissionFail
+	// PermissionAsk: the dispatcher will not decide. Either no matcher
+	// is configured (safe default) or the policy is "retry" — the
+	// caller is expected to surface the prompt back to a human or to
+	// a re-prompt loop.
+	PermissionAsk
+)
+
+// String aids debug output and -v test failure messages.
+func (d PermissionDecision) String() string {
+	switch d {
+	case PermissionAllow:
+		return "allow"
+	case PermissionEscalate:
+		return "escalate"
+	case PermissionFail:
+		return "fail"
+	case PermissionAsk:
+		return "ask"
+	}
+	return fmt.Sprintf("unknown(%d)", int(d))
+}
+
+// Permission policy strings recognised by WithOnUnknownPermission.
+// The string values mirror config.toml's
+// execution.on_unknown_permission enum; validation defers to
+// config.IsValidOnUnknownPermission so a future enum addition (or
+// rename) lives in one place. The empty string ("") is the
+// "dispatcher-was-not-configured" sentinel and is accepted here even
+// though config rejects it — see WithOnUnknownPermission godoc.
+const (
+	policyEscalate = "escalate"
+	policyFail     = "fail"
+	policyRetry    = "retry"
+)
+
+func validPermissionPolicy(p string) bool {
+	if p == "" {
+		return true
+	}
+	return config.IsValidOnUnknownPermission(p)
 }
 
 // SourceSkillFunc resolves the source-specific prompt skill (the
@@ -38,15 +118,18 @@ type SourceSkillFunc func(source string) string
 // Dispatcher ties the cmux client + store repo together with the
 // lock-key resolver and prompt builder.
 type Dispatcher struct {
-	store              Store
-	cmux               cmux.Client
-	now                func() time.Time
-	baseSkill          string
-	sourceSkill        SourceSkillFunc
-	lockKeys           map[string]string
-	claudeCommand      string
-	allowedCwdPrefixes []string
-	auditor            config.Auditor
+	store               Store
+	cmux                cmux.Client
+	now                 func() time.Time
+	baseSkill           string
+	sourceSkill         SourceSkillFunc
+	lockKeys            map[string]string
+	claudeCommand       string
+	allowedCwdPrefixes  []string
+	auditor             config.Auditor
+	matcher             PermissionMatcher
+	onUnknownPermission string
+	permissionMode      string
 }
 
 // Option mutates Dispatcher construction.
@@ -88,6 +171,35 @@ func WithAuditor(a config.Auditor) Option {
 	return func(d *Dispatcher) { d.auditor = a }
 }
 
+// WithPermissionMatcher installs the auto-accept allowlist resolver.
+// Optional; when nil, HandlePermissionRequest returns PermissionAsk for
+// every prompt (safe default — never silently allow). Production
+// callers wire `permission.New(cfg.Execution.AutoAcceptTools)`.
+func WithPermissionMatcher(m PermissionMatcher) Option {
+	return func(d *Dispatcher) { d.matcher = m }
+}
+
+// WithOnUnknownPermission selects the policy applied when the matcher
+// denies a request. Accepts the same strings config.toml's
+// execution.on_unknown_permission accepts: "escalate", "fail",
+// "retry". Empty / unset is treated as PermissionAsk (the dispatcher
+// abstains and the caller re-prompts the human). New() returns
+// ErrInvalidConfig for any other value.
+func WithOnUnknownPermission(p string) Option {
+	return func(d *Dispatcher) { d.onUnknownPermission = p }
+}
+
+// WithPermissionMode declares the cfg.Execution.PermissionMode the
+// dispatcher will run under. New() uses it to enforce the safety
+// invariant "non-bypass mode requires a PermissionMatcher": without a
+// matcher Claude's permission prompts would either hang or be silently
+// denied, leaving zombie cmux workspaces. Empty (default) bypasses
+// the check so existing tests / library callers that have not opted in
+// keep building.
+func WithPermissionMode(mode string) Option {
+	return func(d *Dispatcher) { d.permissionMode = mode }
+}
+
 // WithAllowedCwdPrefixes installs the cfg.Execution.AllowedCwdPrefixes
 // allowlist. A row whose CWD does not start with any listed prefix is
 // failed before NewWorkspace, per requirement.md L687 / L774. An empty
@@ -103,6 +215,15 @@ func WithAllowedCwdPrefixes(prefixes []string) Option {
 
 // ErrInvalidConfig signals a missing required Option at construction.
 var ErrInvalidConfig = errors.New("dispatch: missing required option")
+
+// dispatchClaimSentinel is the placeholder ws value the dispatcher
+// writes during the atomic pre-NewWorkspace claim step. The real ws
+// ID overwrites it once NewWorkspace returns; on failure the
+// dispatcher clears it. The reaper (PR-44) treats this sentinel as a
+// "stuck mid-claim" signal — a row stuck in pending with this value
+// and an old updated_at means the dispatcher crashed between
+// ClaimWorkspace and SetWorkspace, and the row should be reset.
+const dispatchClaimSentinel = "__dispatching__"
 
 // New builds a Dispatcher. Required: WithStore, WithCmux, WithBaseSkill,
 // WithClaudeCommand. Returns ErrInvalidConfig naming the missing field
@@ -128,7 +249,70 @@ func New(opts ...Option) (*Dispatcher, error) {
 	if d.claudeCommand == "" {
 		return nil, fmt.Errorf("%w: WithClaudeCommand", ErrInvalidConfig)
 	}
+	if !validPermissionPolicy(d.onUnknownPermission) {
+		return nil, fmt.Errorf("%w: on_unknown_permission %q (want escalate / fail / retry / empty)",
+			ErrInvalidConfig, d.onUnknownPermission)
+	}
+	if d.permissionMode != "" && d.permissionMode != "bypass" && d.matcher == nil {
+		return nil, fmt.Errorf("%w: permission_mode=%q requires WithPermissionMatcher (otherwise Claude's permission prompts would hang or be silently denied)",
+			ErrInvalidConfig, d.permissionMode)
+	}
 	return d, nil
+}
+
+// HandlePermissionRequest is the dispatcher-side handler for one
+// Claude tool-permission request. The caller (a future cmux/MCP shim)
+// supplies the (tool, args) pair Claude wants to invoke; this method
+// consults the configured PermissionMatcher and on_unknown_permission
+// policy, mutates the row when the policy demands it, records an
+// audit entry, and returns the verdict.
+//
+// Decision matrix:
+//
+//	matcher.Allow(tool, args) == true       -> PermissionAllow (no row mutation)
+//	matcher == nil                          -> PermissionAsk   (safe default)
+//	matcher denies + policy "escalate"      -> EscalateToHuman + dispatch.escalate audit -> PermissionEscalate
+//	matcher denies + policy "fail"          -> MarkFailedWithReason + dispatch.fail audit -> PermissionFail
+//	matcher denies + policy "retry" or ""   -> PermissionAsk   (caller re-prompts)
+//
+// The reason string written to audit / judgment_reason runs through
+// logging.Redact so a tool args payload that happens to carry a Bearer
+// header / API key does not pin the secret into either sink.
+func (d *Dispatcher) HandlePermissionRequest(ctx context.Context, taskID int64, tool, args string) (PermissionDecision, error) {
+	if d.matcher == nil {
+		return PermissionAsk, nil
+	}
+	if d.matcher.Allow(tool, args) {
+		return PermissionAllow, nil
+	}
+	reason := logging.Redact(fmt.Sprintf("auto-accept denied: tool=%q args=%q", tool, args))
+	switch d.onUnknownPermission {
+	case policyEscalate:
+		if err := d.store.EscalateToHuman(ctx, taskID, reason); err != nil {
+			return PermissionAsk, fmt.Errorf("dispatch: EscalateToHuman id=%d: %w", taskID, err)
+		}
+		d.auditor.Record(config.AuditEvent{
+			Action: "dispatch.escalate",
+			Key:    "task:" + strconv.FormatInt(taskID, 10),
+			Value:  reason,
+		})
+		return PermissionEscalate, nil
+	case policyFail:
+		// markFailed already redacts; pass the un-prefixed reason so
+		// the on-disk text reads consistently with the escalate branch.
+		d.markFailed(ctx, taskID, reason)
+		return PermissionFail, nil
+	case policyRetry, "":
+		// Defer to the caller. New's validPermissionPolicy guard means
+		// no other string can reach this branch — listing the cases
+		// explicitly keeps the decision matrix in the godoc verifiable
+		// and the default arm a dead path that flags any future enum
+		// addition that forgot to update the switch.
+		return PermissionAsk, nil
+	default:
+		return PermissionAsk, fmt.Errorf("%w: on_unknown_permission %q reached HandlePermissionRequest (validPermissionPolicy gap)",
+			ErrInvalidConfig, d.onUnknownPermission)
+	}
 }
 
 // RunOptions controls one Run invocation.
@@ -256,6 +440,11 @@ func (d *Dispatcher) recordAuditFail(taskID int64, reason string) {
 // failure here is observable through the row staying in running until
 // the next Run picks up the inconsistency.
 func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason string) {
+	// Strip leaked tokens (cmux stderr can echo back Authorization
+	// headers, an Anthropic / GitHub API failure can include the offending
+	// key, etc.). Redacting before BOTH the DB write and the audit
+	// append keeps secrets out of the persistent and append-only sinks.
+	dispatchReason = logging.Redact(dispatchReason)
 	cur, err := d.store.Get(ctx, id)
 	if err != nil {
 		_ = d.store.MarkFailedWithReason(ctx, id, dispatchReason)
@@ -313,35 +502,50 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		}
 	}
 
-	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
-		CWD:     task.CWD,
-		Command: d.claudeCommand,
-		Name:    workspaceName(task),
-	})
+	// Reserve the row with a sentinel BEFORE NewWorkspace so a concurrent
+	// dispatcher cannot also burn a cmux workspace on the same row. The
+	// claim is atomic at the SQLite level (UPDATE ... WHERE status=pending
+	// AND ws IS NULL); the loser observes claimed=false and abandons.
+	// The sentinel is replaced by the real ws ID once NewWorkspace
+	// returns.
+	claimed, err := d.store.ClaimWorkspace(ctx, task.ID, dispatchClaimSentinel)
 	if err != nil {
-		// No claim has been written yet (SetWorkspace happens AFTER
-		// NewWorkspace returns), so the row is safely retryable on the
-		// next Run. Release any lock_key we just acquired so a sibling
-		// row sharing the same resolved key is not blocked indefinitely
-		// (AcquireLock treats pending rows as holders, so without this
-		// release the failed row keeps the key while sitting in pending).
+		if lockKey != "" {
+			_ = d.store.ReleaseLock(ctx, task.ID)
+		}
+		return false, fmt.Errorf("dispatch: ClaimWorkspace id=%d: %w", task.ID, err)
+	}
+	if !claimed {
+		// Lost the race to another dispatcher. Release any lock_key we
+		// hold so a sibling row sharing the same key is not blocked.
 		if lockKey != "" {
 			_ = d.store.ReleaseLock(ctx, task.ID)
 		}
 		return false, nil
 	}
 
-	// Claim the row immediately so a parallel dispatcher iteration cannot
-	// re-pick it. Order is critical:
-	//  1. SetWorkspace BEFORE WaitReady so a concurrent List(pending)
-	//     cannot observe an unclaimed row whose cmux workspace is alive.
-	//  2. SetStartedAt BEFORE UpdateStatus(running) so the invariant
-	//     "status=running implies started_at stamped" holds. PR-44
-	//     reaper's 24h-stuck probe matches on running + started_at < now-24h;
-	//     a row left running with started_at IS NULL would be invisible
-	//     to the probe and silently leak. Doing started_at first means a
-	//     SetStartedAt failure leaves the row pending (retryable) instead
-	//     of running-and-orphaned.
+	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
+		CWD:     task.CWD,
+		Command: d.claudeCommand,
+		Name:    workspaceName(task),
+	})
+	if err != nil {
+		// Clear the sentinel so the row is safely retryable on the next
+		// Run. Release any lock_key we acquired so a sibling row
+		// sharing the same resolved key is not blocked indefinitely.
+		_ = d.store.SetWorkspace(ctx, task.ID, "")
+		if lockKey != "" {
+			_ = d.store.ReleaseLock(ctx, task.ID)
+		}
+		return false, nil
+	}
+
+	// Replace the sentinel with the real ws ID. Order from here on is
+	// critical: SetStartedAt BEFORE UpdateStatus(running) so the
+	// invariant "status=running implies started_at stamped" holds. PR-44
+	// reaper's 24h-stuck probe matches on running + started_at < now-24h;
+	// a row left running with started_at IS NULL would be invisible to
+	// the probe and silently leak.
 	if err := d.store.SetWorkspace(ctx, task.ID, ws.ID); err != nil {
 		return false, fmt.Errorf("dispatch: SetWorkspace id=%d ws=%s: %w", task.ID, ws.ID, err)
 	}
@@ -389,13 +593,18 @@ func cwdAllowed(cwd string, prefixes []string) bool {
 // workspaceName renders the cmux dashboard label per requirement.md
 // step 2.a ("--name '#<id> <title短縮>'"). Long titles are truncated so
 // the cmux dashboard stays readable on a typical 80-column terminal.
+//
+// Trim is rune-based, not byte-based: a Japanese / emoji title sliced at
+// `title[:titleMaxLen]` would cut mid-rune and emit invalid UTF-8 to the
+// cmux label (and to anything downstream that re-parses the name).
 const titleMaxLen = 40
 
 func workspaceName(t store.Task) string {
-	title := t.Title
-	if len(title) > titleMaxLen {
-		title = title[:titleMaxLen]
+	runes := []rune(t.Title)
+	if len(runes) > titleMaxLen {
+		runes = runes[:titleMaxLen]
 	}
+	title := string(runes)
 	// Strip embedded newlines so the cmux dashboard line does not break.
 	title = strings.ReplaceAll(title, "\n", " ")
 	title = strings.ReplaceAll(title, "\r", " ")
