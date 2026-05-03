@@ -39,8 +39,10 @@ func Set(c *Config, key, value string) error {
 		}
 	}
 
+	// Validate's errors already start with the field name, so do not wrap
+	// them with `key:` here — that produced "foo.bar: foo.bar: ...".
 	if err := candidate.Validate(); err != nil {
-		return fmt.Errorf("%s: %w", key, err)
+		return err
 	}
 	*c = candidate
 	return nil
