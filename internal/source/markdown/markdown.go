@@ -25,7 +25,18 @@
 // internal/store.KVStateRepo behind it.
 package markdown
 
-import "errors"
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"sort"
+	"sync"
+	"time"
+)
 
 // Typed sentinel errors. Callers branch on errors.Is rather than parsing
 // strings; the CLI binding (PR-70) maps these to documented exit codes.
@@ -52,3 +63,196 @@ var (
 	// target file when none was supplied via WithFiles.
 	ErrNoFilesConfigured = errors.New("markdown: no files configured")
 )
+
+// Task is the source-side view of one checklist item. The struct is
+// intentionally distinct from internal/store.Task: keeping these
+// disjoint lets PR-50 ship before the queue schema stabilises and
+// forces the queue integration layer (PR-70) to make explicit choices
+// about which fields map where.
+type Task struct {
+	// ExternalID is the stable identifier persisted into the file as
+	// `<!-- marunage:id=... -->`. List generates one on first sight of
+	// a marker-less line; subsequent List calls observe the same value.
+	ExternalID string
+	Title      string
+	Notes      string // reserved for future use (indented sub-text capture); empty in PR-50
+	Done       bool
+	SourcePath string
+	LineNumber int // 1-based; debug aid
+}
+
+// Checkpointer is the minimal key/value store the Markdown plugin needs
+// to drive Since's mtime gate. The interface is local so PR-50 can
+// build without depending on internal/store.KVStateRepo, which is
+// being landed by a parallel PR (PR-12). PR-70 (Discovery IF) wires
+// the real repo behind this seam.
+type Checkpointer interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string) error
+}
+
+// Plugin is the entry point for the Markdown source. Construct one
+// with New and reuse it: the struct holds an internal mutex that
+// serialises file mutations so concurrent Add / Complete / Delete on
+// the same Plugin instance do not interleave half-written lines.
+type Plugin struct {
+	files        []string
+	checkpointer Checkpointer
+	now          func() time.Time
+	idGen        func() (string, error)
+
+	// mu serialises mutating operations (Add / Complete / Delete and
+	// the marker-injection branch of List). Read-only paths take it
+	// too because they may upgrade to a write when injecting markers.
+	mu sync.Mutex
+}
+
+// Option is the functional-option shape New accepts. Mirrors the
+// pattern used in internal/store.NewTaskRepo / internal/secrets.Open
+// so callers see a consistent style across the codebase.
+type Option func(*Plugin)
+
+// WithFiles sets the list of Markdown files this Plugin owns. Order is
+// preserved and surfaces in List output, so callers can pin a stable
+// ordering by passing files in the order they want.
+func WithFiles(paths ...string) Option {
+	return func(p *Plugin) {
+		// Defensive copy: callers sometimes pass a slice they keep
+		// mutating elsewhere.
+		p.files = append(p.files[:0:0], paths...)
+	}
+}
+
+// WithCheckpointer wires the Since-gate persistence. Optional: when no
+// Checkpointer is supplied, Since degrades to "behave like List" (no
+// state is remembered between calls), which is the right behaviour
+// for one-shot CLI invocations but useless for a long-running daemon.
+func WithCheckpointer(c Checkpointer) Option {
+	return func(p *Plugin) { p.checkpointer = c }
+}
+
+// WithClock injects a deterministic time source. Defaults to time.Now.
+// Tests use this to pin checkpoint values without sleeping.
+func WithClock(now func() time.Time) Option {
+	return func(p *Plugin) { p.now = now }
+}
+
+// withIDGen overrides the ExternalID generator. Lower-cased because
+// only tests need it; production code always uses the crypto/rand
+// default. Renaming to capital W if a future caller needs it.
+func withIDGen(gen func() (string, error)) Option {
+	return func(p *Plugin) { p.idGen = gen }
+}
+
+// New constructs a Plugin with the given options. Defaults (clock,
+// ExternalID generator) are filled in here so options can override
+// them before any method runs.
+func New(opts ...Option) *Plugin {
+	p := &Plugin{
+		now:   time.Now,
+		idGen: defaultIDGen,
+	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
+}
+
+// defaultIDGen produces 12-hex-character (6 random bytes) identifiers.
+// 6 bytes ≈ 2^48 ≈ 281 trillion possibilities, far above the realistic
+// per-file task count, so a within-file collision check would be pure
+// ceremony. The hex encoding keeps the marker URL-safe and easy to
+// eyeball-diff. crypto/rand is mandatory: a timestamp- or counter-
+// based id would let a user with two concurrent Plugin processes (e.g.
+// CLI + daemon) collide on the same id.
+func defaultIDGen() (string, error) {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("rand: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// List returns every checklist line across all configured files, in
+// (file, line) order. The first time List sees a marker-less line it
+// generates an ExternalID and rewrites the file in-place to embed the
+// marker — that mutation happens through the same atomicWriteFile path
+// the explicit mutating methods use, so a crash mid-list cannot leave
+// a half-written file.
+func (p *Plugin) List(ctx context.Context) ([]Task, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.listLocked(ctx, p.files)
+}
+
+// listLocked is the locked core shared by List and Since. The caller
+// passes the subset of files to scan; the rest of the algorithm is
+// identical.
+func (p *Plugin) listLocked(ctx context.Context, files []string) ([]Task, error) {
+	var out []Task
+	for _, path := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// Per package contract: missing files are not fatal
+				// for read paths. This matches the way `marunage list`
+				// keeps working after a user renames a file.
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		parsed, err := parse(path, body)
+		if err != nil {
+			return nil, err
+		}
+		// Inject markers for any line that arrived without one. We
+		// build the rewrite eagerly so a single file write covers
+		// every new marker rather than one rewrite per line.
+		mutated := false
+		newBody := body
+		for i := range parsed {
+			if parsed[i].Marker.Present && parsed[i].Marker.ID != "" {
+				continue
+			}
+			id, err := p.idGen()
+			if err != nil {
+				return nil, fmt.Errorf("generate id: %w", err)
+			}
+			mk := marker{Present: true, ID: id, Source: "markdown", Extra: map[string]string{}}
+			parsed[i].Marker = mk
+			newBody = injectMarker(newBody, parsed[i].LineNumber, mk)
+			mutated = true
+		}
+		if mutated {
+			if err := atomicWriteFile(path, newBody, 0o600); err != nil {
+				return nil, fmt.Errorf("persist markers in %s: %w", path, err)
+			}
+		}
+		for _, pt := range parsed {
+			out = append(out, Task{
+				ExternalID: pt.Marker.ID,
+				Title:      pt.Title,
+				Done:       pt.Done,
+				SourcePath: path,
+				LineNumber: pt.LineNumber,
+			})
+		}
+	}
+	return out, nil
+}
+
+// stableSortTasksByPathLine keeps List output deterministic when callers
+// pass overlapping files (rare, but we sort defensively rather than
+// relying on map iteration order anywhere). Currently only used in
+// tests; exported as an unexported helper so a future feature can reuse it.
+func stableSortTasksByPathLine(tasks []Task) {
+	sort.SliceStable(tasks, func(i, j int) bool {
+		if tasks[i].SourcePath != tasks[j].SourcePath {
+			return tasks[i].SourcePath < tasks[j].SourcePath
+		}
+		return tasks[i].LineNumber < tasks[j].LineNumber
+	})
+}
