@@ -18,10 +18,9 @@ import (
 
 // webRunner is the narrow surface newWebCmd needs from the assembled
 // web.Server.  Keeping it as an interface is the test seam: production
-// wires the concrete *web.Server, tests inject a fake via
-// withWebFactory.  The single Run(ctx) method is intentionally a
-// subset of *web.Server so the concrete type satisfies it implicitly
-// once we wrap ListenAndServe in the factory.
+// wires a serverRunner around *web.Server (which calls Serve on a
+// pre-bound listener inside Run), tests inject a fake via
+// withWebFactory that returns immediately.
 type webRunner interface {
 	Run(ctx context.Context) error
 }
@@ -120,11 +119,10 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 
 // daemonLogPathFor mirrors auditLogPathFor: derives the daemon log
 // location from the active config path so --config overrides flow
-// through to the access trail.
+// through to the access trail.  configPath is always non-empty in
+// production (the CLI's persistent flag preloads defaultConfigPath),
+// so no nil-guard is needed here.
 func daemonLogPathFor(configPath string) string {
-	if configPath == "" {
-		return ""
-	}
 	return filepath.Join(filepath.Dir(configPath), "logs", "daemon.log")
 }
 
@@ -223,9 +221,10 @@ func newWebCmd(configPath *string) *cobra.Command {
 			if effectiveRemote {
 				// Loud, multi-line stderr banner: --remote opens
 				// the dashboard to the network without auth (auth
-				// itself ships in a later PR).  Operators must see
-				// this before the listener starts so they can abort
-				// if they meant to bind loopback.
+				// itself ships in a later PR).  Emitted after the
+				// factory has already bound 0.0.0.0 but before
+				// Serve starts processing requests, so the operator
+				// has a clear signal to ^C if they meant loopback.
 				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --remote binds 0.0.0.0 with no authentication.")
 				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: anyone reachable on this network can read the dashboard and SSE stream.")
 				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: front this with a TLS-terminating reverse proxy + auth before exposing publicly.")

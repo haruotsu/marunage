@@ -84,9 +84,12 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 		}
 		submitted := r.Header.Get(CSRFHeaderName)
 		if submitted == "" {
-			// ParseForm reads the body for POST/PUT/PATCH; safe here
-			// because handlers downstream call ParseForm again
-			// idempotently.
+			// ParseForm safely no-ops on non-form Content-Types
+			// (Go stdlib gates body reads on
+			// application/x-www-form-urlencoded), so we can call it
+			// here without consuming a JSON / multipart body the
+			// downstream handler may want to read itself.  Pinned
+			// by TestCSRF_DoesNotParseNonFormBodyWhenRejecting.
 			_ = r.ParseForm()
 			submitted = r.Form.Get(CSRFFormField)
 		}

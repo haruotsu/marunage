@@ -198,23 +198,25 @@ func TestCSRF_PostAcceptsFormField(t *testing.T) {
 // TestCSRF_DoesNotParseNonFormBodyWhenRejecting pins the middleware
 // behaviour when a request lacks the CSRF header and the Content-Type
 // is NOT form-encoded: the middleware must reject (no token found)
-// without calling ParseForm, since ParseForm on application/json
-// silently consumes (and discards) the JSON body.  Without this
-// guard, a future JSON POST that fails CSRF would have its body
-// drained even before any application logic could log it for
-// diagnostics.
+// without consuming r.Body.  Without this guard a future swap to
+// manual body reading inside CSRF would silently drain the JSON of
+// any logging / replay middleware that runs further out.
+//
+// The body is wrapped in a counting reader so the assertion is on
+// "bytes read by middleware" — a zero count means the request
+// reached the handler chain with the body fully intact.
 func TestCSRF_DoesNotParseNonFormBodyWhenRejecting(t *testing.T) {
 	csrf, err := NewCSRF(testTokenSource)
 	if err != nil {
 		t.Fatalf("NewCSRF: %v", err)
 	}
 	const payload = `{"hello":"world"}`
-	body := strings.NewReader(payload)
+	counter := &countingReader{src: strings.NewReader(payload)}
 	h := csrf.Middleware(http.HandlerFunc(okHandler))
 
 	// Cookie present but header / form field both absent — middleware
 	// must reject without touching the body.
-	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req := httptest.NewRequest(http.MethodPost, "/", counter)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "cookie-token"})
 	rec := httptest.NewRecorder()
@@ -223,12 +225,30 @@ func TestCSRF_DoesNotParseNonFormBodyWhenRejecting(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d; want 403", rec.Code)
 	}
-	// Body bytes should still be readable post-middleware.  ParseForm
-	// would have drained them.
-	remaining, _ := io.ReadAll(body)
-	if string(remaining) != payload && body.Len() == 0 {
-		t.Errorf("non-form body was consumed by CSRF middleware (remaining=%q, len=%d); ParseForm should be gated on Content-Type", remaining, body.Len())
+	if counter.bytesRead != 0 {
+		t.Fatalf("CSRF middleware read %d bytes from a non-form body; expected 0 (any read here would drain JSON for downstream readers)", counter.bytesRead)
 	}
+	// Sanity: the body must still be fully readable post-middleware.
+	remaining, _ := io.ReadAll(req.Body)
+	if string(remaining) != payload {
+		t.Errorf("body after middleware = %q; want %q (CSRF must leave the body byte-for-byte)", remaining, payload)
+	}
+}
+
+// countingReader wraps an io.Reader and records how many bytes have
+// been pulled.  Used to make "did this layer read the body?" a
+// directly-assertable property rather than an inference from leftover
+// bytes (the previous version's assertion was a logical hole — see
+// the test docstring).
+type countingReader struct {
+	src       io.Reader
+	bytesRead int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.src.Read(p)
+	c.bytesRead += n
+	return n, err
 }
 
 func okHandler(w http.ResponseWriter, _ *http.Request) {
