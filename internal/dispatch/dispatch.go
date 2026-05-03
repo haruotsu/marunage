@@ -344,10 +344,22 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	// here is treated like NewWorkspace failure: leave the row pending,
 	// release any lock_key, no claim written. This keeps PR-44 reaper
 	// happy — no row enters running with a dangling sentinel target.
+	//
+	// Chmod-after-MkdirAll: MkdirAll respects an existing directory's
+	// permissions verbatim, so a pre-existing 0o755 dir stays 0o755 and
+	// a hostile co-tenant could plant a symlink at <dir>/.exit_code
+	// before we do. Force 0o700 explicitly to close that gap (matches
+	// internal/store/store.go's ~/.marunage tightening pattern).
 	workspaceDir := ""
 	if d.workspaceDirs != nil {
 		workspaceDir = d.workspaceDirs.Dir(task.ID)
 		if err := os.MkdirAll(workspaceDir, 0o700); err != nil {
+			if lockKey != "" {
+				_ = d.store.ReleaseLock(ctx, task.ID)
+			}
+			return false, nil
+		}
+		if err := os.Chmod(workspaceDir, 0o700); err != nil {
 			if lockKey != "" {
 				_ = d.store.ReleaseLock(ctx, task.ID)
 			}

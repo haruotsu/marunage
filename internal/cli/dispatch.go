@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 
@@ -101,7 +102,15 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 	// Workspaces live alongside tasks.db so a single ~/.marunage tree
 	// holds the queue (tasks.db) and the per-task control directories
 	// (workspaces/<id>/) the PR-43 completion watcher polls.
+	//
+	// Pre-create the parent root with 0o700 so per-task subdirs inherit
+	// the tight permission. A pre-existing loose root would let a co-
+	// tenant snoop on per-task sentinel writes; explicit Chmod after
+	// MkdirAll closes the "MkdirAll respects existing modes" gap.
 	wsRoot := filepath.Join(filepath.Dir(dbPath), "workspaces")
+	if err := os.MkdirAll(wsRoot, 0o700); err == nil {
+		_ = os.Chmod(wsRoot, 0o700)
+	}
 	dirs := workspaceDirs{root: wsRoot}
 
 	d, err := dispatch.New(
