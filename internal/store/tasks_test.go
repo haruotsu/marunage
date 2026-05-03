@@ -1631,3 +1631,63 @@ func TestTaskRepoMarkFailedFromRunningWithReasonMissingReturnsErrNotFound(t *tes
 		t.Fatalf("err = %v; want ErrNotFound", err)
 	}
 }
+
+// PR-72 SK1: MarkSkippedWithReason atomically flips status -> skipped
+// and writes the triage rationale into judgment_reason so the post-
+// mortem in `marunage review` can show why the row was archived.
+func TestTaskRepoMarkSkippedWithReasonStampsStatusAndReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "fyi blast", Status: store.StatusPending,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const reason = "rule 4: FYI broadcast, not actionable"
+	if err := f.repo.MarkSkippedWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkSkippedWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusSkipped {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusSkipped)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q", got.JudgmentReason, reason)
+	}
+}
+
+// PR-72 SK2: empty reason rejects with ErrReasonRequired (matches
+// MarkFailedWithReason / EscalateToHuman so callers do not have to
+// special-case the triage path).
+func TestTaskRepoMarkSkippedWithReasonRejectsEmptyReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "no reason", Status: store.StatusPending,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkSkippedWithReason(f.ctx, id, ""); !errors.Is(err, store.ErrReasonRequired) {
+		t.Fatalf("MarkSkippedWithReason(empty reason): err = %v; want ErrReasonRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusPending {
+		t.Errorf("row touched despite rejected call: status = %q", got.Status)
+	}
+}
+
+// PR-72 SK3: missing id returns ErrNotFound rather than silently
+// no-op'ing (mirrors MarkFailedWithReason / SetStartedAt).
+func TestTaskRepoMarkSkippedWithReasonMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	err := f.repo.MarkSkippedWithReason(f.ctx, 99999, "phantom")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkSkippedWithReason(missing): err = %v; want ErrNotFound", err)
+	}
+}
