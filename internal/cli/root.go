@@ -82,6 +82,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskCleanCmd(&configPath))
 	root.AddCommand(newReaperCmd(&configPath))
 	root.AddCommand(newTaskStatusCmd(&configPath))
+	root.AddCommand(newDiscoverCmd())
 	root.AddCommand(newWebCmd(&configPath))
 
 	return root
@@ -96,7 +97,6 @@ type stubSpec struct {
 func buildLeafStubs() []*cobra.Command {
 	specs := []stubSpec{
 		{"setup", "Run the OSS setup wizard: install Skills and authenticate sources."},
-		{"discover", "Run the Discovery layer once and enqueue new tasks."},
 		{"run-all", "Dispatch every pending task in priority order."},
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
 		{"notify", "Send completion / failure / waiting_human notifications."},
