@@ -46,6 +46,12 @@ var (
 	// ExternalID is not present in any of the configured files.
 	ErrTaskNotFound = errors.New("markdown: task not found")
 
+	// ErrInvalidTitle is returned by Add when the supplied title contains
+	// a character (currently: any newline) that would split the rendered
+	// checklist line across multiple physical lines, leaving the marker
+	// unreachable and the file inconsistent.
+	ErrInvalidTitle = errors.New("markdown: invalid title")
+
 	// ErrFileNotFound is returned when a configured file is missing and
 	// the operation requires it (List / Since on a non-existent file is
 	// not fatal — it returns an empty result; Add / Complete / Delete
@@ -361,6 +367,12 @@ func (p *Plugin) Add(ctx context.Context, title, _ string) (Task, error) {
 	if len(p.files) == 0 {
 		return Task{}, ErrNoFilesConfigured
 	}
+	// Reject titles that would split the rendered line in two. We do
+	// this before touching disk so a malformed title cannot leave the
+	// file with an orphan checklist line whose marker is unreachable.
+	if containsNewline(title) {
+		return Task{}, fmt.Errorf("%w: title contains newline", ErrInvalidTitle)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -545,6 +557,18 @@ func appendLine(body []byte, line string) []byte {
 
 func hadTrailingNewline(body []byte) bool {
 	return len(body) > 0 && body[len(body)-1] == '\n'
+}
+
+// containsNewline reports whether s carries any byte that would split a
+// rendered checklist line. Both '\n' and '\r' are rejected so callers
+// cannot smuggle in a CR that splits the file on Windows-style readers.
+func containsNewline(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' || s[i] == '\r' {
+			return true
+		}
+	}
+	return false
 }
 
 // stableSortTasksByPathLine keeps List output deterministic when callers

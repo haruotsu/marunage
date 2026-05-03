@@ -378,6 +378,31 @@ func TestConcurrentAddDoesNotCorrupt(t *testing.T) {
 
 func fmtN(i int) string { return "task-" + strconv.Itoa(i) }
 
+// TestAddRejectsTitleWithNewline guards against a title that would split
+// the checklist line in two. A naively appended "- [ ] foo\nbar <!-- ... -->"
+// produces one orphan "- [ ] foo" line and one stray "bar <!-- ... -->"
+// line; the marker is unreachable, Complete / Delete cannot find the task
+// any more, and the next List would mint a fresh id for the orphan. We
+// surface the bad input as an explicit error so the caller knows the
+// write was rejected before the file changed.
+func TestAddRejectsTitleWithNewline(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md", "")
+	p := New(WithFiles(path))
+
+	_, err := p.Add(context.Background(), "first line\nsecond line", "")
+	if err == nil {
+		t.Fatalf("Add accepted a multi-line title; want error")
+	}
+	// File must be untouched (we reject before atomic write).
+	body, _ := os.ReadFile(path)
+	if len(body) != 0 {
+		t.Fatalf("file mutated despite rejected Add: %q", body)
+	}
+}
+
 // TestListPreservesPartialMarkerFieldsWhenInjectingID locks in the contract
 // that a hand-edited line carrying a partial marunage marker (e.g.
 // "<!-- marunage:source=upstream -->" with no id=) keeps its existing
