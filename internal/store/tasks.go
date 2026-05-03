@@ -98,6 +98,10 @@ var (
 	// ErrDeadlineRequired guards bulk expiry helpers from a zero time.Time
 	// silently expiring nothing.
 	ErrDeadlineRequired = errors.New("store: deadline is required")
+	// ErrWSRequired is returned by ClaimWorkspace when the caller passed
+	// an empty ws — silently NULL-ing the column would defeat the
+	// atomic-claim semantics callers (PR-42b dispatcher) depend on.
+	ErrWSRequired = errors.New("store: ws is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -605,6 +609,53 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ClaimWorkspace atomically attaches ws to a row that is still pending
+// AND has no prior ws reference. Returns claimed=true on a successful
+// claim; claimed=false signals "another dispatcher beat me to it" and
+// the caller must release any lock_key it holds and abandon the
+// workspace. ErrNotFound surfaces a stale id so a buggy dispatcher
+// fails loud instead of silently no-op.
+//
+// This is the safety primitive PR-42b's race test pins: SetWorkspace
+// alone has no status guard, so two dispatchers racing on the same
+// pending row would both succeed and the second silently overwrite the
+// first claim. ClaimWorkspace's WHERE clause makes the race a
+// well-defined single-winner.
+func (r *TaskRepo) ClaimWorkspace(ctx context.Context, id int64, ws string) (bool, error) {
+	if ws == "" {
+		return false, ErrWSRequired
+	}
+	const q = `
+		UPDATE tasks SET ws = ?
+		WHERE id = ?
+		  AND status = ?
+		  AND (ws IS NULL OR ws = '')`
+	res, err := r.db.ExecContext(ctx, q, ws, id, StatusPending)
+	if err != nil {
+		return false, fmt.Errorf("claim workspace: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim workspace rows: %w", err)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	// RowsAffected==0 has two causes: id missing, or guard fired.
+	// Distinguish so the caller separates "skip silently" (claimed=false)
+	// from "stale id" (ErrNotFound).
+	var probe int64
+	err = r.db.QueryRowContext(ctx,
+		"SELECT id FROM tasks WHERE id = ?", id).Scan(&probe)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim workspace probe: %w", err)
+	}
+	return false, nil
 }
 
 // SetWorkspace records the cmux ws reference for a dispatched task. It is

@@ -16,6 +16,7 @@ package dispatch
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/store"
@@ -54,20 +55,56 @@ type PromptInputs struct {
 // cmux scrollback without inflating the byte count cmux send carries.
 const promptSeparator = "\n\n"
 
-// BuildPrompt concatenates the (Base, SourceSpecific, Task, Sentinel)
-// sections in that fixed order. Empty sections drop out cleanly so a
-// source without a dedicated skill produces "Base + Task" with one
-// separator, not two.
+// leftAngleRunRe matches any maximal run of "<" characters. We rewrite
+// runs of length >=2 so no two "<" can ever appear adjacent in the
+// escaped output — that is what guarantees an attacker cannot forge a
+// "<<label>>" fence-open or "<</label>>" fence-close. A naive
+// `strings.ReplaceAll("<<", "<\<")` is NOT idempotent: "<<<<" replaces
+// left-to-right and leaves "<<" at the seams.
+var leftAngleRunRe = regexp.MustCompile(`<+`)
+
+// fenceEscape rewrites every multi-"<" run inside a user-derived value
+// so an attacker cannot forge a fence boundary. Idempotent under
+// repeated application. Trusted sections (Base / SourceSpecific) skip
+// this pass.
+func fenceEscape(s string) string {
+	return leftAngleRunRe.ReplaceAllStringFunc(s, func(run string) string {
+		if len(run) < 2 {
+			return run
+		}
+		return strings.Repeat(`<\`, len(run))
+	})
+}
+
+// fenced wraps the (already-escaped) value in <<label>>...<</label>>.
+func fenced(label, value string) string {
+	return fmt.Sprintf("<<%s>>\n%s\n<</%s>>", label, value, label)
+}
+
+// BuildPrompt concatenates (Base, SourceSpecific, Task, Sentinel) in
+// that fixed order. Empty sections drop out cleanly.
+//
+// User-derived fields (Source, ExternalID, ExternalURL, Title, Body) go
+// through fenceEscape so a malicious payload cannot splice a forged
+// fence-close + override into the prompt. requirement.md L29 invariant
+// #2 ("No silent execution") is the upstream policy this satisfies:
+// the receiving Claude session can refuse to follow instructions that
+// originate from inside a `<<body>>` / `<<title>>` fence.
 //
 // The Send wrapper in internal/cmux collapses any embedded \r\n run into
 // a single space before handing the payload to cmux; preserving the
 // original line breaks here keeps the prompt readable when the caller
 // inspects it via `marunage show <id>` or the Web UI.
 func BuildPrompt(in PromptInputs) string {
-	taskBlock := fmt.Sprintf(
-		"## Task #%d (source: %s)\n\nTitle: %s\n\n%s",
-		in.Task.ID, in.Task.Source, in.Task.Title, in.Task.Body,
-	)
+	taskHeader := fmt.Sprintf("## Task #%d", in.Task.ID)
+	taskBlock := strings.Join([]string{
+		taskHeader,
+		fenced("source", fenceEscape(in.Task.Source)),
+		fenced("external_id", fenceEscape(in.Task.ExternalID)),
+		fenced("origin", fenceEscape(in.Task.ExternalURL)),
+		fenced("title", fenceEscape(in.Task.Title)),
+		fenced("body", fenceEscape(in.Task.Body)),
+	}, "\n\n")
 
 	parts := make([]string, 0, 4)
 	if s := strings.TrimSpace(in.Base); s != "" {

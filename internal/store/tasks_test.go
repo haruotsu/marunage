@@ -1248,23 +1248,32 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// PR-43 store additions (atomic done + completed_at).
-//
-//  S1. MarkDoneWithSummary on a row stamps status=done, result_summary=<text>,
-//      completed_at=<time> in a single UPDATE so a concurrent reader cannot
-//      observe a row in done with completed_at IS NULL (the post-mortem
-//      "when did this finish" view depends on the pair).
-//  S2. MarkDoneWithSummary on a missing id returns ErrNotFound so a stale id
-//      in the watcher's cached list does not silently no-op.
-//  S3. MarkDoneWithSummary accepts an empty summary — Claude may produce no
-//      final text, and the watcher still wants to record the done transition.
-//  S4. MarkDoneWithSummary with zero time.Time returns ErrCompletedAtRequired
-//      so a forgotten clock injection fails loud rather than writing NULL.
-//  S5. SetCompletedAt stamps completed_at on a row; missing id returns
-//      ErrNotFound; zero time returns ErrCompletedAtRequired.
-//  S6. MarkDoneWithSummary writes the canonical millisecond ISO8601 layout
-//      Get round-trips (so list ORDER BY completed_at sorts chronologically).
+// 47 (PR-42b): ClaimWorkspace atomically attaches a ws reference to a
+// pending row with no prior claim.
+func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "claim race"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if !claimed {
+		t.Errorf("claimed = false; want true on first claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws = %q; want workspace:1", got.WS)
+	}
+}
 
+// PR-43 S1: MarkDoneWithSummary stamps status=done, result_summary, and
+// completed_at in a single UPDATE.
 func TestTaskRepoMarkDoneWithSummaryStampsAllFields(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1390,5 +1399,74 @@ func TestTaskRepoSetCompletedAtRejectsZeroTime(t *testing.T) {
 	}
 	if err := f.repo.SetCompletedAt(f.ctx, id, time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
 		t.Fatalf("SetCompletedAt(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+}
+
+// 48 (PR-42b): a duplicate ClaimWorkspace returns claimed=false without
+// touching the existing ws.
+func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "second claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1"); err != nil {
+		t.Fatalf("first ClaimWorkspace: %v", err)
+	}
+
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:2")
+	if err != nil {
+		t.Fatalf("second ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false on duplicate claim")
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.WS != "workspace:1" {
+		t.Errorf("ws after rejected claim = %q; want preserved %q", got.WS, "workspace:1")
+	}
+}
+
+// 49 (PR-42b): ClaimWorkspace on a non-pending row returns claimed=false.
+func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "post-claim"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	claimed, err := f.repo.ClaimWorkspace(f.ctx, id, "workspace:1")
+	if err != nil {
+		t.Fatalf("ClaimWorkspace: %v", err)
+	}
+	if claimed {
+		t.Errorf("claimed = true; want false (row is already running)")
+	}
+}
+
+// 50 (PR-42b): ClaimWorkspace on a missing id returns ErrNotFound.
+func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	_, err := f.repo.ClaimWorkspace(f.ctx, 99999, "workspace:1")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ClaimWorkspace(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// 51 (PR-42b): ClaimWorkspace with empty ws is rejected.
+func TestTaskRepoClaimWorkspaceRejectsEmptyWS(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "empty ws"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	_, err = f.repo.ClaimWorkspace(f.ctx, id, "")
+	if !errors.Is(err, store.ErrWSRequired) {
+		t.Fatalf("ClaimWorkspace(empty ws): err = %v; want ErrWSRequired", err)
 	}
 }
