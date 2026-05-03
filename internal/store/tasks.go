@@ -236,6 +236,57 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (Task, error) {
 	return t, nil
 }
 
+// UpdateStatus transitions a task to newStatus. newStatus is validated
+// against the documented enum here so callers see the typed
+// ErrInvalidStatus instead of a generic SQLite CHECK violation, and
+// missing ids surface ErrNotFound rather than silently succeeding (which
+// a naked UPDATE would do — RowsAffected=0 with no error).
+//
+// PR-11 keeps this method strictly status-only. The dispatcher
+// (PR-42) sets started_at as part of its claim, and PR-43's atomic
+// sentinel sets completed_at when it sees `.exit_code` materialise. That
+// split means tests for those side effects live with the code that
+// performs them, not here.
+func (r *TaskRepo) UpdateStatus(ctx context.Context, id int64, newStatus string) error {
+	if _, ok := validStatuses[newStatus]; !ok {
+		return ErrInvalidStatus
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ? WHERE id = ?", newStatus, id)
+	if err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update status rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetWorkspace records the cmux ws reference for a dispatched task. It is
+// the immediate "claim" PR-42 writes after `cmux new-workspace` returns so
+// a parallel dispatch loop iteration cannot pick the same row twice.
+// Empty ws clears the column (NULL on the wire) so reaper / clean flows
+// can drop a stale reference.
+func (r *TaskRepo) SetWorkspace(ctx context.Context, id int64, ws string) error {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET ws = ? WHERE id = ?", nullable(ws), id)
+	if err != nil {
+		return fmt.Errorf("set workspace: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set workspace rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListFilter narrows the rows List returns. Empty slices and zero Limit
 // mean "no constraint", matching the way `marunage list` falls back to a
 // full scan when no flags are passed.
