@@ -3,14 +3,25 @@ package skills
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// ErrUnsafePath is the typed sentinel `Install` returns when the
+// destination layout contains a symlink the installer is unwilling to
+// follow. Symlinked SKILL.md files would let `--diff` dump arbitrary
+// file contents to stdout (information disclosure); symlinked skill
+// directories would let writeSkill's MkdirAll/Rename land the file at
+// an attacker-chosen path. We refuse both rather than try to detect
+// "safe" symlinks.
+var ErrUnsafePath = errors.New("skills: refusing to follow symlink in target layout")
 
 // RequiredTriageSections enumerates the H2 headers `marunage setup
 // --skills` insists on after writing the triage SKILL.md. The list is
@@ -114,7 +125,9 @@ func Install(opts InstallOptions) (InstallResult, error) {
 
 	res := InstallResult{}
 	for _, name := range skillNames {
-		srcBody, err := fs.ReadFile(opts.Source, filepath.ToSlash(filepath.Join(name, "SKILL.md")))
+		// fs.FS paths are always slash-separated; use path.Join, not
+		// filepath.Join (which would emit `\` on Windows).
+		srcBody, err := fs.ReadFile(opts.Source, path.Join(name, "SKILL.md"))
 		if err != nil {
 			return res, fmt.Errorf("read source %s/SKILL.md: %w", name, err)
 		}
@@ -123,8 +136,21 @@ func Install(opts InstallOptions) (InstallResult, error) {
 			return res, fmt.Errorf("source %s: %w", name, vErr)
 		}
 
-		dstPath := filepath.Join(opts.Target, name, "SKILL.md")
-		existing, hasExisting := readIfExists(dstPath)
+		dstDir := filepath.Join(opts.Target, name)
+		dstPath := filepath.Join(dstDir, "SKILL.md")
+		// Reject symlinks before reading or writing. checkRegular
+		// surfaces ErrUnsafePath via errors.Is for both the parent
+		// dir and the SKILL.md itself.
+		if err := checkRegular(dstDir, modeDir); err != nil {
+			return res, err
+		}
+		if err := checkRegular(dstPath, modeRegularFile); err != nil {
+			return res, err
+		}
+		existing, hasExisting, err := readIfExists(dstPath)
+		if err != nil {
+			return res, fmt.Errorf("read on-disk %s: %w", dstPath, err)
+		}
 		oldVersion := ""
 		if hasExisting {
 			if v, err := ExtractVersion(existing); err == nil {
@@ -215,19 +241,59 @@ func listSkillDirs(root fs.FS) ([]string, error) {
 	return names, nil
 }
 
-// readIfExists returns (body, true) when path is a regular file we
-// could read; (nil, false) when it does not exist; and the read error
-// for anything else (permission denied etc.) — surfaced via the second
-// bool being false plus the body being nil keeps the call sites short
-// at the cost of conflating "missing" with "unreadable", which is
-// acceptable here because the next write attempt would surface the
-// permission error immediately.
-func readIfExists(path string) ([]byte, bool) {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
+// readIfExists returns (body, true, nil) when path is a regular file
+// we could read, (nil, false, nil) when it is genuinely absent, and
+// (nil, false, err) for everything else (permission denied, I/O
+// error). The earlier "swallow all errors" form lied to --diff and
+// --check-updates: a permission-denied existing file rendered as
+// "would install" instead of surfacing the actual problem.
+func readIfExists(p string) ([]byte, bool, error) {
+	body, err := os.ReadFile(p)
+	if err == nil {
+		return body, true, nil
 	}
-	return body, true
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
+// modeKind picks which Lstat-mode check checkRegular enforces. Skill
+// directories must be real dirs; SKILL.md must be a regular file.
+type modeKind int
+
+const (
+	modeDir modeKind = iota
+	modeRegularFile
+)
+
+// checkRegular returns nil when path is absent OR matches the
+// requested mode and is not a symlink; otherwise it returns an error
+// wrapping ErrUnsafePath. The Lstat (vs Stat) is the whole point —
+// Stat would follow the symlink and miss the attack.
+func checkRegular(p string, want modeKind) error {
+	info, err := os.Lstat(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("lstat %s: %w", p, err)
+	}
+	mode := info.Mode()
+	if mode&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s", ErrUnsafePath, p)
+	}
+	switch want {
+	case modeDir:
+		if !mode.IsDir() {
+			return fmt.Errorf("%w: %s is not a directory", ErrUnsafePath, p)
+		}
+	case modeRegularFile:
+		if !mode.IsRegular() {
+			return fmt.Errorf("%w: %s is not a regular file", ErrUnsafePath, p)
+		}
+	}
+	return nil
 }
 
 // writeSkill writes body to path with 0600, materialising the parent

@@ -452,6 +452,113 @@ func TestInstall_Merge_SkipChoice(t *testing.T) {
 	}
 }
 
+// TestInstall_RejectsSymlinkedSkillFile pins the read-side symlink
+// defense: if an attacker (or a confused user) has placed
+// `~/.claude/skills/marunage-triage/SKILL.md` as a symlink pointing at
+// an arbitrary file, neither --diff nor a normal install must follow
+// it. --diff would otherwise dump the linked file's contents to stdout
+// (information disclosure); a normal install would silently see "same
+// content? no" and trigger a write decision based on a third-party
+// file. We reject the install instead and surface the symlink so the
+// user can sort out their tree.
+func TestInstall_RejectsSymlinkedSkillFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on windows")
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+	if err := os.MkdirAll(filepath.Join(target, "marunage-triage"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Plant a secret file the symlink will point at, then aim the
+	// SKILL.md path at it.
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("SUPER SECRET TOKEN"), 0o600); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	skillPath := filepath.Join(target, "marunage-triage", "SKILL.md")
+	if err := os.Symlink(secret, skillPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, err := Install(InstallOptions{
+		Target: target,
+		Source: EmbeddedFS(),
+		Diff:   true,
+		Out:    &buf,
+	})
+	if err == nil {
+		t.Fatalf("Install --diff over a symlinked SKILL.md exit=nil; want error")
+	}
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Errorf("err = %v; want errors.Is(_, ErrUnsafePath)", err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte("SUPER SECRET TOKEN")) {
+		t.Errorf("--diff leaked the symlinked file's contents to stdout: %q", buf.String())
+	}
+}
+
+// TestInstall_RejectsSymlinkedSkillDir pins the write-side symlink
+// defense: a symlinked skill directory would let writeSkill's
+// MkdirAll/CreateTemp/Rename land the SKILL.md at an attacker-chosen
+// path. Reject it and surface ErrUnsafePath instead.
+func TestInstall_RejectsSymlinkedSkillDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on windows")
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	// The "victim" dir is where an attacker wants writes to land.
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.MkdirAll(victim, 0o700); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	if err := os.Symlink(victim, filepath.Join(target, "marunage-triage")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := Install(InstallOptions{Target: target, Source: EmbeddedFS()})
+	if err == nil {
+		t.Fatalf("Install over a symlinked skill dir exit=nil; want error")
+	}
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Errorf("err = %v; want errors.Is(_, ErrUnsafePath)", err)
+	}
+	// And the victim dir must NOT have received a SKILL.md.
+	if _, err := os.Stat(filepath.Join(victim, "SKILL.md")); err == nil {
+		t.Errorf("write traversed the symlink: SKILL.md landed in victim/")
+	}
+}
+
+// TestInstall_RejectsSymlinkedTriageOnRead exercises the read path the
+// installer hits BEFORE the merge / force / skip decision: even when
+// the install would otherwise be a no-op (same content, no flag), a
+// symlinked SKILL.md must be reported as unsafe rather than silently
+// compared against attacker-controlled content.
+func TestInstall_RejectsSymlinkedTriageOnRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on windows")
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+	if err := os.MkdirAll(filepath.Join(target, "marunage-triage"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("attacker controlled"), 0o600); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(target, "marunage-triage", "SKILL.md")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := Install(InstallOptions{Target: target, Source: EmbeddedFS()})
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Errorf("err = %v; want errors.Is(_, ErrUnsafePath)", err)
+	}
+}
+
 // TestInstall_AtomicWrite_NoPartialFileOnFailure pins the tmp+rename
 // invariant: if a write fails midway, the previous on-disk SKILL.md
 // (or "no file at all") must remain — never a half-written file.
