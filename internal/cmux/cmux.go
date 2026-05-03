@@ -171,9 +171,10 @@ func WithPollInterval(d time.Duration) Option {
 	return func(c *client) { c.pollInterval = d }
 }
 
-// WithClock injects a deterministic clock. Mirrors internal/store
-// WithClock so timing-sensitive methods (WaitReady) can pin deadlines
-// in tests.
+// WithClock injects a deterministic clock used to compute the WaitReady
+// deadline. Note that the poll cadence still relies on time.NewTicker
+// (real wall clock), so this option pins the timeout decision but does
+// not eliminate sleep-based test timing for the polling loop itself.
 func WithClock(now func() time.Time) Option {
 	return func(c *client) { c.clock = now }
 }
