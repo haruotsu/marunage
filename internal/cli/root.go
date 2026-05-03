@@ -83,6 +83,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newReaperCmd(&configPath))
 	root.AddCommand(newTaskStatusCmd(&configPath))
 	root.AddCommand(newDiscoverCmd())
+	root.AddCommand(newWebCmd(&configPath))
 
 	return root
 }
@@ -100,7 +101,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
 		{"notify", "Send completion / failure / waiting_human notifications."},
 		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
-		{"web", "Start the local Web UI (defaults to 127.0.0.1:7777)."},
 		{"review", "Review past skipped tasks for triage feedback."},
 	}
 
