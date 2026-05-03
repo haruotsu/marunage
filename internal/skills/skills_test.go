@@ -357,6 +357,30 @@ func TestInstall_FromCustomFS(t *testing.T) {
 	}
 }
 
+// TestInstall_FromDirWithoutTriage_IsAllowed pins the deliberate
+// judgment call in validateInstalledTriage: a `--from-dir` source that
+// only ships non-triage skills (e.g. an organisation's
+// marunage-source-* customisations) must succeed without hitting the
+// triage-section validator. We avoid silently dropping the contract
+// for the embedded path because `marunage-triage` is always in the
+// embedded tree.
+func TestInstall_FromDirWithoutTriage_IsAllowed(t *testing.T) {
+	src := fstest.MapFS{
+		"marunage-execute/SKILL.md": &fstest.MapFile{
+			Data: []byte("---\nname: marunage-execute\ndescription: x\n---\n<!-- version: 0.1.0 -->\n# execute only\n"),
+		},
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+
+	res, err := Install(InstallOptions{Target: target, Source: src})
+	if err != nil {
+		t.Fatalf("Install --from-dir without triage: %v", err)
+	}
+	if !equalSorted(names(res.Installed), []string{"marunage-execute"}) {
+		t.Errorf("Installed = %v; want [marunage-execute]", names(res.Installed))
+	}
+}
+
 // TestInstall_TriageMissingRequiredSection_Fails pins the documented
 // "validate after install" requirement: if the triage SKILL.md the user
 // or a third-party source supplies lacks 判定ロジック / 出力フォーマット,
