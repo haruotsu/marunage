@@ -1,18 +1,20 @@
-// Package permission implements the auto-accept allowlist matcher used by
-// PR-42 dispatch when running Claude under the non-bypass permission
-// modes ("default" / "acceptEdits"). It parses the
-// `execution.auto_accept_tools` entries from config.toml and decides
-// whether a single (tool, args) request should be auto-confirmed or
-// bubble up to the human-escalation path.
+// Package permission implements the auto-accept allowlist matcher for
+// the non-bypass permission modes. It parses the auto_accept_tools entries
+// from config.toml and decides whether a (tool, args) request is on the
+// list. The dispatcher is responsible for what to do with a non-match
+// (escalate / fail / retry per execution.on_unknown_permission); this
+// package only answers yes / no.
 //
-// Grammar (docs/requirement.md L657-661):
+// Grammar (docs/requirement.md auto_accept_tools section):
 //
 //	Read                       — tool-name only; allow any args for that tool
 //	Bash(git status:*)         — tool + args prefix (":*" is the only wildcard)
 //	Bash(echo hello)           — tool + exact args literal
 //
-// The ":*" wildcard is suffix-any (no word boundary), matching the spec
-// phrase "以降任意". A trailing space is intentionally not implied — pin
+// Matching is byte-literal and case-sensitive — "Bash" and "bash" are
+// different tools — because the strings come from Claude verbatim. The
+// ":*" wildcard is suffix-any (no word boundary), matching the spec
+// phrase "以降任意". A trailing space is intentionally not implied; pin
 // "Bash(git status :*)" if the user wants to reject "git statusfoo".
 package permission
 
@@ -59,13 +61,15 @@ const wildcardSuffix = ":*"
 
 // New parses raw allowlist entries (typically Config.Execution.AutoAcceptTools)
 // into a Matcher. Returns the first parse error so a config.toml typo fails
-// loudly at startup rather than silently denying every prompt forever.
+// loudly at startup rather than silently denying every prompt forever. The
+// error names the offending index so the user can locate the row in their
+// allowlist when many entries look alike.
 func New(rules []string) (*Matcher, error) {
 	parsed := make([]rule, 0, len(rules))
-	for _, raw := range rules {
+	for i, raw := range rules {
 		r, err := parseRule(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%q: %w", raw, err)
+			return nil, fmt.Errorf("rule[%d] %q: %w", i, raw, err)
 		}
 		parsed = append(parsed, r)
 	}

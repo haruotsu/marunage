@@ -221,3 +221,19 @@ func TestMatcherInvalidRules(t *testing.T) {
 		})
 	}
 }
+
+// TestMatcherInvalidRuleErrorContainsIndex pins that when one entry in a
+// multi-rule slice fails to parse, the error names the offending index so
+// the user can find it in their config.toml without grep'ing through 20
+// lookalike entries. Without the index a "Bash(...): missing close paren"
+// message could match many rules in a real allowlist.
+func TestMatcherInvalidRuleErrorContainsIndex(t *testing.T) {
+	rules := []string{"Read", "Glob", "Bash(git status"} // index 2 is malformed
+	_, err := New(rules)
+	if err == nil {
+		t.Fatal("New = nil; want error for malformed rule at index 2")
+	}
+	if !strings.Contains(err.Error(), "rule[2]") {
+		t.Errorf("err = %q; want mention of \"rule[2]\" so the user knows which entry to fix", err.Error())
+	}
+}
