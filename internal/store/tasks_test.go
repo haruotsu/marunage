@@ -183,6 +183,46 @@ func TestTaskRepoInsertValidatesRequiredFields(t *testing.T) {
 	}
 }
 
+// 6. Idempotency (invariant #4): a Discovery plugin re-fetching the same
+//    upstream id must hit the unique index and surface the typed sentinel
+//    so the caller can short-circuit cleanly rather than re-create the row.
+func TestTaskRepoInsertDuplicateExternalIDReturnsErr(t *testing.T) {
+	f := newRepoFixture(t)
+
+	if _, err := f.repo.Insert(f.ctx, store.Task{
+		Source:     "gmail",
+		ExternalID: "thread-1",
+		Title:      "first",
+	}); err != nil {
+		t.Fatalf("first Insert: %v", err)
+	}
+	_, err := f.repo.Insert(f.ctx, store.Task{
+		Source:     "gmail",
+		ExternalID: "thread-1",
+		Title:      "duplicate",
+	})
+	if !errors.Is(err, store.ErrDuplicateExternalID) {
+		t.Fatalf("duplicate Insert: err = %v; want ErrDuplicateExternalID", err)
+	}
+}
+
+// 7. Manually-added rows (no upstream id) must not be blocked by the
+//    unique partial index. Tested at the schema level in store_test.go;
+//    repeated here at the repo boundary so a future change that started
+//    sending an empty string instead of NULL would be caught immediately.
+func TestTaskRepoInsertAllowsRepeatedNullExternalID(t *testing.T) {
+	f := newRepoFixture(t)
+
+	for i := 0; i < 3; i++ {
+		if _, err := f.repo.Insert(f.ctx, store.Task{
+			Source: "manual",
+			Title:  "manual add",
+		}); err != nil {
+			t.Fatalf("manual Insert #%d: %v", i, err)
+		}
+	}
+}
+
 // 5. Insert rejects an unknown Status before reaching SQLite so callers see
 //    the typed sentinel rather than a generic CHECK violation.
 func TestTaskRepoInsertRejectsInvalidStatus(t *testing.T) {
