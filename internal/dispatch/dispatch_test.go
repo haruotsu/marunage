@@ -1244,6 +1244,66 @@ func TestHandlePermissionRequestNoMatcherAsks(t *testing.T) {
 	}
 }
 
+// I7b: a non-bypass permission_mode (default / acceptEdits / plan /
+// custom) implies Claude will issue permission prompts at runtime. If
+// the dispatcher has no PermissionMatcher wired, those prompts will
+// either hang forever or be silently denied — both observable to the
+// user as "the dispatched session does nothing". Failing loud at New
+// time is the only way to surface the misconfiguration before the
+// dispatcher starts producing zombie workspaces.
+func TestNewRequiresMatcherWhenPermissionModeNotBypass(t *testing.T) {
+	cases := []string{"default", "acceptEdits", "plan", "custom"}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			_, err := dispatch.New(
+				dispatch.WithStore(stubStore{}),
+				dispatch.WithCmux(&fakeCmux{}),
+				dispatch.WithBaseSkill("BASE"),
+				dispatch.WithClaudeCommand("claude"),
+				dispatch.WithPermissionMode(mode),
+				// Intentionally no WithPermissionMatcher.
+			)
+			if err == nil {
+				t.Fatalf("New(WithPermissionMode(%q)) without matcher = nil; want error", mode)
+			}
+			if !errors.Is(err, dispatch.ErrInvalidConfig) {
+				t.Errorf("err = %v; want errors.Is(err, ErrInvalidConfig)", err)
+			}
+		})
+	}
+}
+
+// I7c: bypass mode does NOT require a matcher (the claude --dangerously
+// -skip-permissions binary never asks). Construction must succeed.
+func TestNewBypassModeDoesNotRequireMatcher(t *testing.T) {
+	_, err := dispatch.New(
+		dispatch.WithStore(stubStore{}),
+		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude --dangerously-skip-permissions"),
+		dispatch.WithPermissionMode("bypass"),
+	)
+	if err != nil {
+		t.Fatalf("New(WithPermissionMode(\"bypass\")) without matcher = %v; want nil", err)
+	}
+}
+
+// I7d: empty permission_mode (caller did not pass WithPermissionMode)
+// preserves the existing pre-PR-42b construction surface — no matcher
+// requirement. Otherwise every existing dispatcher test in this file
+// would have to learn about the new option.
+func TestNewEmptyPermissionModeDoesNotRequireMatcher(t *testing.T) {
+	_, err := dispatch.New(
+		dispatch.WithStore(stubStore{}),
+		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude"),
+	)
+	if err != nil {
+		t.Fatalf("New() with no permission_mode = %v; want nil (back-compat)", err)
+	}
+}
+
 // I7: an unknown on_unknown_permission value rejects construction.
 func TestNewRejectsUnknownPermissionPolicy(t *testing.T) {
 	_, err := dispatch.New(

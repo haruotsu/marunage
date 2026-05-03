@@ -117,6 +117,7 @@ type Dispatcher struct {
 	auditor             config.Auditor
 	matcher             PermissionMatcher
 	onUnknownPermission string
+	permissionMode      string
 }
 
 // Option mutates Dispatcher construction.
@@ -176,6 +177,17 @@ func WithOnUnknownPermission(p string) Option {
 	return func(d *Dispatcher) { d.onUnknownPermission = p }
 }
 
+// WithPermissionMode declares the cfg.Execution.PermissionMode the
+// dispatcher will run under. New() uses it to enforce the safety
+// invariant "non-bypass mode requires a PermissionMatcher": without a
+// matcher Claude's permission prompts would either hang or be silently
+// denied, leaving zombie cmux workspaces. Empty (default) bypasses
+// the check so existing tests / library callers that have not opted in
+// keep building.
+func WithPermissionMode(mode string) Option {
+	return func(d *Dispatcher) { d.permissionMode = mode }
+}
+
 // WithAllowedCwdPrefixes installs the cfg.Execution.AllowedCwdPrefixes
 // allowlist. A row whose CWD does not start with any listed prefix is
 // failed before NewWorkspace, per requirement.md L687 / L774. An empty
@@ -228,6 +240,10 @@ func New(opts ...Option) (*Dispatcher, error) {
 	if !validPermissionPolicy(d.onUnknownPermission) {
 		return nil, fmt.Errorf("%w: on_unknown_permission %q (want escalate / fail / retry / empty)",
 			ErrInvalidConfig, d.onUnknownPermission)
+	}
+	if d.permissionMode != "" && d.permissionMode != "bypass" && d.matcher == nil {
+		return nil, fmt.Errorf("%w: permission_mode=%q requires WithPermissionMatcher (otherwise Claude's permission prompts would hang or be silently denied)",
+			ErrInvalidConfig, d.permissionMode)
 	}
 	return d, nil
 }
