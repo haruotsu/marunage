@@ -62,13 +62,13 @@ func TestResolveLockKeyNoMatch(t *testing.T) {
 func TestResolveLockKeyTolerantOfEmptyNotes(t *testing.T) {
 	rules := map[string]string{"^repo:.*": "git-repo"}
 	cases := []string{
-		"",                      // store NULL
-		`{}`,                    // valid JSON object without lock_hint
-		`{"foo":"bar"}`,         // valid JSON object, different key
-		`{"lock_hint":""}`,      // explicit empty hint
-		`{"lock_hint":null}`,    // explicit null hint
-		`"plain string"`,        // valid JSON but not an object
-		`[1,2,3]`,               // valid JSON array
+		"",                   // store NULL
+		`{}`,                 // valid JSON object without lock_hint
+		`{"foo":"bar"}`,      // valid JSON object, different key
+		`{"lock_hint":""}`,   // explicit empty hint
+		`{"lock_hint":null}`, // explicit null hint
+		`"plain string"`,     // valid JSON but not an object
+		`[1,2,3]`,            // valid JSON array
 	}
 	for _, notes := range cases {
 		got, err := dispatch.ResolveLockKey(rules, notes)

@@ -99,11 +99,11 @@ func (f *fakeCmux) Send(_ context.Context, ws cmux.Workspace, text string) error
 // and a Dispatcher with a deterministic clock so tests can assert exact
 // started_at values.
 type dispatchFixture struct {
-	repo  *store.TaskRepo
-	cmux  *fakeCmux
-	disp  *dispatch.Dispatcher
-	now   time.Time
-	ctx   context.Context
+	repo *store.TaskRepo
+	cmux *fakeCmux
+	disp *dispatch.Dispatcher
+	now  time.Time
+	ctx  context.Context
 }
 
 func newDispatchFixture(t *testing.T, opts ...dispatch.Option) dispatchFixture {
@@ -523,9 +523,9 @@ func TestRunRecordsAuditOnDispatchFailure(t *testing.T) {
 // security boundary the requirement promises.
 //
 // Pin three behaviours:
-//   1. CWD inside the allowlist dispatches normally.
-//   2. CWD outside the allowlist is failed before NewWorkspace.
-//   3. An empty / unset allowlist means "no whitelist" (per spec).
+//  1. CWD inside the allowlist dispatches normally.
+//  2. CWD outside the allowlist is failed before NewWorkspace.
+//  3. An empty / unset allowlist means "no whitelist" (per spec).
 func TestRunRejectsCwdOutsideAllowlist(t *testing.T) {
 	f := newDispatchFixture(t,
 		dispatch.WithAllowedCwdPrefixes([]string{"/tmp/works/", "/home/me/src/"}),
