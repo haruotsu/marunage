@@ -27,9 +27,17 @@ go.work.sum
 # env file
 .env
 
+# Build output
+/bin/
+/dist/
+
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# OS-specific
+.DS_Store
+Thumbs.db
 
 # review-fix-loop の作業ディレクトリ（中間レビュー / サマリー / 最終レポート）
 .marunage-review/
