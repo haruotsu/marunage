@@ -56,6 +56,21 @@ type Result struct {
 	DirsCreated   []string
 }
 
+// ResolveMode applies the same defaulting + whitelist check Run does,
+// returned as a separate step so callers (the CLI) can validate user
+// input *before* opening side-effecting writers like the audit log.
+// Empty input resolves to the documented default ("bypass"); anything
+// outside the whitelist returns ErrInvalidMode.
+func ResolveMode(mode string) (string, error) {
+	if mode == "" {
+		mode = defaultMode
+	}
+	if !contains(allowedModes, mode) {
+		return "", fmt.Errorf("%w: %q (allowed: %v)", ErrInvalidMode, mode, allowedModes)
+	}
+	return mode, nil
+}
+
 // Run is the entry point: ensure the marunage home layout exists, write a
 // default config.toml the first time, and report what changed.
 func Run(opts Options) (Result, error) {
@@ -63,12 +78,9 @@ func Run(opts Options) (Result, error) {
 		return Result{}, errors.New("Options.Home: must be a non-empty path")
 	}
 
-	mode := opts.Mode
-	if mode == "" {
-		mode = defaultMode
-	}
-	if !contains(allowedModes, mode) {
-		return Result{}, fmt.Errorf("%w: %q (allowed: %v)", ErrInvalidMode, mode, allowedModes)
+	mode, err := ResolveMode(opts.Mode)
+	if err != nil {
+		return Result{}, err
 	}
 
 	root := filepath.Join(opts.Home, ".marunage")
@@ -150,11 +162,16 @@ func ensureConfig(path, mode string) (bool, error) {
 	cfg := config.Default()
 	cfg.Execution.PermissionMode = mode
 	if cmd := config.ClaudeCommandFor(mode); cmd != "" {
-		// Non-custom modes have a deterministic command. "custom" returns
-		// "" here; we leave the Default()-supplied bypass command in place
-		// so config.Validate() (which forbids custom + empty) accepts the
-		// file. The user replaces the placeholder when they edit later.
 		cfg.Execution.ClaudeCommand = cmd
+	} else {
+		// "custom" returns "" from ClaudeCommandFor and config.Validate
+		// forbids custom + empty. We need a non-empty placeholder, but
+		// must NOT silently keep Default()'s bypass command — a user who
+		// picked "custom" specifically to avoid bypass would otherwise end
+		// up with --dangerously-skip-permissions still wired in. Plain
+		// `claude` (the default-mode command) is the conservative choice:
+		// every tool call prompts until the user replaces it.
+		cfg.Execution.ClaudeCommand = config.ClaudeCommandFor("default")
 	}
 
 	if err := config.Save(path, cfg, nil); err != nil {

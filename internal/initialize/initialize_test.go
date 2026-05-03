@@ -153,16 +153,16 @@ func TestRun_NonDefaultMode_RecordedInConfig(t *testing.T) {
 	}
 }
 
-// TestRun_CustomMode_PicksValidPlaceholder pins the spec rule that "custom"
-// is the user-edited escape hatch. We must produce a config.toml that:
-//   - records permission_mode="custom" so the user's choice round-trips,
-//   - keeps a non-empty claude_command so config.Validate is satisfied
-//     (an empty value is rejected at load time, which would brick the
-//     freshly-initialised marunage home until the user opened the file).
-//
-// The placeholder is the documented "default" mode's command — safe enough
-// to launch on any machine, and the obvious next thing the user replaces.
-func TestRun_CustomMode_PicksValidPlaceholder(t *testing.T) {
+// TestRun_CustomMode_PicksSafePlaceholder pins the security review's
+// finding: when the user picks "custom" with the intent to edit later,
+// the placeholder claude_command must NOT be the bypass mode's
+// `claude --dangerously-skip-permissions`. The previous behavior left the
+// dangerous flag in place — a user who forgot to edit could end up with
+// the most permissive runtime they explicitly opted out of. The safe
+// placeholder is plain `claude` (the documented default mode), which
+// keeps Claude Code prompting on every tool call until the user fills in
+// their custom command.
+func TestRun_CustomMode_PicksSafePlaceholder(t *testing.T) {
 	home := t.TempDir()
 
 	if _, err := Run(Options{Home: home, Mode: "custom"}); err != nil {
@@ -176,8 +176,8 @@ func TestRun_CustomMode_PicksValidPlaceholder(t *testing.T) {
 	if cfg.Execution.PermissionMode != "custom" {
 		t.Errorf("permission_mode = %q; want %q", cfg.Execution.PermissionMode, "custom")
 	}
-	if cfg.Execution.ClaudeCommand == "" {
-		t.Errorf("claude_command = %q; want a non-empty placeholder so config validates", cfg.Execution.ClaudeCommand)
+	if cfg.Execution.ClaudeCommand != "claude" {
+		t.Errorf("claude_command = %q; want %q (safe placeholder; not the bypass --dangerously-skip-permissions)", cfg.Execution.ClaudeCommand, "claude")
 	}
 }
 
