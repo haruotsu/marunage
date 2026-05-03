@@ -986,7 +986,20 @@ func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert expired: %v", err)
 	}
-	// fresh waiting_human (deadline boundary is exclusive)
+	// On-deadline waiting_human. updated_at == deadline lands on the
+	// boundary. The SQL guard is `updated_at < ?`, so this row must NOT
+	// flip. Without this row the test passes even if `<` is mutated to
+	// `<=`, because `fresh` (2030) is far enough in the future that any
+	// off-by-one would still leave it on the safe side. Pin the boundary
+	// directly so a future SQL edit cannot silently relax the contract.
+	onDeadlineID, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "on-deadline", Status: store.StatusWaitingHuman,
+		CreatedAt: deadline, UpdatedAt: deadline,
+	})
+	if err != nil {
+		t.Fatalf("Insert on-deadline: %v", err)
+	}
+	// fresh waiting_human well past the deadline.
 	freshID, err := f.repo.Insert(f.ctx, store.Task{
 		Source: "manual", Title: "fresh", Status: store.StatusWaitingHuman,
 		CreatedAt: fresh, UpdatedAt: fresh,
@@ -1016,7 +1029,7 @@ func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 		t.Fatalf("ExpireWaitingHuman: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("affected = %d; want 1", n)
+		t.Errorf("affected = %d; want 1 (only the expired row, not the on-deadline boundary)", n)
 	}
 
 	got, err := f.repo.Get(f.ctx, expired)
@@ -1026,7 +1039,7 @@ func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 	if got.Status != store.StatusFailed {
 		t.Errorf("expired status = %q; want %q", got.Status, store.StatusFailed)
 	}
-	// 40. judgment_reason preserved.
+	// 40. judgment_reason preserved on the row that did flip.
 	if got.JudgmentReason != "auto-accept failed: Bash(rm -rf /)" {
 		t.Errorf("judgment_reason after expiry = %q; want preserved", got.JudgmentReason)
 	}
@@ -1036,6 +1049,7 @@ func TestTaskRepoExpireWaitingHumanFlipsOnlyExpired(t *testing.T) {
 		want string
 		name string
 	}{
+		{onDeadlineID, store.StatusWaitingHuman, "on-deadline waiting_human (boundary is exclusive)"},
 		{freshID, store.StatusWaitingHuman, "fresh waiting_human"},
 		{runningID, store.StatusRunning, "running"},
 		{pendingID, store.StatusPending, "pending"},
