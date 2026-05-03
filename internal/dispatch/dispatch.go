@@ -36,6 +36,12 @@ type Store interface {
 // concrete implementation in internal/permission satisfies this; the
 // interface lives here so test fakes do not need to construct a real
 // permission.Matcher.
+//
+// EXPORT NOTE: this interface is currently consumed only by the
+// dispatcher itself. The eventual external consumer is the cmux/MCP
+// shim PR (not yet on the plan) that intercepts Claude's tool prompts
+// and forwards them to HandlePermissionRequest. If that PR slips
+// indefinitely, consider re-narrowing this surface.
 type PermissionMatcher interface {
 	Allow(tool, args string) bool
 }
@@ -45,6 +51,9 @@ type PermissionMatcher interface {
 // prompt translates this into the protocol-level reply (allow / deny /
 // re-prompt). This type lives in dispatch because the policy lives
 // here too.
+//
+// EXPORT NOTE: same as PermissionMatcher above — the only call site is
+// internal until the cmux/MCP shim PR lands.
 type PermissionDecision int
 
 const (
@@ -290,10 +299,16 @@ func (d *Dispatcher) HandlePermissionRequest(ctx context.Context, taskID int64, 
 		// the on-disk text reads consistently with the escalate branch.
 		d.markFailed(ctx, taskID, reason)
 		return PermissionFail, nil
-	default:
-		// "retry" / "" / any future value validated by New: defer to
-		// the caller. Do not mutate the row.
+	case policyRetry, "":
+		// Defer to the caller. New's validPermissionPolicy guard means
+		// no other string can reach this branch — listing the cases
+		// explicitly keeps the decision matrix in the godoc verifiable
+		// and the default arm a dead path that flags any future enum
+		// addition that forgot to update the switch.
 		return PermissionAsk, nil
+	default:
+		return PermissionAsk, fmt.Errorf("%w: on_unknown_permission %q reached HandlePermissionRequest (validPermissionPolicy gap)",
+			ErrInvalidConfig, d.onUnknownPermission)
 	}
 }
 
