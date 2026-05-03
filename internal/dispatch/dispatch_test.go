@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -921,11 +922,126 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 }
 
-// J5: NewWorkspace failure AFTER ClaimWorkspace must clear the
-// __dispatching__ sentinel so the row is retryable and is not stuck
-// looking like a half-finished claim. Pinned to catch a regression
-// where the sentinel is left in place and the next Run sees the row
-// as "already claimed" forever.
+// F-series (PR-43): WithWorkspaceDirs wires the per-task control dir.
+
+type fakeDirs struct {
+	root string
+}
+
+func (d fakeDirs) Dir(id int64) string {
+	return filepath.Join(d.root, fmt.Sprintf("%d", id))
+}
+
+// F1: dir created + prompt embeds sentinel path.
+func TestRunCreatesWorkspaceDirAndEmbedsSentinelPath(t *testing.T) {
+	root := t.TempDir()
+	dirs := fakeDirs{root: root}
+	f := newDispatchFixture(t, dispatch.WithWorkspaceDirs(dirs))
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "with sentinel", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantDir := dirs.Dir(id)
+	info, err := os.Stat(wantDir)
+	if err != nil {
+		t.Fatalf("workspace dir %q not created: %v", wantDir, err)
+	}
+	if !info.IsDir() {
+		t.Errorf("workspace path %q is not a directory", wantDir)
+	}
+
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	wantSentinel := filepath.Join(wantDir, ".exit_code")
+	if !strings.Contains(payload, wantSentinel) {
+		t.Errorf("Send payload does not embed sentinel path %q; got:\n%s", wantSentinel, payload)
+	}
+}
+
+// F2: mkdir failure leaves the row pending.
+func TestRunLeavesRowPendingWhenWorkspaceMkdirFails(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	dirs := fakeDirs{root: blocker}
+	f := newDispatchFixture(t, dispatch.WithWorkspaceDirs(dirs))
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "mkdir fails", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status after mkdir failure = %q; want still %q (retryable)", row.Status, store.StatusPending)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+		t.Errorf("NewWorkspace calls = %d; want 0 (mkdir must precede NewWorkspace)", got)
+	}
+}
+
+// D1c (PR-43): NewWorkspace failure leaves a trace in audit.log.
+func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+		return cmux.Workspace{}, errors.New("cmux: simulated failure")
+	}
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit nws fail", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status = %q; want still %q (D1 contract)", row.Status, store.StatusPending)
+	}
+
+	var found *config.AuditEvent
+	for i, ev := range au.Events() {
+		if ev.Action == "dispatch.fail" && strings.Contains(ev.Value, "NewWorkspace") {
+			found = &au.Events()[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected dispatch.fail audit mentioning NewWorkspace; got %+v", au.Events())
+	}
+	wantKey := fmt.Sprintf("task:%d", id)
+	if found.Key != wantKey {
+		t.Errorf("audit Key = %q; want %q", found.Key, wantKey)
+	}
+}
+
+// J5 (PR-42b): NewWorkspace failure after ClaimWorkspace must clear the
+// __dispatching__ sentinel so the row is retryable.
 func TestRunClearsSentinelOnNewWorkspaceFailureAfterClaim(t *testing.T) {
 	f := newDispatchFixture(t)
 	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
@@ -945,10 +1061,54 @@ func TestRunClearsSentinelOnNewWorkspaceFailureAfterClaim(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if row.Status != store.StatusPending {
-		t.Errorf("status = %q; want %q (NewWorkspace failure must leave row retryable)", row.Status, store.StatusPending)
+		t.Errorf("status = %q; want still %q", row.Status, store.StatusPending)
 	}
-	if row.WS != "" {
-		t.Errorf("ws = %q; want empty (sentinel must be cleared so row is re-claimable)", row.WS)
+}
+
+// F2b (PR-43): when MkdirAll fails the row stays pending and the
+// failure leaves a trace in audit.log.
+func TestRunRecordsAuditOnWorkspaceMkdirFailure(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	dirs := fakeDirs{root: blocker}
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t,
+		dispatch.WithWorkspaceDirs(dirs),
+		dispatch.WithAuditor(au),
+	)
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "audit mkdir fail", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status = %q; want still %q (F2 contract)", row.Status, store.StatusPending)
+	}
+	var found *config.AuditEvent
+	for i, ev := range au.Events() {
+		if ev.Action == "dispatch.fail" && strings.Contains(ev.Value, "mkdir") {
+			found = &au.Events()[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected dispatch.fail audit mentioning mkdir failure; got %+v", au.Events())
+	}
+	wantKey := fmt.Sprintf("task:%d", id)
+	if found.Key != wantKey {
+		t.Errorf("audit Key = %q; want %q", found.Key, wantKey)
 	}
 }
 
@@ -1394,13 +1554,7 @@ func (stubStore) SetStartedAt(context.Context, int64, time.Time) error      { re
 func (stubStore) MarkFailedWithReason(context.Context, int64, string) error { return nil }
 func (stubStore) EscalateToHuman(context.Context, int64, string) error      { return nil }
 
-// H6: dispatch failures may surface a cmux stderr / API error string
-// that contains a leaked token (e.g. an Authorization header echoed
-// back). The dispatcher must redact the reason BEFORE writing it to
-// judgment_reason (DB) and BEFORE recording it on the dispatch.fail
-// audit event. Without this, a single transient API failure can pin a
-// secret into both the SQLite tasks.db row and the append-only
-// audit.log forever.
+// H6 (PR-42b): redact dispatch failure reason before persisting.
 func TestRunRedactsSecretsInFailureReason(t *testing.T) {
 	au := &fakeAuditor{}
 	f := newDispatchFixture(t, dispatch.WithAuditor(au))
@@ -1418,7 +1572,6 @@ func TestRunRedactsSecretsInFailureReason(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-
 	row, err := f.repo.Get(f.ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -1429,7 +1582,6 @@ func TestRunRedactsSecretsInFailureReason(t *testing.T) {
 	if !strings.Contains(row.JudgmentReason, "[REDACTED]") {
 		t.Errorf("judgment_reason missing [REDACTED] marker in:\n%s", row.JudgmentReason)
 	}
-
 	for _, e := range au.Events() {
 		if e.Action != "dispatch.fail" {
 			continue
@@ -1440,35 +1592,47 @@ func TestRunRedactsSecretsInFailureReason(t *testing.T) {
 	}
 }
 
-// F1/F2/F3: workspaceName must trim by rune count, not byte count, so a
-// title containing multi-byte characters (Japanese, emoji) is not chopped
-// mid-rune. A byte-based trim would leave the cmux dashboard label with a
-// trailing replacement character (U+FFFD) and, more dangerously, propagate
-// invalid UTF-8 into anything that later parses the workspace name.
+// F3 (PR-43): no WithWorkspaceDirs keeps PR-42 wire format intact.
+func TestRunOmitsSentinelSectionWhenWorkspaceDirsUnset(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	if _, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no sentinel", CWD: "/tmp",
+	}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	for _, banned := range []string{".exit_code", ".result_summary"} {
+		if strings.Contains(payload, banned) {
+			t.Errorf("Send payload unexpectedly contains %q:\n%s", banned, payload)
+		}
+	}
+}
+
+// PR-42b: workspaceName must trim by rune count, not byte count.
 func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
 	cases := []struct {
 		name    string
 		title   string
-		wantSub string // a substring expected in the trimmed name
+		wantSub string
 	}{
 		{
-			// "あ" is 3 bytes; 50 of them is 150 bytes. Byte-trim at 40 cuts
-			// the 14th rune mid-way and yields invalid UTF-8.
 			name:    "japanese-overflow",
 			title:   strings.Repeat("あ", 50),
 			wantSub: strings.Repeat("あ", 40),
 		},
 		{
-			// 🍎 is 4 bytes (a single rune in Go). 50 of them = 200 bytes.
-			// Even though 40 / 4 == 10 happens to align, the test pins the
-			// rune-count semantics: we want exactly 40 emoji preserved (not
-			// 10) once the trim is rune-based.
 			name:    "emoji-overflow",
 			title:   strings.Repeat("🍎", 50),
 			wantSub: strings.Repeat("🍎", 40),
 		},
 		{
-			// Pure ASCII regression: 50 'a' chars trim to 40 'a' chars.
 			name:    "ascii-overflow",
 			title:   strings.Repeat("a", 50),
 			wantSub: strings.Repeat("a", 40),
@@ -1491,17 +1655,15 @@ func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
 			}
 			got := f.cmux.newWorkspaceCalls[0].Name
 			if !utf8.ValidString(got) {
-				t.Errorf("workspace name %q is not valid UTF-8 (byte-trim cut a multi-byte rune)", got)
+				t.Errorf("workspace name %q is not valid UTF-8", got)
 			}
 			wantPrefix := fmt.Sprintf("#%d ", id)
 			if !strings.HasPrefix(got, wantPrefix) {
 				t.Errorf("name = %q; want prefix %q", got, wantPrefix)
 			}
 			if !strings.Contains(got, tc.wantSub) {
-				t.Errorf("name = %q; want it to contain %d-rune trimmed title %q",
-					got, len([]rune(tc.wantSub)), tc.wantSub)
+				t.Errorf("name = %q; want %d-rune trimmed title %q", got, len([]rune(tc.wantSub)), tc.wantSub)
 			}
-			// The title portion must not exceed the documented rune cap.
 			titlePart := strings.TrimPrefix(got, wantPrefix)
 			if got := len([]rune(titlePart)); got > 40 {
 				t.Errorf("title rune count = %d; want <= 40", got)

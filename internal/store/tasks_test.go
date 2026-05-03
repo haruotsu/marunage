@@ -1248,10 +1248,8 @@ func TestTaskRepoMarkFailedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 47. ClaimWorkspace atomically attaches a ws reference to a row that is
-// still pending and has no prior claim. Returns claimed=true on first
-// success. PR-42b uses this so two concurrent dispatchers cannot both
-// SetWorkspace on the same pending row.
+// 47 (PR-42b): ClaimWorkspace atomically attaches a ws reference to a
+// pending row with no prior claim.
 func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "claim race"})
@@ -1274,10 +1272,138 @@ func TestTaskRepoClaimWorkspaceFirstClaimSucceeds(t *testing.T) {
 	}
 }
 
-// 48. A second ClaimWorkspace against the same row returns
-// claimed=false WITHOUT touching the existing ws. This is what makes
-// the dispatcher race-safe: the second dispatcher to reach the row sees
-// claimed=false, releases its own lock_key, and abandons cleanly.
+// PR-43 S1: MarkDoneWithSummary stamps status=done, result_summary, and
+// completed_at in a single UPDATE.
+func TestTaskRepoMarkDoneWithSummaryStampsAllFields(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual",
+		Title:  "completion test",
+		Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	const summary = "Done. PR opened: https://example.com/pr/1"
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, summary, completedAt); err != nil {
+		t.Fatalf("MarkDoneWithSummary: %v", err)
+	}
+
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusDone)
+	}
+	if got.ResultSummary != summary {
+		t.Errorf("result_summary = %q; want %q", got.ResultSummary, summary)
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("completed_at = %v; want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	err := f.repo.MarkDoneWithSummary(f.ctx, 99999, "irrelevant", completedAt)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkDoneWithSummary(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryAcceptsEmptySummary(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no summary", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	completedAt := time.Date(2026, 5, 3, 13, 30, 0, 0, time.UTC)
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, "", completedAt); err != nil {
+		t.Fatalf("MarkDoneWithSummary(empty summary): %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status = %q; want %q", got.Status, store.StatusDone)
+	}
+	if got.ResultSummary != "" {
+		t.Errorf("result_summary = %q; want empty", got.ResultSummary)
+	}
+}
+
+func TestTaskRepoMarkDoneWithSummaryRejectsZeroCompletedAt(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "needs completed_at", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.MarkDoneWithSummary(f.ctx, id, "ok", time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
+		t.Fatalf("MarkDoneWithSummary(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("row touched despite rejected call: status = %q", got.Status)
+	}
+}
+
+func TestTaskRepoSetCompletedAtRoundTrip(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "set completed_at",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	completedAt := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	if err := f.repo.SetCompletedAt(f.ctx, id, completedAt); err != nil {
+		t.Fatalf("SetCompletedAt: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("completed_at = %v; want %v", got.CompletedAt, completedAt)
+	}
+}
+
+func TestTaskRepoSetCompletedAtMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	completedAt := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	if err := f.repo.SetCompletedAt(f.ctx, 99999, completedAt); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetCompletedAt(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+func TestTaskRepoSetCompletedAtRejectsZeroTime(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "zero time",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetCompletedAt(f.ctx, id, time.Time{}); !errors.Is(err, store.ErrCompletedAtRequired) {
+		t.Fatalf("SetCompletedAt(zero time): err = %v; want ErrCompletedAtRequired", err)
+	}
+}
+
+// 48 (PR-42b): a duplicate ClaimWorkspace returns claimed=false without
+// touching the existing ws.
 func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "second claim"})
@@ -1304,9 +1430,7 @@ func TestTaskRepoClaimWorkspaceSecondClaimRejected(t *testing.T) {
 	}
 }
 
-// 49. ClaimWorkspace on a row whose status is no longer pending (e.g. a
-// concurrent dispatcher already promoted it to running) returns
-// claimed=false; the row's existing ws is preserved.
+// 49 (PR-42b): ClaimWorkspace on a non-pending row returns claimed=false.
 func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "post-claim"})
@@ -1325,8 +1449,7 @@ func TestTaskRepoClaimWorkspaceRejectsNonPending(t *testing.T) {
 	}
 }
 
-// 50. ClaimWorkspace on a missing id returns ErrNotFound so a stale id
-// from a buggy dispatcher fails loud rather than silently no-op.
+// 50 (PR-42b): ClaimWorkspace on a missing id returns ErrNotFound.
 func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
 	f := newRepoFixture(t)
 	_, err := f.repo.ClaimWorkspace(f.ctx, 99999, "workspace:1")
@@ -1335,8 +1458,7 @@ func TestTaskRepoClaimWorkspaceMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// 51. ClaimWorkspace with empty ws is rejected (a successful claim
-// would leave the row in pending with ws=NULL — defeating the purpose).
+// 51 (PR-42b): ClaimWorkspace with empty ws is rejected.
 func TestTaskRepoClaimWorkspaceRejectsEmptyWS(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: "empty ws"})

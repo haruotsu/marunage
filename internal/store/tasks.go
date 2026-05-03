@@ -478,6 +478,12 @@ func (r *TaskRepo) ExpireWaitingHuman(ctx context.Context, deadline time.Time) (
 // on started_at; an unstamped row would never trip the timeout.
 var ErrStartedAtRequired = errors.New("store: started_at is required")
 
+// ErrCompletedAtRequired guards SetCompletedAt / MarkDoneWithSummary
+// against a zero time.Time silently leaving completed_at NULL. PR-43's
+// completion watcher reads back completed_at to render durations; an
+// unstamped row would surface as "still running" on every dashboard.
+var ErrCompletedAtRequired = errors.New("store: completed_at is required")
+
 // SetStartedAt stamps started_at on a row. PR-42 dispatch calls this when
 // claiming pending -> running so the reaper (PR-44) can later detect a
 // row that has been running past the 24h threshold. The package godoc on
@@ -501,6 +507,69 @@ func (r *TaskRepo) SetStartedAt(ctx context.Context, id int64, t time.Time) erro
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("set started_at rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetCompletedAt stamps completed_at on a row. PR-43's completion
+// watcher calls this on the failed branch (non-zero exit_code / parse
+// failure) so the row carries an end-time even when MarkFailedWithReason
+// was already issued. Mirrors SetStartedAt: zero time.Time fails loud
+// with ErrCompletedAtRequired, and a missing id surfaces ErrNotFound
+// rather than a silent no-op.
+func (r *TaskRepo) SetCompletedAt(ctx context.Context, id int64, t time.Time) error {
+	if t.IsZero() {
+		return ErrCompletedAtRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET completed_at = ? WHERE id = ?", formatTime(t.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("set completed_at: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set completed_at rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkDoneWithSummary atomically flips a row to done and records the
+// final summary plus completion timestamp. PR-43's completion watcher
+// uses this on the happy path (sentinel exit_code == 0): a single
+// UPDATE means a concurrent reader cannot observe a row in done with
+// completed_at IS NULL, which would mis-classify it as "still running"
+// in the dashboard.
+//
+// summary may be empty — Claude is permitted to finish without a final
+// summary, and the watcher still wants the done transition to land.
+// completedAt zero rejects with ErrCompletedAtRequired so a forgotten
+// clock injection fails loud rather than writing NULL on the wire (see
+// formatTime). Missing id surfaces ErrNotFound the same way SetStartedAt
+// / SetWorkspace do.
+//
+// There is intentionally no source-state guard: the watcher's only call
+// site is "row was running and the sentinel just appeared", so the
+// matrix lives in TransitionStatus and this helper is the unguarded
+// escape hatch (mirroring MarkFailedWithReason).
+func (r *TaskRepo) MarkDoneWithSummary(ctx context.Context, id int64, summary string, completedAt time.Time) error {
+	if completedAt.IsZero() {
+		return ErrCompletedAtRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ?, result_summary = ?, completed_at = ? WHERE id = ?",
+		StatusDone, nullable(summary), formatTime(completedAt.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("mark done with summary: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark done with summary rows: %w", err)
 	}
 	if n == 0 {
 		return ErrNotFound

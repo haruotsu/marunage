@@ -15,6 +15,7 @@ package dispatch
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -39,6 +40,14 @@ type PromptInputs struct {
 	// Title / Body and renders them into a labelled task block so the
 	// receiving Claude session can quote them back deterministically.
 	Task store.Task
+	// WorkspaceDir is marunage's per-task control directory (typically
+	// ~/.marunage/workspaces/<id>). When non-empty, BuildPrompt appends
+	// a sentinel-write instruction telling Claude to publish completion
+	// via `echo $? > .exit_code.tmp && mv .exit_code.tmp .exit_code`
+	// inside this dir so the PR-43 completion watcher polling the same
+	// path can detect exit. Empty disables the section entirely
+	// (back-compat for callers that have not wired completion yet).
+	WorkspaceDir string
 }
 
 // promptSeparator is the delimiter between adjacent prompt sections.
@@ -49,55 +58,31 @@ const promptSeparator = "\n\n"
 // leftAngleRunRe matches any maximal run of "<" characters. We rewrite
 // runs of length >=2 so no two "<" can ever appear adjacent in the
 // escaped output — that is what guarantees an attacker cannot forge a
-// "<<label>>" fence-open or "<</label>>" fence-close inside their own
-// content. A naive single-pass `strings.ReplaceAll("<<", "<\<")` is
-// NOT idempotent: input like "<<<<" replaces left-to-right and leaves
-// adjacent "<" pairs at the seams (`<\<<\<` still contains "<<").
-// Using a regex on the maximal run lets us emit "<\<\<\..." in one
-// shot, with each "<" followed by a backslash so no two "<" remain
-// adjacent and the transformation is idempotent under repeated
-// application.
+// "<<label>>" fence-open or "<</label>>" fence-close. A naive
+// `strings.ReplaceAll("<<", "<\<")` is NOT idempotent: "<<<<" replaces
+// left-to-right and leaves "<<" at the seams.
 var leftAngleRunRe = regexp.MustCompile(`<+`)
 
 // fenceEscape rewrites every multi-"<" run inside a user-derived value
-// so the downstream Claude session cannot be tricked into treating
-// attacker content as a fence boundary. The escape is idempotent (a
-// second pass changes nothing) so a future refactor that accidentally
-// double-applies it does not progressively corrupt the prompt.
-//
-// Trusted sections (Base / SourceSpecific from skills/) skip this pass
-// — they are not under attacker control. Per-character `<` (run of
-// length 1) is left untouched because it appears legitimately in many
-// task bodies (HTML snippets, "<3", code fragments).
-//
-// Note on coverage: only the "<<" pattern is escaped, NOT "</" alone.
-// The fence-close token is "<</label>>", which always contains "<<"
-// at its head; breaking "<<" therefore breaks every closing fence too.
+// so an attacker cannot forge a fence boundary. Idempotent under
+// repeated application. Trusted sections (Base / SourceSpecific) skip
+// this pass.
 func fenceEscape(s string) string {
 	return leftAngleRunRe.ReplaceAllStringFunc(s, func(run string) string {
 		if len(run) < 2 {
 			return run
 		}
-		// Separate each "<" with a backslash so no two "<" remain
-		// adjacent. Length grows by len(run); the cost is bounded by
-		// the size of the user-derived field.
 		return strings.Repeat(`<\`, len(run))
 	})
 }
 
 // fenced wraps the (already-escaped) value in <<label>>...<</label>>.
-// Empty values still produce a fence pair so a downstream parser can
-// distinguish "absent field" (fence empty) from "no fence at all"
-// (field never rendered). The label is required to be a literal
-// ASCII identifier under this package's control — we never interpolate
-// untrusted data into it.
 func fenced(label, value string) string {
 	return fmt.Sprintf("<<%s>>\n%s\n<</%s>>", label, value, label)
 }
 
-// BuildPrompt concatenates the (Base, SourceSpecific, Task) sections in
-// that fixed order. Empty sections drop out cleanly so a source without
-// a dedicated skill produces "Base + Task" with one separator, not two.
+// BuildPrompt concatenates (Base, SourceSpecific, Task, Sentinel) in
+// that fixed order. Empty sections drop out cleanly.
 //
 // User-derived fields (Source, ExternalID, ExternalURL, Title, Body) go
 // through fenceEscape so a malicious payload cannot splice a forged
@@ -121,7 +106,7 @@ func BuildPrompt(in PromptInputs) string {
 		fenced("body", fenceEscape(in.Task.Body)),
 	}, "\n\n")
 
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if s := strings.TrimSpace(in.Base); s != "" {
 		parts = append(parts, s)
 	}
@@ -129,5 +114,50 @@ func BuildPrompt(in PromptInputs) string {
 		parts = append(parts, s)
 	}
 	parts = append(parts, taskBlock)
+	if s := sentinelInstruction(in.WorkspaceDir); s != "" {
+		parts = append(parts, s)
+	}
 	return strings.Join(parts, promptSeparator)
+}
+
+// sentinelInstruction renders the closing block that tells Claude how to
+// publish completion atomically. Three-step contract:
+//
+//  1. Capture the task's $? IMMEDIATELY into $EC, before anything else
+//     mutates it (printf in step 2 would otherwise overwrite $? with
+//     printf's own — almost always 0 — exit code, silently turning
+//     every failed task into a "success").
+//  2. Write `<dir>/.result_summary` with the trimmed final summary.
+//  3. Write `<dir>/.exit_code.tmp` (carrying $EC) then `mv` it to
+//     `<dir>/.exit_code`.
+//
+// The mv is the publish barrier: same-FS rename is atomic on POSIX, so
+// the PR-43 completion watcher polling `<dir>/.exit_code` either sees
+// the final byte or no file at all — never a half-written sentinel.
+// Writing `.result_summary` before the rename guarantees the watcher
+// reading both files after the rename always finds a complete summary.
+//
+// Empty workspaceDir returns "" so the section is omitted entirely
+// (back-compat for callers that have not wired completion yet).
+func sentinelInstruction(workspaceDir string) string {
+	if workspaceDir == "" {
+		return ""
+	}
+	exitPath := filepath.Join(workspaceDir, ".exit_code")
+	tmpPath := filepath.Join(workspaceDir, ".exit_code.tmp")
+	summaryPath := filepath.Join(workspaceDir, ".result_summary")
+	return fmt.Sprintf(
+		"## Completion sentinel\n\n"+
+			"When this task is complete (success OR failure), publish the outcome by running, "+
+			"in this exact order:\n\n"+
+			"  EC=$?\n"+
+			"  printf '%%s' \"<one-line summary>\" > %s\n"+
+			"  echo \"$EC\" > %s && mv %s %s\n\n"+
+			"The EC=$? capture MUST come first so the sentinel records the task's exit code, "+
+			"not printf's (which is almost always 0 and would silently mask every failure).\n"+
+			"The mv is the publish barrier — the marunage completion watcher polls %s "+
+			"and treats its presence as the signal that this task has exited. Do not write %s "+
+			"directly; always go through the .tmp + mv so the reader never sees a half-written file.",
+		summaryPath, tmpPath, tmpPath, exitPath, exitPath, exitPath,
+	)
 }
