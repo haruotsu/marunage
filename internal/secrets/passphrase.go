@@ -8,6 +8,17 @@ import (
 	"golang.org/x/term"
 )
 
+// TTY interaction is funnelled through these three function vars so
+// passphrase_test.go can drive every branch (no-TTY, mismatch, match,
+// no-confirm) without a real terminal. Production code never reassigns
+// them; tests use SetTTYHooksForTest in export_test.go which restores
+// the originals on cleanup.
+var (
+	stdinFdFunc      = func() int { return int(os.Stdin.Fd()) }
+	isTerminalFunc   = term.IsTerminal
+	readPasswordFunc = term.ReadPassword
+)
+
 // readPassphraseFromTTY is the production passphrasePrompter installed
 // in ttyPassphrasePrompter. It echo-suppresses the terminal so the
 // passphrase never lands in shell scrollback, and on first-time vault
@@ -21,8 +32,8 @@ import (
 // that as actionable guidance ("set MARUNAGE_AGE_PASSPHRASE or run from
 // a TTY") instead of a hung process.
 func readPassphraseFromTTY(needConfirm bool) (string, error) {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	fd := stdinFdFunc()
+	if !isTerminalFunc(fd) {
 		return "", ErrPassphraseRequired
 	}
 	first, err := promptOnce(fd, "Enter passphrase for ~/.marunage/secrets.age: ")
@@ -50,7 +61,7 @@ func promptOnce(fd int, prompt string) ([]byte, error) {
 	if _, err := fmt.Fprint(os.Stderr, prompt); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
 	}
-	pw, err := term.ReadPassword(fd)
+	pw, err := readPasswordFunc(fd)
 	_, _ = fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return nil, fmt.Errorf("read passphrase: %w", err)
