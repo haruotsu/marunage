@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/secrets"
@@ -220,6 +221,101 @@ func TestAgeBackendProbeAlwaysSucceeds(t *testing.T) {
 	}
 	if got := store.Backend(); got != "age" {
 		t.Errorf("Backend() = %q; want %q", got, "age")
+	}
+}
+
+// TestAgeBackendAuditingDoesNotLeakValues pins the audit decorator's
+// behavior when wrapping age: Set / Delete each emit one event, the
+// secret value never appears in any field, and reads do not audit.
+// This mirrors the audit_test.go file-backend case so adding a new
+// backend can never silently fall outside the audit guarantee.
+func TestAgeBackendAuditingDoesNotLeakValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "audit-passphrase")
+	secrets.ResetPassphraseCacheForTest()
+
+	rec := &recordingAuditor{}
+	store, err := secrets.OpenWithAuditor(
+		secrets.Config{Backend: "age", HomeDir: home},
+		rec,
+	)
+	if err != nil {
+		t.Fatalf("OpenWithAuditor(age): %v", err)
+	}
+
+	const veryPrivate = "ya29.super-secret-token-do-not-log"
+	if err := store.Set("gmail", veryPrivate); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := store.Delete("gmail"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if len(rec.events) != 2 {
+		t.Fatalf("events = %d; want 2 (one per Set/Delete)", len(rec.events))
+	}
+	if got := rec.events[0]; got.Action != "secrets.set" || got.Backend != "age" || got.Name != "gmail" {
+		t.Errorf("Set event = %+v; want action=secrets.set backend=age name=gmail", got)
+	}
+	if got := rec.events[1]; got.Action != "secrets.delete" || got.Backend != "age" || got.Name != "gmail" {
+		t.Errorf("Delete event = %+v; want action=secrets.delete backend=age name=gmail", got)
+	}
+	for i, e := range rec.events {
+		if strings.Contains(e.Value, veryPrivate) ||
+			strings.Contains(e.Key, veryPrivate) ||
+			strings.Contains(e.Path, veryPrivate) {
+			t.Errorf("event[%d] leaked the secret value: %+v", i, e)
+		}
+	}
+}
+
+// TestAgeBackendCachesPassphraseAcrossOpens pins the UX expectation
+// from BRIEF.md test list #12: a second Open in the same process
+// reuses the first prompt's passphrase, so the user is never asked
+// twice within one daemon lifetime even though each Open allocates a
+// fresh ageBackend struct.
+//
+// Strategy: do the first Open with the env var set, then clear the
+// env AND install a prompter that fails if invoked. If the cache is
+// working, the second Open's Get hits the cached passphrase and never
+// touches the prompter.
+func TestAgeBackendCachesPassphraseAcrossOpens(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "cached-passphrase")
+	secrets.ResetPassphraseCacheForTest()
+
+	first, err := secrets.Open(secrets.Config{Backend: "age", HomeDir: home})
+	if err != nil {
+		t.Fatalf("Open #1: %v", err)
+	}
+	if err := first.Set("gmail", "tok"); err != nil {
+		t.Fatalf("Set #1: %v", err)
+	}
+
+	// Clear env and install a prompter that the cache must keep us
+	// from reaching. If we do call into it, the test fails with a
+	// distinct message rather than a generic decrypt error.
+	t.Setenv("MARUNAGE_AGE_PASSPHRASE", "")
+	prompterCalled := false
+	restore := secrets.SetTTYPassphrasePrompterForTest(func(_ bool) (string, error) {
+		prompterCalled = true
+		return "", errors.New("prompter must not be called when cache is warm")
+	})
+	defer restore()
+
+	second, err := secrets.Open(secrets.Config{Backend: "age", HomeDir: home})
+	if err != nil {
+		t.Fatalf("Open #2: %v", err)
+	}
+	got, ok, err := second.Get("gmail")
+	if err != nil {
+		t.Fatalf("Get on second Open: %v (cache miss?)", err)
+	}
+	if !ok || got != "tok" {
+		t.Errorf("Get on second Open: ok=%v got=%q; want true \"tok\"", ok, got)
+	}
+	if prompterCalled {
+		t.Error("prompter was called on second Open; passphrase cache is not working")
 	}
 }
 
