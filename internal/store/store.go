@@ -161,7 +161,16 @@ var migrationName = regexp.MustCompile(`^(\d+)_[A-Za-z0-9_-]+\.sql$`)
 // loadMigrations enumerates the embedded migrations directory and returns
 // the entries sorted by version.
 func loadMigrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	return loadMigrationsFromFS(migrationsFS, "migrations")
+}
+
+// loadMigrationsFromFS is the testable core of loadMigrations: it walks
+// dir inside fsys and returns the entries sorted by version. Splitting it
+// out lets internal tests feed an in-memory fstest.MapFS to exercise the
+// "bad filename" / "duplicate version" error paths without having to ship
+// broken files in the embedded set.
+func loadMigrationsFromFS(fsys fs.FS, dir string) ([]migration, error) {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return nil, fmt.Errorf("read migrations dir: %w", err)
 	}
@@ -179,7 +188,7 @@ func loadMigrations() ([]migration, error) {
 		if err != nil || v <= 0 {
 			return nil, fmt.Errorf("migration %q: version must be a positive integer", e.Name())
 		}
-		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
+		body, err := fs.ReadFile(fsys, dir+"/"+e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", e.Name(), err)
 		}
