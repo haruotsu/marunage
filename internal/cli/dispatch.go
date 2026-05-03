@@ -102,6 +102,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithAuditor(auditor),
 		dispatch.WithPermissionMatcher(matcher),
 		dispatch.WithOnUnknownPermission(cfg.Execution.OnUnknownPermission),
+		dispatch.WithPermissionMode(cfg.Execution.PermissionMode),
 	)
 	if err != nil {
 		_ = db.Close()
