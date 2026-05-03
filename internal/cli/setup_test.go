@@ -298,6 +298,42 @@ func TestSetup_Skills_FromDirTildeExpand(t *testing.T) {
 	}
 }
 
+// TestSetup_Skills_MergeCLI pins the --merge arm end-to-end: the CLI
+// must thread activeStdinReader through to the installer's prompt loop
+// so an "o\n" answer overwrites a hand-edited skill. The unit-level
+// merge tests in internal/skills already pin the prompt branches; this
+// guards against the wiring (`In: activeStdinReader()`) silently
+// breaking.
+func TestSetup_Skills_MergeCLI(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+	withStdinReader(t, strings.NewReader("o\n"))
+
+	var b1, b2 bytes.Buffer
+	if code := Execute([]string{"setup", "--skills"}, &b1, &b2); code != 0 {
+		t.Fatalf("seed: %v", b2.String())
+	}
+	skillPath := filepath.Join(home, ".claude", "skills", "marunage-triage", "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("locally edited via CLI\n"), 0o600); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"setup", "--skills", "--merge"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("setup --merge exit=%d; stderr=%q", code, stderr.String())
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read after --merge: %v", err)
+	}
+	if bytes.Contains(got, []byte("locally edited via CLI")) {
+		t.Errorf("merge 'o' did not overwrite via CLI; SKILL.md still has user edit: %q", got)
+	}
+	if !strings.Contains(stdout.String(), "Updated") {
+		t.Errorf("--merge 'o' did not surface 'Updated:' in summary; stdout=%q", stdout.String())
+	}
+}
+
 // TestSetup_Skills_RecordsAuditLines pins the "No silent execution"
 // invariant for setup --skills: every install / update / skip
 // classification leaves a typed line in
