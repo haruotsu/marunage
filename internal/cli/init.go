@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -116,11 +115,11 @@ func newInitCmd(configPath *string) *cobra.Command {
 // their real ~/.marunage.
 func homeFromConfigPath(p string) (string, error) {
 	if p == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		return home, nil
+		// cobra preloads --config from defaultConfigPath, so an empty
+		// value only reaches here if the caller passed --config "".
+		// Refusing it (rather than silently re-deriving home) keeps the
+		// "no surprise filesystem mutation" invariant simple.
+		return "", fmt.Errorf("--config: must not be empty")
 	}
 	dir := filepath.Dir(p)
 	if filepath.Base(dir) != ".marunage" {
@@ -191,11 +190,21 @@ func openInitAuditor(configPath string) (config.Auditor, func(), error) {
 
 // printInitResult renders the post-init human message: a one-line summary
 // of what happened plus the next-step guidance the OSS UX promises.
+//
+// "custom" mode gets an extra nudge: its placeholder claude_command is
+// `claude` (default-mode equivalent), so the effective runtime behavior
+// does not match the label until the user edits the file. Saying nothing
+// would let the label silently lie.
 func printInitResult(w io.Writer, res initialize.Result, mode string) {
 	if res.ConfigCreated {
 		fmt.Fprintf(w, "Initialized marunage at %s (permission_mode=%s).\n", res.ConfigPath, mode)
 	} else {
 		fmt.Fprintf(w, "marunage already initialized at %s; leaving the existing config untouched.\n", res.ConfigPath)
+	}
+	if mode == "custom" {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Note: permission_mode=custom uses placeholder claude_command='claude'.")
+		fmt.Fprintln(w, "      Edit execution.claude_command in the config before running marunage.")
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Next steps:")

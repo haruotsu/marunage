@@ -225,7 +225,8 @@ func TestInit_HelpDescribesCommand(t *testing.T) {
 // TestInit_WritesAuditLine pins the "No silent execution" invariant for
 // init through the real CLI wiring: the file-backed AuditLog under
 // ~/.marunage/logs/audit.log must contain exactly one init.create entry
-// after a successful first run.
+// after a successful first run, with no spurious init.skip alongside it
+// (the two events are mutually exclusive per invocation).
 func TestInit_WritesAuditLine(t *testing.T) {
 	cfgPath := configPathInsideHome(t)
 
@@ -237,17 +238,44 @@ func TestInit_WritesAuditLine(t *testing.T) {
 	auditPath := auditLogFor(cfgPath)
 	lines := readCLIAuditLines(t, auditPath)
 
-	var sawCreate bool
+	var createCount, skipCount int
 	for _, l := range lines {
-		if l.Action == "init.create" {
-			sawCreate = true
+		switch l.Action {
+		case "init.create":
+			createCount++
 			if l.Path != cfgPath {
 				t.Errorf("init.create path = %q; want %q", l.Path, cfgPath)
 			}
+		case "init.skip":
+			skipCount++
 		}
 	}
-	if !sawCreate {
-		t.Errorf("audit.log missing init.create line; lines=%+v", lines)
+	if createCount != 1 {
+		t.Errorf("init.create count = %d; want 1; lines=%+v", createCount, lines)
+	}
+	if skipCount != 0 {
+		t.Errorf("init.skip count = %d; want 0 on first run; lines=%+v", skipCount, lines)
+	}
+}
+
+// TestInit_CustomMode_WarnsUserToEdit pins the safety nudge from the
+// review: when a user picks "custom", the placeholder claude_command is
+// `claude` (default-mode equivalent) — but their effective behaviour is
+// not what the "custom" label implies. The CLI must explicitly tell
+// them to edit claude_command before running marunage, otherwise the
+// custom label silently lies.
+func TestInit_CustomMode_WarnsUserToEdit(t *testing.T) {
+	cfgPath := configPathInsideHome(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "init", "--non-interactive", "--mode", "custom"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("init --mode custom exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "claude_command") {
+		t.Errorf("custom-mode notice missing 'claude_command' guidance; output=%q", combined)
 	}
 }
 
