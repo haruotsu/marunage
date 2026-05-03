@@ -148,7 +148,10 @@ func TestTaskClean_ApplyDoesNotTouchAliveWorkspaces(t *testing.T) {
 }
 
 // 17. --apply prints a count summary so a script can grep the result
-// without parsing per-row lines.
+// without parsing per-row lines. Pinning the literal "Cleared 2 orphan"
+// (rather than just substring "2", which the per-row "task #2: ..."
+// line would also satisfy) keeps an applied=1 mutation from sneaking
+// through.
 func TestTaskClean_ApplyReportsClearedCount(t *testing.T) {
 	repo := installFakeRepo(t)
 	installFakeWorkspaceLister(t)
@@ -160,9 +163,78 @@ func TestTaskClean_ApplyReportsClearedCount(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("clean --apply exit=%d; stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "2") {
-		t.Errorf("output should mention cleared count 2; got %q", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, "Cleared 2 orphan") {
+		t.Errorf("output should pin the summary 'Cleared 2 orphan'; got %q", out)
 	}
+}
+
+// 17b. Dry-run with multiple orphans must report ALL of them, not just
+// the first. Without this the orphan-collection loop could regress to
+// "break after first match" and the per-id test would still pass.
+func TestTaskClean_DryRunReportsAllOrphans(t *testing.T) {
+	repo := installFakeRepo(t)
+	installFakeWorkspaceLister(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "a", Status: store.StatusFailed, WS: "workspace:91"}
+	repo.rows[2] = store.Task{ID: 2, Source: "manual", Title: "b", Status: store.StatusFailed, WS: "workspace:92"}
+	repo.rows[3] = store.Task{ID: 3, Source: "manual", Title: "c", Status: store.StatusFailed, WS: "workspace:93"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean exit=%d; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, ws := range []string{"workspace:91", "workspace:92", "workspace:93"} {
+		if !strings.Contains(out, ws) {
+			t.Errorf("dry-run output missing orphan %q; got %q", ws, out)
+		}
+	}
+}
+
+// 17c. SetWorkspace failure during --apply surfaces a non-zero exit and
+// the diagnostic carries the offending task id so an operator can
+// re-run after fixing the underlying cause. The failing-on-id seam is
+// the "real" bug pattern (one row's row gone missing between the
+// initial List and the targeted SetWorkspace) so the test exercises
+// exactly that race.
+func TestTaskClean_ApplyPropagatesSetWorkspaceFailure(t *testing.T) {
+	base := newFakeTaskRepo()
+	base.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:91"}
+	wrap := &setWorkspaceFailingRepo{taskRepo: base, failOnID: 1, err: errors.New("disk full")}
+	withTaskRepoFactory(t, func(_ context.Context, _ string) (taskRepo, func() error, error) {
+		return wrap, func() error { return nil }, nil
+	})
+	installFakeWorkspaceLister(t)
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"clean", "--apply"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit when SetWorkspace fails; stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "1") {
+		t.Errorf("stderr should mention failing task id 1; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "disk full") {
+		t.Errorf("stderr should surface the underlying error; got %q", stderr.String())
+	}
+}
+
+// setWorkspaceFailingRepo is the test wrapper that lets exactly one
+// SetWorkspace call fail. Embedding fakeTaskRepo through the taskRepo
+// interface keeps every other method delegated as-is so unrelated CLI
+// paths still see a normal repo.
+type setWorkspaceFailingRepo struct {
+	taskRepo
+	failOnID int64
+	err      error
+}
+
+func (r *setWorkspaceFailingRepo) SetWorkspace(ctx context.Context, id int64, ws string) error {
+	if id == r.failOnID {
+		return r.err
+	}
+	return r.taskRepo.SetWorkspace(ctx, id, ws)
 }
 
 // 18. Repo open errors propagate.
