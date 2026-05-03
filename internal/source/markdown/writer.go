@@ -94,6 +94,7 @@ func renderMarkerPayload(m marker) string {
 // those, but the guard makes injectMarker idempotent for safety).
 func injectMarker(body []byte, lineNumber int, mk marker) []byte {
 	hadTrailingNewline := len(body) > 0 && body[len(body)-1] == '\n'
+	eol := detectEOL(body)
 	lines := splitLines(body)
 	idx := lineNumber - 1
 	if idx < 0 || idx >= len(lines) {
@@ -109,10 +110,11 @@ func injectMarker(body []byte, lineNumber int, mk marker) []byte {
 	indent := m[1]
 	done := m[2] == "x" || m[2] == "X"
 	rest := m[3]
-	// If a marker is already there, parse and merge rather than blindly
-	// appending — defensive against being called twice.
+	// If a marker is already there, drop it from the title segment and
+	// keep the supplied marker. injectMarker is only ever invoked for
+	// lines listLocked has already classified as marker-less, but the
+	// guard makes the function idempotent for safety.
 	title := rest
-	existing := mk
 	if loc := markerComment.FindStringSubmatchIndex(rest); loc != nil {
 		title = rest[:loc[0]]
 	}
@@ -120,20 +122,25 @@ func injectMarker(body []byte, lineNumber int, mk marker) []byte {
 		Indent: indent,
 		Title:  trimTrailingSpace(title),
 		Done:   done,
-		Marker: existing,
+		Marker: mk,
 	}
 	lines[idx] = renderTaskLine(tl)
-	out := joinLines(lines)
+	out := joinLines(lines, eol)
 	if hadTrailingNewline && (len(out) == 0 || out[len(out)-1] != '\n') {
-		out = append(out, '\n')
+		out = append(out, eol...)
 	}
 	return out
 }
 
 // splitLines splits body on '\n', dropping a single trailing empty
-// element produced by a terminating newline. We avoid bytes.Split
-// because it would leave a "" at the end after a trailing newline and
-// the caller would have to special-case it on rejoin.
+// element produced by a terminating newline. Each returned line has any
+// trailing '\r' stripped so callers can rebuild lines without carrying a
+// stray CR byte through render paths; the original line ending is
+// recovered separately via detectEOL so CRLF files round-trip cleanly.
+//
+// We avoid bytes.Split because it would leave a "" at the end after a
+// trailing newline and the caller would have to special-case it on
+// rejoin.
 func splitLines(body []byte) []string {
 	if len(body) == 0 {
 		return nil
@@ -146,25 +153,56 @@ func splitLines(body []byte) []string {
 	start := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\n' {
-			out = append(out, s[start:i])
+			out = append(out, stripTrailingCR(s[start:i]))
 			start = i + 1
 		}
 	}
-	out = append(out, s[start:])
+	out = append(out, stripTrailingCR(s[start:]))
 	return out
 }
 
+// stripTrailingCR removes a single trailing '\r' so a line scanned out
+// of a CRLF body does not carry the CR forward into render / regex
+// paths. We only strip one CR — a line that legitimately ends with two
+// CRs (extremely unlikely in a Markdown TODO file) keeps the leading
+// one, which is the conservative choice.
+func stripTrailingCR(s string) string {
+	if len(s) > 0 && s[len(s)-1] == '\r' {
+		return s[:len(s)-1]
+	}
+	return s
+}
+
+// detectEOL returns the dominant line-ending byte sequence of body.
+// CRLF wins if the body contains any "\r\n", otherwise LF — the standard
+// "first wins" heuristic used by editors when a file is mixed. Empty or
+// newline-free bodies default to LF, which is the OS-neutral default
+// for files we author from scratch (Add into a missing file, Setup).
+func detectEOL(body []byte) string {
+	for i := 0; i+1 < len(body); i++ {
+		if body[i] == '\r' && body[i+1] == '\n' {
+			return "\r\n"
+		}
+	}
+	return "\n"
+}
+
 // joinLines is the inverse of splitLines without the trailing-newline
-// handling — caller restores it.
-func joinLines(lines []string) []byte {
+// handling — caller restores it. The eol argument lets callers preserve
+// CRLF when the source body was Windows-encoded; LF-only bodies should
+// pass "\n".
+func joinLines(lines []string, eol string) []byte {
+	if eol == "" {
+		eol = "\n"
+	}
 	var n int
 	for _, l := range lines {
-		n += len(l) + 1
+		n += len(l) + len(eol)
 	}
 	out := make([]byte, 0, n)
 	for i, l := range lines {
 		if i > 0 {
-			out = append(out, '\n')
+			out = append(out, eol...)
 		}
 		out = append(out, l...)
 	}

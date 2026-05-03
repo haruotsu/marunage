@@ -133,3 +133,30 @@ func TestParseInvalidMarker(t *testing.T) {
 		t.Fatalf("want ErrInvalidMarker, got %v", err)
 	}
 }
+
+// TestParseCRLF locks in the contract that CRLF-encoded inputs (Windows /
+// some macOS editors) round-trip through the parser without leaving a
+// stray '\r' on the title. bufio.Scanner's default ScanLines split happens
+// to strip '\r\n', but the test pins that behaviour so a future refactor
+// that swaps the scanner does not silently regress and start writing
+// "foo\r" into the queue.
+func TestParseCRLF(t *testing.T) {
+	t.Parallel()
+
+	got, err := parse("f.md", []byte("- [ ] foo\r\n- [x] bar <!-- marunage:id=abc -->\r\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 tasks, got %d: %+v", len(got), got)
+	}
+	if got[0].Title != "foo" {
+		t.Errorf("got[0].Title = %q, want %q (no trailing CR)", got[0].Title, "foo")
+	}
+	if got[1].Title != "bar" {
+		t.Errorf("got[1].Title = %q, want %q (no trailing CR)", got[1].Title, "bar")
+	}
+	if got[1].Marker.ID != "abc" {
+		t.Errorf("got[1].Marker.ID = %q, want %q", got[1].Marker.ID, "abc")
+	}
+}

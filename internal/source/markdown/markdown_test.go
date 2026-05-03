@@ -378,6 +378,38 @@ func TestConcurrentAddDoesNotCorrupt(t *testing.T) {
 
 func fmtN(i int) string { return "task-" + strconv.Itoa(i) }
 
+// TestCompletePreservesCRLF guards against silent line-ending rewrites on
+// Windows-authored files. A user editing todo.md on Windows expects mutations
+// (Complete / Delete / List's marker injection) to keep the file's CRLF
+// encoding. Anything else bloats the next git diff with an unrelated EOL
+// flip and is exactly the kind of "silent rewrite" docs/requirement.md's
+// Reversibility invariant tries to prevent.
+func TestCompletePreservesCRLF(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := writeFile(t, dir, "todo.md",
+		"# Notes\r\n\r\n- [ ] foo <!-- marunage:id=abc source=markdown -->\r\n- [ ] bar\r\n")
+	p := New(WithFiles(path))
+
+	if err := p.Complete(context.Background(), "abc"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, "- [x] foo") {
+		t.Fatalf("checkbox not flipped:\n%s", body)
+	}
+	// Every newline in the original was CRLF. Mutating the file must not
+	// strip any of them.
+	if strings.Count(s, "\r\n") < 4 {
+		t.Fatalf("CRLF stripped after Complete (count=%d):\n%q", strings.Count(s, "\r\n"), s)
+	}
+}
+
 func TestSinceReturnsModifiedFilesOnly(t *testing.T) {
 	t.Parallel()
 
