@@ -7,13 +7,15 @@ CMD_PKG := ./cmd/marunage
 
 # Inject git describe as version when available; fall back to "dev".
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X $(PKG)/internal/version.version=$(VERSION)
 
 .PHONY: build test lint fmt fmt-check vet tidy clean
 
+# Single-quote the -ldflags value so shell metacharacters that may appear in an
+# unexpected git tag name (backticks, dollar-paren command substitution, etc.)
+# reach the linker verbatim instead of being evaluated by the shell.
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BIN) $(CMD_PKG)
+	go build -ldflags '-X $(PKG)/internal/version.version=$(VERSION)' -o $(BIN) $(CMD_PKG)
 
 test:
 	go test ./...

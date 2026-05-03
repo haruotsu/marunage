@@ -24,7 +24,9 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          # Pin both the action major and the tool version so a release
+          # outside our control cannot break CI silently.
+          version: v2.12.1
 
   test:
     runs-on: ubuntu-latest
