@@ -67,6 +67,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDaemonCmd())
 	root.AddCommand(newConfigCmd(&configPath))
 	root.AddCommand(newDoctorCmd(&configPath))
+	root.AddCommand(newDispatchCmd(&configPath))
 	root.AddCommand(newTaskAddCmd(&configPath))
 	root.AddCommand(newTaskListCmd(&configPath))
 	root.AddCommand(newTaskShowCmd(&configPath))
@@ -93,7 +94,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"init", "Initialize ~/.marunage/, the SQLite store, and prompt for a permission mode."},
 		{"setup", "Run the OSS setup wizard: install Skills and authenticate sources."},
 		{"discover", "Run the Discovery layer once and enqueue new tasks."},
-		{"dispatch [<id>]", "Dispatch one or more pending tasks into cmux/Claude sessions."},
 		{"run-all", "Dispatch every pending task in priority order."},
 		{"status", "Show the running workspaces and their latest output."},
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
