@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -56,6 +57,31 @@ func newDiscoverCmd() *cobra.Command {
 	return cmd
 }
 
+// builtinRegistrar is the registration-side knowledge for one built-in
+// plugin: how to attach it to a Registry given the user's CLI flags.
+// Returning a registrar (rather than calling Register inline) keeps the
+// (name, register, --file requirement) triple in one table, which is the
+// only way the "unknown source" error message and the actual built-in set
+// stay in lockstep when PR-80+ adds Gmail / Slack / etc.
+type builtinRegistrar func(r *source.Registry, files []string) error
+
+// builtins is the single source of truth for "which Discovery sources can
+// `marunage discover --once --source X` resolve right now". Adding a new
+// built-in (PR-80 Gmail, PR-82 Slack, ...) means appending one entry here
+// and nothing else; the unknown-source error and the registration switch
+// derive their behaviour from this map.
+var builtins = map[string]builtinRegistrar{
+	"markdown": func(r *source.Registry, files []string) error {
+		if len(files) == 0 {
+			return fmt.Errorf("source markdown: --file is required (at least one path)")
+		}
+		if err := markdown.RegisterBuiltin(r, markdown.WithFiles(files...)); err != nil {
+			return fmt.Errorf("register markdown: %w", err)
+		}
+		return nil
+	},
+}
+
 // runDiscoverOnce wires the registry lookup, source-specific configuration,
 // and JSON serialisation. Pulled out of the cobra closure so tests could in
 // principle swap the registry constructor without touching cobra; today
@@ -66,20 +92,14 @@ func runDiscoverOnce(cmd *cobra.Command, sourceName string, files []string) erro
 	// test importing this package does not get a global side effect — and
 	// so failures (e.g. embedded manifest drift) attach to the user-
 	// visible command, not to a TestMain we do not own.
-	switch sourceName {
-	case "markdown":
-		if len(files) == 0 {
-			return fmt.Errorf("source markdown: --file is required (at least one path)")
+	if reg, ok := builtins[sourceName]; ok {
+		if err := reg(r, files); err != nil {
+			return err
 		}
-		if err := markdown.RegisterBuiltin(r, markdown.WithFiles(files...)); err != nil {
-			return fmt.Errorf("register markdown: %w", err)
-		}
-	default:
-		// Register-by-name keeps the registry small (one entry per call
-		// rather than every built-in eagerly), which means an unknown
-		// name surfaces as ErrPluginNotFound from r.Get below — exactly
-		// the typed error the brief asks us to surface to the user.
 	}
+	// An unknown source falls through with no registration; r.Get below
+	// returns ErrPluginNotFound, which we translate into a user-friendly
+	// message listing the built-ins this binary knows about.
 
 	plugin, err := r.Get(sourceName)
 	if err != nil {
@@ -99,12 +119,18 @@ func runDiscoverOnce(cmd *cobra.Command, sourceName string, files []string) erro
 	return enc.Encode(tasksToJSON(tasks))
 }
 
-// builtinNames returns the static list of built-ins this PR knows about.
-// Hard-coded rather than derived from a registry because the discover
-// command builds the registry lazily and the user-facing error needs to
-// list every option, not only those a particular invocation registered.
+// builtinNames returns the sorted list of built-in plugin names derived
+// from the builtins table. Sorting keeps the user-facing error message
+// stable across runs (Go's map iteration is randomised); deriving from
+// the same map the registration switch uses prevents the two from
+// drifting when PR-80+ lands.
 func builtinNames() []string {
-	return []string{"markdown"}
+	names := make([]string, 0, len(builtins))
+	for n := range builtins {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // tasksToJSON converts source.Task values into snake_case-keyed JSON

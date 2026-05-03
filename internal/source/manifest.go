@@ -107,9 +107,19 @@ func LoadManifest(path string) (*Manifest, error) {
 		// already carry the right structure for callers that care.
 		return nil, fmt.Errorf("read manifest %s: %w", path, err)
 	}
+	return LoadManifestFromBytes(body)
+}
+
+// LoadManifestFromBytes is the parsing core shared by LoadManifest and any
+// caller holding the manifest in memory (the markdown built-in embeds its
+// own plugin.toml via go:embed). Centralising the validation here means
+// the on-disk and in-memory paths cannot drift in their accept/reject
+// rules and removes the tempfile dance the markdown built-in previously
+// needed.
+func LoadManifestFromBytes(body []byte) (*Manifest, error) {
 	var raw rawManifest
 	if err := toml.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("%w: parse %s: %v", ErrInvalidManifest, path, err)
+		return nil, fmt.Errorf("%w: parse: %v", ErrInvalidManifest, err)
 	}
 
 	if raw.Plugin.Name == "" {
