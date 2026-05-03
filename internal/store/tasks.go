@@ -86,23 +86,13 @@ var (
 	ErrTitleRequired       = errors.New("store: Title is required")
 	ErrLockKeyRequired     = errors.New("store: lockKey is required")
 	// ErrInvalidTransition is returned when a status-changing helper is
-	// called from a state that the helper does not service. PR-41
-	// EscalateToHuman uses this for "escalate from done/failed/skipped"
-	// (those rows must not be reanimated by a stale dispatcher); future
-	// helpers (PR-21 reopen / promote) will reuse the same sentinel for
-	// their own transition rules.
+	// called from a state it does not service.
 	ErrInvalidTransition = errors.New("store: status transition is not allowed from the current state")
-	// ErrReasonRequired is returned when a helper that records a human-
-	// readable reason (PR-41 EscalateToHuman, future review/promote) is
-	// called with an empty string. The Web UI / Slack DM the requirement.md
-	// 202 line promises has nothing to show otherwise, so we fail loudly
-	// rather than silently accept a blank.
+	// ErrReasonRequired is returned when a reason-recording helper gets
+	// an empty string; the Web UI / Slack DM has nothing to show then.
 	ErrReasonRequired = errors.New("store: reason is required")
-	// ErrDeadlineRequired is returned by bulk expiry helpers (PR-41
-	// ExpireWaitingHuman; future running-row reaper) when handed a
-	// time.Time zero value. Without this guard the helper would silently
-	// expire nothing (the epoch is the smallest representable time),
-	// masking a caller bug forever.
+	// ErrDeadlineRequired guards bulk expiry helpers from a zero time.Time
+	// silently expiring nothing.
 	ErrDeadlineRequired = errors.New("store: deadline is required")
 )
 
@@ -396,29 +386,19 @@ func (r *TaskRepo) ReleaseLock(ctx context.Context, id int64) error {
 	return nil
 }
 
-// EscalateToHuman flips a row from `running` (or already `waiting_human`)
-// into `waiting_human` and records why. PR-42 dispatch calls this when the
-// auto-accept matcher (`internal/permission`) declines a Claude permission
-// prompt and `execution.on_unknown_permission = "escalate"` — the row is
-// then surfaced to the human via Web UI / Slack DM per requirement.md
-// 200-205.
+// EscalateToHuman flips a row from running (or already waiting_human)
+// into waiting_human and records why. Allowed source states are running
+// and waiting_human only — idempotent re-call refreshes the reason, and
+// any other state returns ErrInvalidTransition so a stale dispatcher
+// cannot reanimate a terminal row.
 //
-// Allowed source states: `running` and `waiting_human` (idempotent re-call
-// for the same prompt firing twice). Any other state returns
-// ErrInvalidTransition with the row untouched, so a stale dispatcher
-// cannot reanimate a `done` / `failed` / `skipped` row.
+// reason is stored verbatim for audit; downstream display layers
+// (Slack DM / Web UI) own sanitisation of newlines / control chars.
 //
-// reason is required (ErrReasonRequired) — escalation with no reason is
-// useless to the human reading the queue and breaks the audit trail.
-//
-// Atomicity follows the AcquireLock pattern: a single UPDATE with a status
-// guard does the conflict check and the write together; a follow-up
-// SELECT distinguishes "row absent" (ErrNotFound) from "transition
-// forbidden" (ErrInvalidTransition) when RowsAffected reports zero.
-//
-// updated_at is bumped by the tasks_set_updated_at trigger; this method
-// intentionally does not stamp completed_at, since waiting_human is not a
-// terminal state.
+// Atomicity follows AcquireLock: a single UPDATE with a status guard
+// does the conflict check + the write, and a follow-up SELECT
+// distinguishes ErrNotFound from ErrInvalidTransition when
+// RowsAffected reports zero.
 func (r *TaskRepo) EscalateToHuman(ctx context.Context, id int64, reason string) error {
 	if reason == "" {
 		return ErrReasonRequired
@@ -457,32 +437,16 @@ func (r *TaskRepo) EscalateToHuman(ctx context.Context, id int64, reason string)
 	return fmt.Errorf("%w: cannot escalate from %q", ErrInvalidTransition, current)
 }
 
-// ExpireWaitingHuman flips every `waiting_human` row whose updated_at is
-// strictly before deadline into `failed`, and returns the number of rows
-// transitioned. This is the timeout half of the requirement.md L203
-// promise: "リストに合致しない確認プロンプトが出たとき … `human_wait_timeout`
-// で `failed` への遷移". The caller (PR-71 loop / daemon, or the reaper)
-// computes deadline as `now - config.execution.human_wait_timeout` and
-// calls this on each tick.
+// ExpireWaitingHuman flips every waiting_human row whose updated_at is
+// strictly before deadline into failed, and returns the affected count.
+// The caller computes deadline as `now - human_wait_timeout` and calls
+// this on each tick.
 //
-// Why deadline is exclusive: a row that flipped into waiting_human at
-// exactly `deadline` has not yet passed the timeout window. Using `<`
-// (rather than `<=`) keeps the boundary precise and matches how the
-// requirement reads ("経過したら" — after the elapsed window).
-//
-// Scope:
-//   - Only `waiting_human` rows are touched. running / pending have
-//     their own reaper paths (PR-44) and must not be mass-failed here.
-//   - judgment_reason is preserved so post-mortem in `marunage review`
-//     can still see why this row was escalated. The fact that it was
-//     also expired lives in the audit log (logged by the caller).
-//   - completed_at is intentionally not stamped here either; the
-//     dispatcher / `marunage fail` path owns terminal-state timestamps.
-//
-// Errors:
-//   - ErrDeadlineRequired when deadline is the zero value. Without the
-//     guard a caller bug (forgetting to compute the cutoff) would
-//     silently expire nothing forever.
+// Strict less-than is intentional: a row that landed in waiting_human at
+// exactly `deadline` has not yet passed the timeout window. judgment_reason
+// is preserved so the post-mortem in `marunage review` can still see why
+// the row was escalated. ErrDeadlineRequired guards against a zero
+// time.Time silently expiring nothing.
 func (r *TaskRepo) ExpireWaitingHuman(ctx context.Context, deadline time.Time) (int64, error) {
 	if deadline.IsZero() {
 		return 0, ErrDeadlineRequired
