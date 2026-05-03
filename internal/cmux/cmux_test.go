@@ -24,6 +24,14 @@ import (
 //   5. NewWorkspace surfaces unparseable stdout as ErrUnparseableOutput so
 //      a future cmux release that reshapes its banner fails loudly rather
 //      than silently dispatching to "".
+//   6. Send shells out to `cmux send <ws> <text>` verbatim when text has
+//      no newlines.
+//   7. Send replaces newline runs with single spaces before invoking cmux
+//      (docs/requirement.md execution dispatch step 2.e).
+//   8. Send falls back to `ws-send <ws> <text>` when the primary `cmux
+//      send` invocation reports a non-zero exit (requirement.md step 2.f).
+//   9. Send rejects empty workspace IDs with ErrInvalidWorkspace so a
+//      caller cannot accidentally send to "".
 
 // callRecord captures one Runner.Run invocation so assertions can inspect
 // argv ordering. The struct is exported only to the test file; the fake
@@ -167,6 +175,87 @@ func TestNewWorkspaceUnparseableOutput(t *testing.T) {
 	})
 	if !errors.Is(err, cmux.ErrUnparseableOutput) {
 		t.Fatalf("err = %v; want ErrUnparseableOutput", err)
+	}
+}
+
+// 6: Send forwards verbatim text to `cmux send`.
+func TestSendForwardsArgs(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "hello world")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	calls := r.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d; want 1", len(calls))
+	}
+	want := []string{"send", "workspace:7", "hello world"}
+	if !equalArgs(calls[0].Args, want) {
+		t.Errorf("Args = %v; want %v", calls[0].Args, want)
+	}
+}
+
+// 7: newline runs collapse to a single space before being handed off.
+func TestSendReplacesNewlinesWithSpaces(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "line1\nline2\r\nline3")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	calls := r.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d; want 1", len(calls))
+	}
+	got := calls[0].Args[len(calls[0].Args)-1]
+	want := "line1 line2 line3"
+	if got != want {
+		t.Errorf("payload = %q; want %q", got, want)
+	}
+}
+
+// 8: ws-send fallback on primary failure.
+func TestSendFallsBackToWsSendOnFailure(t *testing.T) {
+	r := &fakeRunner{}
+	// Primary `cmux send` exits non-zero; fallback `ws-send` succeeds.
+	r.queue(
+		runResult{Err: errors.New("cmux send: exit 1")},
+		runResult{},
+	)
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "msg")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	calls := r.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("Calls len = %d; want 2 (primary + fallback)", len(calls))
+	}
+	if calls[1].Name != "ws-send" {
+		t.Errorf("fallback Name = %q; want %q", calls[1].Name, "ws-send")
+	}
+	wantFallback := []string{"workspace:7", "msg"}
+	if !equalArgs(calls[1].Args, wantFallback) {
+		t.Errorf("fallback Args = %v; want %v", calls[1].Args, wantFallback)
+	}
+}
+
+// 9: empty workspace ID is rejected up-front so we never shell out with "".
+func TestSendRejectsEmptyWorkspace(t *testing.T) {
+	r := &fakeRunner{}
+	c := cmux.NewClient(cmux.WithRunner(r))
+	err := c.Send(context.Background(), cmux.Workspace{}, "msg")
+	if !errors.Is(err, cmux.ErrInvalidWorkspace) {
+		t.Fatalf("err = %v; want ErrInvalidWorkspace", err)
+	}
+	if got := len(r.Calls()); got != 0 {
+		t.Errorf("Runner invoked %d times; want 0", got)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 // methods at once.
 type Client interface {
 	NewWorkspace(ctx context.Context, opts NewWorkspaceOptions) (Workspace, error)
+	Send(ctx context.Context, ws Workspace, text string) error
 }
 
 // Workspace is the typed handle returned by NewWorkspace. ID is the raw
@@ -72,6 +73,12 @@ var (
 	// dispatcher must not write a blank ws into tasks.ws, so we fail
 	// loudly instead of silently storing "".
 	ErrUnparseableOutput = errors.New("cmux: could not parse workspace id from cmux output")
+
+	// ErrInvalidWorkspace is returned by Send when the caller passes a
+	// Workspace with an empty ID — typically a sign that a previous
+	// NewWorkspace call failed and its zero-value Workspace was reused
+	// by mistake.
+	ErrInvalidWorkspace = errors.New("cmux: workspace id is empty")
 )
 
 // Defaults match docs/requirement.md execution dispatcher details. The
@@ -180,4 +187,40 @@ func (c *client) NewWorkspace(ctx context.Context, opts NewWorkspaceOptions) (Wo
 		return Workspace{}, fmt.Errorf("%w: stdout=%q", ErrUnparseableOutput, strings.TrimSpace(string(stdout)))
 	}
 	return Workspace{ID: id, Name: opts.Name}, nil
+}
+
+// newlineCollapser replaces any run of CR/LF with a single space.
+// Documented behaviour: docs/requirement.md execution dispatcher step
+// 2.e — a Claude prompt typed on multiple lines is sent as one logical
+// line so cmux's input handler does not interpret intermediate Enters
+// as premature submits.
+var newlineCollapser = regexp.MustCompile(`[\r\n]+`)
+
+func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
+	if ws.ID == "" {
+		return ErrInvalidWorkspace
+	}
+	payload := newlineCollapser.ReplaceAllString(text, " ")
+
+	_, stderr, err := c.runner.Run(ctx, "cmux", "send", ws.ID, payload)
+	if err == nil {
+		return nil
+	}
+	// A missing cmux binary is not something `ws-send` can rescue, so
+	// surface the typed sentinel immediately rather than retrying.
+	if isBinaryNotFound(err) {
+		return ErrCmuxNotFound
+	}
+	// Primary failed for some other reason; try the Enter-appending
+	// fallback before surfacing the error so a transient cmux send
+	// glitch does not abort dispatch (requirement.md step 2.f).
+	primaryErr := err
+	primaryStderr := strings.TrimSpace(string(stderr))
+
+	_, fbStderr, fbErr := c.runner.Run(ctx, c.fallbackBinary, ws.ID, payload)
+	if fbErr == nil {
+		return nil
+	}
+	return fmt.Errorf("cmux send failed (%v, stderr=%s); %s fallback also failed: %w (stderr=%s)",
+		primaryErr, primaryStderr, c.fallbackBinary, fbErr, strings.TrimSpace(string(fbStderr)))
 }
