@@ -911,6 +911,52 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 }
 
+// H6: dispatch failures may surface a cmux stderr / API error string
+// that contains a leaked token (e.g. an Authorization header echoed
+// back). The dispatcher must redact the reason BEFORE writing it to
+// judgment_reason (DB) and BEFORE recording it on the dispatch.fail
+// audit event. Without this, a single transient API failure can pin a
+// secret into both the SQLite tasks.db row and the append-only
+// audit.log forever.
+func TestRunRedactsSecretsInFailureReason(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return fmt.Errorf("cmux send: 401 unauthorized; Authorization: Bearer %s", leaked)
+	}
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "redact me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(row.JudgmentReason, leaked) {
+		t.Errorf("judgment_reason leaked secret %q in:\n%s", leaked, row.JudgmentReason)
+	}
+	if !strings.Contains(row.JudgmentReason, "[REDACTED]") {
+		t.Errorf("judgment_reason missing [REDACTED] marker in:\n%s", row.JudgmentReason)
+	}
+
+	for _, e := range au.Events() {
+		if e.Action != "dispatch.fail" {
+			continue
+		}
+		if strings.Contains(e.Value, leaked) {
+			t.Errorf("dispatch.fail audit event leaked secret %q in Value=%q", leaked, e.Value)
+		}
+	}
+}
+
 // F1/F2/F3: workspaceName must trim by rune count, not byte count, so a
 // title containing multi-byte characters (Japanese, emoji) is not chopped
 // mid-rune. A byte-based trim would leave the cmux dashboard label with a
