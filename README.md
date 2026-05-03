@@ -16,10 +16,14 @@ session per task in an isolated cmux workspace.
 The CLI skeleton is in place: every Phase 1 subcommand from
 [`docs/requirement.md`](./docs/requirement.md) (`init`, `doctor`, `setup`,
 `add`, `dispatch`, `web`, `config`, `daemon`, …) is wired through cobra and
-listed in `marunage --help`. The leaves are stubs that print
-`not yet implemented (see docs/pr_split_plan.md)` and exit non-zero — actual
-behavior lands in later PRs along the
-[PR split plan](./docs/pr_split_plan.md).
+listed in `marunage --help`. Most leaves still print
+`not yet implemented (see docs/pr_split_plan.md)` and exit non-zero — the
+exceptions so far are `marunage config get <key>` and
+`marunage config set <key> <value>`, which read and write
+`~/.marunage/config.toml` (override the path with `--config`) with schema
+validation, a timestamped `.bak` snapshot before each write, and rollback
+on validation failure. Actual behavior for the rest lands in later PRs
+along the [PR split plan](./docs/pr_split_plan.md).
 
 ## Build
 
