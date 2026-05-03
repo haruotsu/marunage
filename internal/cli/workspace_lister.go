@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 
 	"github.com/haruotsu/marunage/internal/cmux"
@@ -75,22 +77,49 @@ type cmuxWorkspaceLister struct {
 	runner cmux.Runner
 }
 
-// listWorkspacePattern mirrors the unexported pattern in internal/cmux but
-// is duplicated here so adding a method to cmux.Client is not a
-// prerequisite for PR-22. The two patterns must stay in sync: any change
-// to cmux's "workspace:NNN" banner format breaks both call sites at once,
-// which is the whole point of pinning it twice.
-var listWorkspacePattern = regexp.MustCompile(`workspace:\d+`)
+// listWorkspacePattern matches a "workspace:NNN" id at the start of a
+// line (after optional indent / dashboard markers). The leading anchor
+// keeps a task title that happens to contain "workspace:99" out of the
+// alive set — without it, an orphan whose title mentions a workspace
+// would be falsely treated as live.
+var listWorkspacePattern = regexp.MustCompile(`(?m)^[\s*]*(workspace:\d+)`)
 
-// ListWorkspaceIDs runs `cmux list-workspaces`, harvests every
-// "workspace:NNN" token from stdout, and returns the set. The runner
-// surfaces exec.ErrNotFound when cmux is missing from PATH; the caller in
-// task_clean.go propagates that into a non-zero exit so the operator sees
-// the cause rather than a silent "no orphans found" answer.
+// ListWorkspaceIDs runs `cmux list-workspaces`, harvests the leading
+// "workspace:NNN" token from each line, and returns the set. A missing
+// cmux binary surfaces as cmux.ErrCmuxNotFound (errors.Is-matchable)
+// so PR-32 doctor and the clean command can branch on the typed
+// sentinel rather than substring-checking the wrapped diagnostic.
 func (c cmuxWorkspaceLister) ListWorkspaceIDs(ctx context.Context) ([]string, error) {
 	stdout, stderr, err := c.runner.Run(ctx, "cmux", "list-workspaces")
 	if err != nil {
+		if isBinaryNotFound(err) {
+			return nil, cmux.ErrCmuxNotFound
+		}
 		return nil, fmt.Errorf("cmux list-workspaces: %w (stderr=%s)", err, string(stderr))
 	}
-	return listWorkspacePattern.FindAllString(string(stdout), -1), nil
+	matches := listWorkspacePattern.FindAllStringSubmatch(string(stdout), -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m[1])
+	}
+	return out, nil
+}
+
+// isBinaryNotFound mirrors the unexported helper in internal/cmux: a
+// missing binary surfaces as exec.ErrNotFound either directly or
+// wrapped in *exec.Error, depending on the Go version. CLI callers
+// translate it into cmux.ErrCmuxNotFound so the typed sentinel chain
+// stays usable from `errors.Is`.
+func isBinaryNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return errors.Is(execErr.Err, exec.ErrNotFound)
+	}
+	return false
 }
