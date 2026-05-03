@@ -231,17 +231,24 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	}
 
 	// Claim the row immediately so a parallel dispatcher iteration cannot
-	// re-pick it. Order is critical: SetWorkspace BEFORE WaitReady so a
-	// concurrent List(pending) cannot observe an unclaimed row whose
-	// cmux workspace is already alive.
+	// re-pick it. Order is critical:
+	//  1. SetWorkspace BEFORE WaitReady so a concurrent List(pending)
+	//     cannot observe an unclaimed row whose cmux workspace is alive.
+	//  2. SetStartedAt BEFORE UpdateStatus(running) so the invariant
+	//     "status=running implies started_at stamped" holds. PR-44
+	//     reaper's 24h-stuck probe matches on running + started_at < now-24h;
+	//     a row left running with started_at IS NULL would be invisible
+	//     to the probe and silently leak. Doing started_at first means a
+	//     SetStartedAt failure leaves the row pending (retryable) instead
+	//     of running-and-orphaned.
 	if err := d.store.SetWorkspace(ctx, task.ID, ws.ID); err != nil {
 		return false, fmt.Errorf("dispatch: SetWorkspace id=%d ws=%s: %w", task.ID, ws.ID, err)
 	}
-	if err := d.store.UpdateStatus(ctx, task.ID, store.StatusRunning); err != nil {
-		return false, fmt.Errorf("dispatch: UpdateStatus id=%d: %w", task.ID, err)
-	}
 	if err := d.store.SetStartedAt(ctx, task.ID, d.now()); err != nil {
 		return false, fmt.Errorf("dispatch: SetStartedAt id=%d: %w", task.ID, err)
+	}
+	if err := d.store.UpdateStatus(ctx, task.ID, store.StatusRunning); err != nil {
+		return false, fmt.Errorf("dispatch: UpdateStatus id=%d: %w", task.ID, err)
 	}
 
 	if err := d.cmux.WaitReady(ctx, ws); err != nil {
