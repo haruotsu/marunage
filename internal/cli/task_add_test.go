@@ -113,6 +113,22 @@ func (f *fakeTaskRepo) Delete(_ context.Context, id int64) error {
 	return nil
 }
 
+// SetWorkspace mirrors the *store.TaskRepo behaviour PR-22's `marunage
+// clean --apply` relies on: empty ws clears the column. Tests assert the
+// post-call state via repo.rows so a forgotten SetWorkspace surfaces as a
+// row whose WS still points at the orphan.
+func (f *fakeTaskRepo) SetWorkspace(_ context.Context, id int64, ws string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.rows[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	row.WS = ws
+	f.rows[id] = row
+	return nil
+}
+
 func (f *fakeTaskRepo) List(_ context.Context, filter store.ListFilter) ([]store.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
