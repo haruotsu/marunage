@@ -25,6 +25,11 @@ type Client interface {
 	NewWorkspace(ctx context.Context, opts NewWorkspaceOptions) (Workspace, error)
 	WaitReady(ctx context.Context, ws Workspace) error
 	Send(ctx context.Context, ws Workspace, text string) error
+	// ListWorkspaces returns every workspace cmux currently considers
+	// live. PR-44 reaper diffs this against tasks.ws to detect rows whose
+	// workspace has disappeared (mark failed). Order is unspecified;
+	// callers turn the slice into a set before doing the diff.
+	ListWorkspaces(ctx context.Context) ([]Workspace, error)
 }
 
 // ReadinessProbe returns whether ws has finished its boot sequence (trust
@@ -209,6 +214,13 @@ func NewClient(opts ...Option) Client {
 // the same line.
 var workspacePattern = regexp.MustCompile(`workspace:\d+`)
 
+// listWorkspacePattern matches a "workspace:NNN" id at the start of a
+// line (after optional indent / dashboard markers like "* "). The
+// leading anchor keeps a task title that happens to contain
+// "workspace:99" out of the alive set so reaper does not falsely treat
+// such a row as live and leak an orphan past the diff.
+var listWorkspacePattern = regexp.MustCompile(`(?m)^[\s*]*(workspace:\d+)`)
+
 func (c *client) NewWorkspace(ctx context.Context, opts NewWorkspaceOptions) (Workspace, error) {
 	if opts.CWD == "" || opts.Command == "" || opts.Name == "" {
 		return Workspace{}, fmt.Errorf("%w: CWD=%q Command=%q Name=%q",
@@ -270,6 +282,32 @@ func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
 	}
 	return fmt.Errorf("cmux send failed (%v, stderr=%s); %s fallback also failed: %w (stderr=%s)",
 		primaryErr, primaryStderr, c.fallbackBinary, fbErr, strings.TrimSpace(string(fbStderr)))
+}
+
+// ListWorkspaces shells out to `cmux list-workspaces` and harvests every
+// line-leading "workspace:NNN" token. Returns a non-nil empty slice for
+// empty stdout so callers can range without a nil check.
+//
+// A missing cmux binary surfaces as ErrCmuxNotFound (errors.Is-matchable)
+// so PR-32 doctor and PR-44 reaper can branch on the typed sentinel
+// rather than substring-checking the wrapped diagnostic. A non-zero exit
+// is wrapped with stderr in the message so the operator can see why cmux
+// refused without re-running by hand.
+func (c *client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
+	stdout, stderr, err := c.runner.Run(ctx, "cmux", "list-workspaces")
+	if err != nil {
+		if isBinaryNotFound(err) {
+			return nil, ErrCmuxNotFound
+		}
+		return nil, fmt.Errorf("cmux list-workspaces: %w (stderr=%s)",
+			err, strings.TrimSpace(string(stderr)))
+	}
+	matches := listWorkspacePattern.FindAllStringSubmatch(string(stdout), -1)
+	out := make([]Workspace, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, Workspace{ID: m[1]})
+	}
+	return out, nil
 }
 
 // WaitReady blocks until the readiness probe reports ws is ready, the

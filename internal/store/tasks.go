@@ -611,18 +611,81 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 	return nil
 }
 
+// JudgmentReasonSeparator is the canonical join token between the prior
+// judgment_reason and any newly appended note.
+const JudgmentReasonSeparator = "; "
+
+// AppendJudgmentReason concatenates suffix onto judgment_reason for the
+// given row in a single atomic UPDATE.
+func (r *TaskRepo) AppendJudgmentReason(ctx context.Context, id int64, suffix string) error {
+	if suffix == "" {
+		return ErrReasonRequired
+	}
+	const q = `
+		UPDATE tasks
+		   SET judgment_reason = CASE
+		       WHEN judgment_reason IS NULL OR judgment_reason = '' THEN ?
+		       ELSE judgment_reason || ? || ?
+		   END
+		 WHERE id = ?`
+	res, err := r.db.ExecContext(ctx, q, suffix, JudgmentReasonSeparator, suffix, id)
+	if err != nil {
+		return fmt.Errorf("append judgment_reason: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("append judgment_reason rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkFailedFromRunningWithReason transitions a row to failed only if
+// the current status is running. Used by the reaper so a row another
+// writer (atomic sentinel, manual done) has moved past running is not
+// overwritten by a stale snapshot.
+func (r *TaskRepo) MarkFailedFromRunningWithReason(ctx context.Context, id int64, reason string) error {
+	if reason == "" {
+		return ErrReasonRequired
+	}
+	const q = `
+		UPDATE tasks
+		   SET status = ?,
+		       judgment_reason = CASE
+		           WHEN judgment_reason IS NULL OR judgment_reason = '' THEN ?
+		           ELSE judgment_reason || ? || ?
+		       END
+		 WHERE id = ?
+		   AND status = ?`
+	res, err := r.db.ExecContext(ctx, q,
+		StatusFailed,
+		reason, JudgmentReasonSeparator, reason,
+		id, StatusRunning)
+	if err != nil {
+		return fmt.Errorf("mark failed from running: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark failed from running rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	var current string
+	err = r.db.QueryRowContext(ctx, "SELECT status FROM tasks WHERE id = ?", id).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mark failed from running probe: %w", err)
+	}
+	return fmt.Errorf("%w: cannot mark failed from %q", ErrInvalidTransition, current)
+}
+
 // ClaimWorkspace atomically attaches ws to a row that is still pending
-// AND has no prior ws reference. Returns claimed=true on a successful
-// claim; claimed=false signals "another dispatcher beat me to it" and
-// the caller must release any lock_key it holds and abandon the
-// workspace. ErrNotFound surfaces a stale id so a buggy dispatcher
-// fails loud instead of silently no-op.
-//
-// This is the safety primitive PR-42b's race test pins: SetWorkspace
-// alone has no status guard, so two dispatchers racing on the same
-// pending row would both succeed and the second silently overwrite the
-// first claim. ClaimWorkspace's WHERE clause makes the race a
-// well-defined single-winner.
+// AND has no prior ws reference. PR-42b's race-safety primitive.
 func (r *TaskRepo) ClaimWorkspace(ctx context.Context, id int64, ws string) (bool, error) {
 	if ws == "" {
 		return false, ErrWSRequired
@@ -643,9 +706,6 @@ func (r *TaskRepo) ClaimWorkspace(ctx context.Context, id int64, ws string) (boo
 	if n == 1 {
 		return true, nil
 	}
-	// RowsAffected==0 has two causes: id missing, or guard fired.
-	// Distinguish so the caller separates "skip silently" (claimed=false)
-	// from "stale id" (ErrNotFound).
 	var probe int64
 	err = r.db.QueryRowContext(ctx,
 		"SELECT id FROM tasks WHERE id = ?", id).Scan(&probe)
