@@ -10,21 +10,19 @@ import (
 	"github.com/haruotsu/marunage/internal/store"
 )
 
-// newTaskCleanCmd builds `marunage clean`. The subcommand walks every
-// task whose ws column is non-empty, asks cmux for the live workspace
-// set, and reports / clears the diff.
+// newTaskCleanCmd builds `marunage clean`. Walks every task whose ws
+// column is non-empty, asks cmux for the live workspace set, and
+// reports / clears the diff.
 //
-// docs/pr_split_plan.md PR-22 splits responsibility with PR-44's reaper:
-// clean is the **manual, CLI-driven sweep** an operator runs after a
-// crash or a long-running cmux restart; reaper is the in-process loop
-// that PR-44 ships later. The two converge on the same SetWorkspace(id,
-// "") primitive but differ in cadence and trigger.
+// Scope intentionally narrow: clean only nulls the ws column. The
+// matching status transition (running -> failed for a row whose ws
+// vanished mid-flight) belongs to PR-44's reaper, which owns the
+// status-machine policy. Keeping the two responsibilities split lets
+// the manual CLI sweep be safely re-runnable without re-failing rows
+// the operator just resurrected.
 //
-// Default is dry-run: no DB writes happen unless --apply is passed. The
-// asymmetry is deliberate — a stale ws looks like a real workspace until
-// you check, and the cost of a wrong --apply (silently dropping a live
-// reference) outweighs the cost of running the command twice. --apply is
-// the affirmative gate.
+// Default is dry-run; --apply is the affirmative gate. Inverting the
+// default would let a wrong invocation silently drop a live reference.
 func newTaskCleanCmd(configPath *string) *cobra.Command {
 	var (
 		apply  bool
@@ -32,8 +30,10 @@ func newTaskCleanCmd(configPath *string) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:          "clean",
-		Short:        "Reap dead workspace references (dry-run by default; pass --apply to mutate).",
+		Use: "clean",
+		// "Clear" rather than "Reap" so PR-44's reaper sub-routine
+		// stays unambiguous when both ship.
+		Short:        "Clear orphan workspace references (dry-run by default; pass --apply to mutate).",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			repo, closer, err := activeTaskRepoFactory()(cmd.Context(), *configPath)
