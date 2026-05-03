@@ -75,6 +75,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskPromoteCmd(&configPath))
 	root.AddCommand(newTaskReopenCmd(&configPath))
 	root.AddCommand(newTaskRmCmd(&configPath))
+	root.AddCommand(newTaskExportCmd(&configPath))
+	root.AddCommand(newTaskCleanCmd(&configPath))
 
 	return root
 }
@@ -99,8 +101,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
 		{"web", "Start the local Web UI (defaults to 127.0.0.1:7777)."},
 		{"review", "Review past skipped tasks for triage feedback."},
-		{"clean", "Reap dead workspace references (manual trigger of the reaper)."},
-		{"export", "Export every task in JSON or Markdown."},
 	}
 
 	cmds := make([]*cobra.Command, 0, len(specs))
