@@ -82,6 +82,95 @@ func renderMarkerPayload(m marker) string {
 	return strings.Join(parts, " ")
 }
 
+// injectMarker returns a copy of body with the given marker appended to
+// the (1-based) lineNumber. Used by List's auto-marker pass: a line
+// that arrived without `<!-- marunage:id=... -->` gets one inserted in
+// place, leaving every other byte of the file untouched.
+//
+// The function is line-oriented: it splits on '\n', rewrites the target
+// line, and rejoins. This preserves the surrounding prose verbatim,
+// including the file's trailing-newline-or-not. Lines that already
+// carry a marker are not touched (callers should not invoke this for
+// those, but the guard makes injectMarker idempotent for safety).
+func injectMarker(body []byte, lineNumber int, mk marker) []byte {
+	hadTrailingNewline := len(body) > 0 && body[len(body)-1] == '\n'
+	lines := splitLines(body)
+	idx := lineNumber - 1
+	if idx < 0 || idx >= len(lines) {
+		return body
+	}
+	line := lines[idx]
+	// Re-parse the single line so we keep the original indent / done
+	// flag without having to thread them through from the caller.
+	m := checkboxLine.FindStringSubmatch(line)
+	if m == nil {
+		return body
+	}
+	indent := m[1]
+	done := m[2] == "x" || m[2] == "X"
+	rest := m[3]
+	// If a marker is already there, parse and merge rather than blindly
+	// appending — defensive against being called twice.
+	title := rest
+	existing := mk
+	if loc := markerComment.FindStringSubmatchIndex(rest); loc != nil {
+		title = rest[:loc[0]]
+	}
+	tl := taskLine{
+		Indent: indent,
+		Title:  trimTrailingSpace(title),
+		Done:   done,
+		Marker: existing,
+	}
+	lines[idx] = renderTaskLine(tl)
+	out := joinLines(lines)
+	if hadTrailingNewline && (len(out) == 0 || out[len(out)-1] != '\n') {
+		out = append(out, '\n')
+	}
+	return out
+}
+
+// splitLines splits body on '\n', dropping a single trailing empty
+// element produced by a terminating newline. We avoid bytes.Split
+// because it would leave a "" at the end after a trailing newline and
+// the caller would have to special-case it on rejoin.
+func splitLines(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	s := string(body)
+	if s[len(s)-1] == '\n' {
+		s = s[:len(s)-1]
+	}
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
+}
+
+// joinLines is the inverse of splitLines without the trailing-newline
+// handling — caller restores it.
+func joinLines(lines []string) []byte {
+	var n int
+	for _, l := range lines {
+		n += len(l) + 1
+	}
+	out := make([]byte, 0, n)
+	for i, l := range lines {
+		if i > 0 {
+			out = append(out, '\n')
+		}
+		out = append(out, l...)
+	}
+	return out
+}
+
 // atomicWriteFile writes data to path via a sibling tmp file then
 // renames it into place. It mirrors the pattern in
 // internal/secrets/file_backend.go fileBackend.Set: chmod the tmp file
