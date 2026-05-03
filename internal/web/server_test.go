@@ -71,16 +71,29 @@ func TestServer_RunListensAndShutsDown(t *testing.T) {
 // IdleTimeout caps how long a kept-alive connection can sit
 // connection-idle.  WriteTimeout is intentionally NOT enforced
 // because /events SSE writes for the connection lifetime.
+//
+// The assertion reads the *http.Server Serve() actually constructs
+// (via the shared newHTTPServer helper) so a refactor that removes
+// one of the timeout assignments at the build site will be caught
+// here, not just a refactor that touches the package-level
+// constants.
 func TestServer_HardensConnectionTimeouts(t *testing.T) {
-	got := serverHTTPSettingsForTest()
-	if got.ReadHeaderTimeout <= 0 {
-		t.Errorf("ReadHeaderTimeout = %v; want > 0", got.ReadHeaderTimeout)
+	srv, err := NewServer(Options{TokenSource: testTokenSource})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
 	}
-	if got.ReadTimeout <= 0 {
-		t.Errorf("ReadTimeout = %v; want > 0 (slow-loris on POST body)", got.ReadTimeout)
+	httpSrv := srv.newHTTPServer()
+	if httpSrv.ReadHeaderTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout = %v; want > 0", httpSrv.ReadHeaderTimeout)
 	}
-	if got.IdleTimeout <= 0 {
-		t.Errorf("IdleTimeout = %v; want > 0 (idle keep-alive lingering)", got.IdleTimeout)
+	if httpSrv.ReadTimeout <= 0 {
+		t.Errorf("ReadTimeout = %v; want > 0 (slow-loris on POST body)", httpSrv.ReadTimeout)
+	}
+	if httpSrv.IdleTimeout <= 0 {
+		t.Errorf("IdleTimeout = %v; want > 0 (idle keep-alive lingering)", httpSrv.IdleTimeout)
+	}
+	if httpSrv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v; want 0 (long-lived /events SSE writes)", httpSrv.WriteTimeout)
 	}
 }
 
