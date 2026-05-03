@@ -1,0 +1,117 @@
+<div class="dashboard" data-generated-at="{{.GeneratedAt}}">
+  <p class="generated">Updated {{.GeneratedAt}} · auto-refresh every few seconds.</p>
+
+  <section class="panel" aria-labelledby="running-heading">
+    <header class="panel-head">
+      <h2 id="running-heading">Running</h2>
+      <span class="count">{{len .Running}} active</span>
+    </header>
+    {{if .Running}}
+      <ul class="task-list">
+        {{range .Running}}
+          <li class="task-row">
+            <div class="task-line">
+              <span class="badge badge-source">{{.Source}}</span>
+              <span class="task-id">#{{.ID}}</span>
+              <span class="task-title">{{.Title}}</span>
+            </div>
+            <div class="task-meta">
+              {{if .WS}}<span class="ws">{{.WS}}</span>{{end}}
+              <span class="started">started {{.StartedRel}}</span>
+            </div>
+            {{if .OutputPreview}}
+              <pre class="preview">{{.OutputPreview}}</pre>
+            {{else}}
+              <p class="hint">(no output captured yet)</p>
+            {{end}}
+          </li>
+        {{end}}
+      </ul>
+    {{else}}
+      <p class="hint">No tasks are currently running.</p>
+    {{end}}
+  </section>
+
+  <section class="panel" aria-labelledby="pending-heading">
+    <header class="panel-head">
+      <h2 id="pending-heading">Pending queue</h2>
+      <span class="count">{{.PendingCount}} total</span>
+    </header>
+    {{if .Pending}}
+      <ol class="task-list ordered">
+        {{range .Pending}}
+          <li class="task-row">
+            <div class="task-line">
+              <span class="badge badge-source">{{.Source}}</span>
+              <span class="task-id">#{{.ID}}</span>
+              <span class="task-title">{{.Title}}</span>
+              <span class="badge badge-priority" title="priority">P{{.Priority}}</span>
+            </div>
+            <div class="task-meta">
+              <span>created {{.CreatedRel}}</span>
+            </div>
+          </li>
+        {{end}}
+      </ol>
+    {{else}}
+      <p class="hint">Queue is empty.</p>
+    {{end}}
+  </section>
+
+  <section class="panel" aria-labelledby="recent-heading">
+    <header class="panel-head">
+      <h2 id="recent-heading">Last 24 hours</h2>
+      <span class="count">{{.Recent24hTotal}} transitions</span>
+    </header>
+    <ul class="summary">
+      <li class="summary-item summary-done"><span class="num">{{.Recent24h.DoneCount}}</span><span class="label">done</span></li>
+      <li class="summary-item summary-failed"><span class="num">{{.Recent24h.FailedCount}}</span><span class="label">failed</span></li>
+      <li class="summary-item summary-skipped"><span class="num">{{.Recent24h.SkippedCount}}</span><span class="label">skipped</span></li>
+    </ul>
+    {{if .Recent24h.BySource}}
+      <table class="breakdown">
+        <thead>
+          <tr><th scope="col">Source</th><th scope="col">done</th><th scope="col">failed</th><th scope="col">skipped</th></tr>
+        </thead>
+        <tbody>
+          {{range .Recent24h.BySource}}
+            <tr><th scope="row">{{.Source}}</th><td>{{.Done}}</td><td>{{.Failed}}</td><td>{{.Skipped}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    {{else}}
+      <p class="hint">No completed / failed / skipped transitions in the last 24 hours.</p>
+    {{end}}
+  </section>
+
+  <section class="panel" aria-labelledby="sources-heading">
+    <header class="panel-head">
+      <h2 id="sources-heading">Sources</h2>
+      <span class="count">{{len .Sources}} configured</span>
+    </header>
+    {{if .Sources}}
+      <table class="sources">
+        <thead>
+          <tr><th scope="col">Source</th><th scope="col">Auth</th><th scope="col">Last discovery</th></tr>
+        </thead>
+        <tbody>
+          {{range .Sources}}
+            <tr>
+              <th scope="row">{{.Name}}</th>
+              <td><span class="badge badge-{{.AuthBadge}}">{{.AuthStatus}}</span></td>
+              <td>
+                {{if .LastListedAt}}
+                  <span title="{{.LastListedAt}}">{{.LastListedRel}}</span>
+                {{else}}
+                  <span class="hint">never</span>
+                {{end}}
+              </td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    {{else}}
+      <p class="hint">No sources registered.</p>
+    {{end}}
+  </section>
+</div>
