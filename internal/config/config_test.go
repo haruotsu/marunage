@@ -44,6 +44,15 @@ func TestDefaultConfig(t *testing.T) {
 	if !c.Journal.Enabled {
 		t.Errorf("Journal.Enabled = false; want true")
 	}
+	if c.Web.Bind != "127.0.0.1" {
+		t.Errorf("Web.Bind = %q; want %q (localhost-bind default per requirement.md 320)", c.Web.Bind, "127.0.0.1")
+	}
+	if c.Web.Port != 7777 {
+		t.Errorf("Web.Port = %d; want 7777", c.Web.Port)
+	}
+	if c.Web.Remote {
+		t.Errorf("Web.Remote = true; want false (external publish must be opt-in)")
+	}
 
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Default().Validate() = %v; want nil", err)
@@ -140,6 +149,21 @@ func TestValidate(t *testing.T) {
 			name:    "reflection.sample_rate clamped to [0,1] (below)",
 			mutate:  func(c *Config) { c.Reflection.SampleRate = -0.1 },
 			wantErr: "reflection.sample_rate",
+		},
+		{
+			name:    "web.bind must be non-empty",
+			mutate:  func(c *Config) { c.Web.Bind = "" },
+			wantErr: "web.bind",
+		},
+		{
+			name:    "web.port must be in [1, 65535]",
+			mutate:  func(c *Config) { c.Web.Port = 0 },
+			wantErr: "web.port",
+		},
+		{
+			name:    "web.port rejects above 65535",
+			mutate:  func(c *Config) { c.Web.Port = 70000 },
+			wantErr: "web.port",
 		},
 	}
 
