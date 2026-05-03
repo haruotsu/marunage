@@ -559,18 +559,16 @@ func TestInstall_RejectsSymlinkedTriageOnRead(t *testing.T) {
 	}
 }
 
-// TestInstall_AtomicWrite_NoPartialFileOnFailure pins the tmp+rename
-// invariant: if a write fails midway, the previous on-disk SKILL.md
-// (or "no file at all") must remain — never a half-written file.
-func TestInstall_AtomicWrite_NoPartialFileOnFailure(t *testing.T) {
+// TestInstall_NoTmpLeftoverOnSuccess pins the tidiness half of the
+// tmp+rename pattern: a successful install must not leave `.tmp`
+// siblings in the skill directory (they would leak 0600 scratch files
+// the user has no way to associate with marunage).
+func TestInstall_NoTmpLeftoverOnSuccess(t *testing.T) {
 	target := filepath.Join(t.TempDir(), ".claude", "skills")
 	if _, err := Install(InstallOptions{Target: target, Source: EmbeddedFS()}); err != nil {
 		t.Fatalf("seed Install: %v", err)
 	}
 
-	// After a successful install, no `.tmp` siblings should remain in
-	// any skill directory. This pins both atomicity (rename succeeded)
-	// and tidiness (no leftover scratch files leaking permissions).
 	entries, err := os.ReadDir(filepath.Join(target, "marunage-triage"))
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
@@ -578,6 +576,74 @@ func TestInstall_AtomicWrite_NoPartialFileOnFailure(t *testing.T) {
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".tmp") {
 			t.Errorf("leftover tmp file: %s", e.Name())
+		}
+	}
+}
+
+// TestInstall_AtomicWrite_PreservesPreviousOnWriteFailure pins the
+// atomic invariant under real failure injection: if writeSkill cannot
+// place the new SKILL.md (here we drop the parent dir to 0500 so
+// CreateTemp returns EACCES), the previously-installed SKILL.md must
+// remain byte-identical and no `.tmp` scratch file may be left behind.
+//
+// The previous test (now NoTmpLeftoverOnSuccess) only verified the
+// happy path's tidiness; it could not detect a regression where a
+// failed mid-write left a half-written or zero-byte file.
+func TestInstall_AtomicWrite_PreservesPreviousOnWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix permissions not enforced on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses 0500 directory writes; cannot inject failure")
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+	// Seed a successful install so we have a "previous" SKILL.md.
+	if _, err := Install(InstallOptions{Target: target, Source: EmbeddedFS()}); err != nil {
+		t.Fatalf("seed Install: %v", err)
+	}
+	triageDir := filepath.Join(target, "marunage-triage")
+	skillPath := filepath.Join(triageDir, "SKILL.md")
+
+	// Replace the on-disk body with a structurally valid but
+	// content-different SKILL.md so --force will actually want to
+	// write (otherwise bytes.Equal short-circuits to Skip).
+	prev := []byte("<!-- version: 0.1.0 -->\n# previous on-disk\n\n## 判定ロジック\nold\n\n## 出力フォーマット\nold\n")
+	if err := os.WriteFile(skillPath, prev, 0o600); err != nil {
+		t.Fatalf("seed prev: %v", err)
+	}
+
+	// Inject a write failure: drop the skill dir to 0500 so
+	// os.CreateTemp inside it returns EACCES.
+	if err := os.Chmod(triageDir, 0o500); err != nil {
+		t.Fatalf("chmod 0500: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(triageDir, 0o700) })
+
+	_, err := Install(InstallOptions{Target: target, Source: EmbeddedFS(), Force: true})
+	if err == nil {
+		t.Fatalf("Install --force into 0500 dir exit=nil; want failure")
+	}
+
+	// Restore so we can read.
+	if err := os.Chmod(triageDir, 0o700); err != nil {
+		t.Fatalf("restore chmod: %v", err)
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read after failed install: %v", err)
+	}
+	if !bytes.Equal(got, prev) {
+		t.Errorf("previous SKILL.md was mutated by a failed write\nbefore=%q\nafter =%q", prev, got)
+	}
+
+	// And no .tmp scratch file may remain.
+	entries, err := os.ReadDir(triageDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("failed write left a tmp scratch file: %s", e.Name())
 		}
 	}
 }

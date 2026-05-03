@@ -1,3 +1,7 @@
+---
+name: marunage-triage
+description: Discoveryで拾った生メッセージから、marunageが回すべきタスクをOrient判定で選別する司令系統
+---
 <!-- version: 0.1.0 -->
 # marunage-triage
 
