@@ -259,6 +259,25 @@ func (w *Watcher) Tick(ctx context.Context) error {
 func (w *Watcher) checkOne(ctx context.Context, task store.Task) {
 	dir := w.dirs.Dir(task.ID)
 
+	// Defence-in-depth: O_NOFOLLOW only protects the FINAL path
+	// component. If <dir> itself is a symlink (Claude does
+	// `rm -rf <dir> && ln -s /etc <dir>` mid-task), the kernel
+	// resolves <dir>/.exit_code through the symlink and we'd read
+	// /etc/.exit_code. Lstat the dir first and refuse to descend
+	// when it is not a real directory.
+	if info, err := os.Lstat(dir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			w.markFailed(ctx, task.ID,
+				fmt.Sprintf("completion: workspace dir rejected (refused to follow symlink at %s)", filepath.Base(dir)))
+			return
+		}
+		if !info.IsDir() {
+			w.markFailed(ctx, task.ID,
+				fmt.Sprintf("completion: workspace dir rejected (not a directory at %s)", filepath.Base(dir)))
+			return
+		}
+	}
+
 	data, err := readBoundedNoFollow(filepath.Join(dir, sentinelFile), maxSentinelBytes)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

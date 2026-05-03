@@ -389,6 +389,13 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		// row sharing the same resolved key is not blocked indefinitely
 		// (AcquireLock treats pending rows as holders, so without this
 		// release the failed row keeps the key while sitting in pending).
+		//
+		// Audit on failure: same reasoning as the MkdirAll branch above
+		// — invariant #2 "No silent execution" demands a trail even when
+		// the row stays pending. Without this, a missing cmux binary or
+		// transient cmux outage would loop forever invisibly.
+		d.recordAuditFail(task.ID,
+			fmt.Sprintf("dispatch: NewWorkspace failed: %v", err))
 		if lockKey != "" {
 			_ = d.store.ReleaseLock(ctx, task.ID)
 		}

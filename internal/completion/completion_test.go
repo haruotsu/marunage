@@ -442,6 +442,54 @@ func TestTickIgnoresMissingWorkspaceDir(t *testing.T) {
 	}
 }
 
+// W19 (security, defence-in-depth): O_NOFOLLOW only protects the
+// final path component. If the per-task workspace dir <dir> ITSELF is
+// a symlink (Claude does `rm -rf <dir> && ln -s /etc <dir>` mid-task),
+// the kernel happily resolves <dir>/.exit_code to /etc/.exit_code.
+// Reject the row when <dir> is not a real directory; do not read.
+func TestTickRejectsWhenWorkspaceDirIsSymlink(t *testing.T) {
+	f := newFixture(t)
+	id := f.insertRunning("dir symlink attack")
+	dir := f.dirs.Dir(id)
+
+	// Plant a real directory containing fake "secret" files OUTSIDE
+	// the workspace tree, then make <dir> a symlink to it.
+	hostile := filepath.Join(t.TempDir(), "hostile")
+	if err := os.MkdirAll(hostile, 0o700); err != nil {
+		t.Fatalf("MkdirAll hostile: %v", err)
+	}
+	const secret = "AWS_KEY=do-not-leak-via-dir-symlink"
+	if err := os.WriteFile(filepath.Join(hostile, ".exit_code"), []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile hostile sentinel: %v", err)
+	}
+	// Ensure parent of <dir> exists.
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatalf("MkdirAll parent: %v", err)
+	}
+	if err := os.Symlink(hostile, dir); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (symlinked workspace dir must mark row failed)", row.Status, store.StatusFailed)
+	}
+	if strings.Contains(row.JudgmentReason, secret) || strings.Contains(row.JudgmentReason, "AWS_KEY") {
+		t.Errorf("judgment_reason leaks symlink-target sentinel contents: %q", row.JudgmentReason)
+	}
+	for _, ev := range f.au.Events() {
+		if strings.Contains(ev.Value, secret) || strings.Contains(ev.Value, "AWS_KEY") {
+			t.Errorf("audit leaks symlink-target sentinel contents: %+v", ev)
+		}
+	}
+}
+
 // W18 (audit-correctness): when MarkDoneWithSummary fails mid-tick the
 // row stays running (next tick retries). The audit entry must NOT be
 // labelled `completion.fail` — that label is reserved for "row actually
