@@ -64,6 +64,26 @@ func TestServer_RunListensAndShutsDown(t *testing.T) {
 	}
 }
 
+// TestServer_HardensConnectionTimeouts pins the slow-loris defences
+// so a future refactor cannot silently drop them.  ReadHeaderTimeout
+// caps how long a slow request line can starve a worker;
+// ReadTimeout bounds the body read on POSTs once they ship; and
+// IdleTimeout caps how long a kept-alive connection can sit
+// connection-idle.  WriteTimeout is intentionally NOT enforced
+// because /events SSE writes for the connection lifetime.
+func TestServer_HardensConnectionTimeouts(t *testing.T) {
+	got := serverHTTPSettingsForTest()
+	if got.ReadHeaderTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout = %v; want > 0", got.ReadHeaderTimeout)
+	}
+	if got.ReadTimeout <= 0 {
+		t.Errorf("ReadTimeout = %v; want > 0 (slow-loris on POST body)", got.ReadTimeout)
+	}
+	if got.IdleTimeout <= 0 {
+		t.Errorf("IdleTimeout = %v; want > 0 (idle keep-alive lingering)", got.IdleTimeout)
+	}
+}
+
 func waitForReady(t *testing.T, url string, timeout time.Duration) error {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

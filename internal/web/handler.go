@@ -106,6 +106,8 @@ func securityHeaders(next http.Handler) http.Handler {
 				"style-src 'self'; "+
 				"script-src 'self'; "+
 				"connect-src 'self'; "+
+				"object-src 'none'; "+
+				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'none'")
 		next.ServeHTTP(w, r)

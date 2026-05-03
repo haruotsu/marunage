@@ -76,6 +76,36 @@ func TestHub_NoGoroutineLeakAfterUnsubscribe(t *testing.T) {
 	}
 }
 
+// TestHub_RejectsSubscribersAboveCap pins the soft-DoS guard: when
+// the hub already holds MaxSubscribers connections, further Subscribe
+// calls return nil so the SSE handler can refuse the connection with
+// 503 instead of allocating an unbounded number of buffered channels
+// + goroutines.  --remote mode without auth makes this otherwise
+// trivially exploitable.
+func TestHub_RejectsSubscribersAboveCap(t *testing.T) {
+	hub := NewHubWithCap(2)
+
+	a := hub.Subscribe()
+	b := hub.Subscribe()
+	overflow := hub.Subscribe()
+
+	if a == nil || b == nil {
+		t.Fatalf("Subscribe returned nil for the first %d subscribers; cap=2", 2)
+	}
+	if overflow != nil {
+		t.Fatalf("Subscribe past cap returned a subscription; want nil so handlers can 503")
+	}
+
+	// After unsubscribing, capacity must reopen.
+	hub.Unsubscribe(a)
+	again := hub.Subscribe()
+	if again == nil {
+		t.Fatalf("Subscribe after Unsubscribe returned nil; cap should reopen")
+	}
+	hub.Unsubscribe(b)
+	hub.Unsubscribe(again)
+}
+
 // TestSSEHandler_HeartbeatPing pins the wire-level contract: a
 // connection must receive `event: ping` within the configured
 // heartbeat interval.  The brief calls for 30 s in production but we

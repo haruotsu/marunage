@@ -15,6 +15,16 @@ import (
 // integrate cleanly with the daemon supervisor's SIGTERM behaviour.
 const shutdownGracePeriod = 5 * time.Second
 
+// HTTP timeout defaults harden the server against slow-loris and
+// idle keep-alive hoarding.  WriteTimeout is intentionally absent —
+// /events SSE writes for the connection lifetime, so a non-zero
+// WriteTimeout would trip the heartbeat loop.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 30 * time.Second
+	idleTimeout       = 120 * time.Second
+)
+
 // Options configures NewServer.  Zero-valued fields fall back to
 // production defaults: real CSRF entropy, 30s SSE heartbeat, no
 // /test-post route, and no access logging.
@@ -108,7 +118,9 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	httpSrv := &http.Server{
 		Handler:           s.Routes(),
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	serveErr := make(chan error, 1)
@@ -136,13 +148,20 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	return nil
 }
 
-// ListenAndServe is the convenience wrapper the CLI uses: bind addr
-// and hand control to Serve.  Splitting the listen step out of Serve
-// itself lets the test suite use port 0 + the chosen listener.
-func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("web: listen %s: %w", addr, err)
+// httpServerSettings is the snapshot the timeout regression test
+// inspects.  Keeping it as a separate small struct (rather than
+// exporting fields on *http.Server) avoids leaking the full server
+// surface to tests.
+type httpServerSettings struct {
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	IdleTimeout       time.Duration
+}
+
+func serverHTTPSettingsForTest() httpServerSettings {
+	return httpServerSettings{
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
 	}
-	return s.Serve(ctx, listener)
 }
