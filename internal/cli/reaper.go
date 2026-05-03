@@ -131,7 +131,10 @@ func newReaperCmd(configPath *string) *cobra.Command {
 			"  - status=running rows whose started_at is older than\n" +
 			"    execution.reaper_stuck_threshold (default 24h) get a\n" +
 			"    '[reaper] stuck running over <threshold>' note appended to\n" +
-			"    judgment_reason and an audit warn — status is left for human judgement.",
+			"    judgment_reason and an audit warn — status is left for human judgement.\n" +
+			"\n" +
+			"Note: `marunage clean` is a separate, narrower utility that only nulls\n" +
+			"the ws column of orphan rows without touching status (see PR-22).",
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

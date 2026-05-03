@@ -246,13 +246,19 @@ func (r *Reaper) markDisappeared(ctx context.Context, row store.Task) {
 		"task_id", row.ID, "ws", row.WS, "err", err)
 }
 
-// hasReaperWarnToken returns true iff one of the "; "-joined segments
-// of judgmentReason equals warnToken exactly. This is the strict form
-// of strings.Contains used by the idempotency check — segment-level
-// match avoids the "operator quoted the warn literal in prose"
-// false-positive that would otherwise mute the next genuine warn.
+// hasReaperWarnToken returns true iff one of the segments of
+// judgmentReason (split by store.JudgmentReasonSeparator) equals
+// warnToken exactly. This is the strict form of strings.Contains used
+// by the idempotency check — segment-level match avoids the "operator
+// quoted the warn literal in prose" false-positive that would otherwise
+// mute the next genuine warn.
+//
+// Reads from store.JudgmentReasonSeparator so the dispatcher's append
+// concat (PR-42 markFailed) and the store's SQL CASE expression
+// (AppendJudgmentReason / MarkFailedFromRunningWithReason) cannot
+// drift apart from this split key.
 func hasReaperWarnToken(judgmentReason, warnToken string) bool {
-	for _, seg := range strings.Split(judgmentReason, "; ") {
+	for _, seg := range strings.Split(judgmentReason, store.JudgmentReasonSeparator) {
 		if seg == warnToken {
 			return true
 		}
