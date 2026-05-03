@@ -10,10 +10,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -747,8 +749,17 @@ func TestRunNoRunningWithoutStartedAtOnSetStartedAtFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
+	// Two assertions to keep this from passing vacuously: (a) the
+	// invariant itself, and (b) that the failure injection actually
+	// fired by checking the row did NOT reach running.
 	if row.Status == store.StatusRunning && row.StartedAt.IsZero() {
 		t.Errorf("invariant violated: row is running with started_at IS NULL — reaper cannot detect this stuck row")
+	}
+	if row.Status == store.StatusRunning {
+		t.Errorf("row reached running despite SetStartedAt failure: SetStartedAt must precede UpdateStatus(running) so the failure leaves the row pending and retryable")
+	}
+	if !wrapped.failedOnce {
+		t.Errorf("SetStartedAt failure injection never fired; the test was vacuous")
 	}
 }
 
@@ -911,23 +922,8 @@ func TestRunMarksFailedOnSendError(t *testing.T) {
 	}
 }
 
-// F-series: PR-43 wires the workspace-dir provider through the
-// dispatcher so the prompt can embed the sentinel-write path AND the
-// per-task control directory exists on disk before Claude starts. The
-// same provider must be shared with the completion watcher (otherwise
-// the dispatcher and watcher disagree on the path and the sentinel is
-// never detected).
-//
-//   F1. WithWorkspaceDirs makes the dispatcher mkdir the per-task dir
-//       BEFORE NewWorkspace, then pass the dir into BuildPrompt so the
-//       sentinel section appears in the Send payload.
-//   F2. Mkdir failure leaves the row pending (retryable next round) —
-//       same semantics as NewWorkspace failure.
-//   F3. No WithWorkspaceDirs keeps PR-42's wire format intact: no mkdir,
-//       no sentinel section in the prompt.
+// F-series (PR-43): WithWorkspaceDirs wires the per-task control dir.
 
-// fakeDirs records the paths the dispatcher requested so F1 can assert
-// (a) the dir was created and (b) the prompt embeds the same path.
 type fakeDirs struct {
 	root string
 }
@@ -971,13 +967,9 @@ func TestRunCreatesWorkspaceDirAndEmbedsSentinelPath(t *testing.T) {
 	}
 }
 
-// F2: mkdir failure leaves the row pending. Inject a provider whose
-// Dir() returns a path under a directory we have created as a regular
-// file (so MkdirAll fails with ENOTDIR-style error).
+// F2: mkdir failure leaves the row pending.
 func TestRunLeavesRowPendingWhenWorkspaceMkdirFails(t *testing.T) {
 	root := t.TempDir()
-	// Create a regular file at <root>/blocker so mkdir <root>/blocker/<id>
-	// fails reliably across platforms.
 	blocker := filepath.Join(root, "blocker")
 	if err := os.WriteFile(blocker, []byte("not a dir"), 0o600); err != nil {
 		t.Fatalf("WriteFile blocker: %v", err)
@@ -1006,12 +998,7 @@ func TestRunLeavesRowPendingWhenWorkspaceMkdirFails(t *testing.T) {
 	}
 }
 
-// D1c (audit-correctness): NewWorkspace failure must leave a trace in
-// audit.log for the same reason as F2b — a wedged row that retries
-// every Run with no audit visibility breaks invariant #2 "No silent
-// execution". F2b fixed mkdir; this pins the symmetric guarantee for
-// the cmux NewWorkspace path so a missing or broken cmux binary is
-// observable from the queue side.
+// D1c (PR-43): NewWorkspace failure leaves a trace in audit.log.
 func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
 	au := &fakeAuditor{}
 	f := newDispatchFixture(t, dispatch.WithAuditor(au))
@@ -1029,7 +1016,6 @@ func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Row stays pending (D1 contract preserved).
 	row, err := f.repo.Get(f.ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -1054,11 +1040,33 @@ func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
 	}
 }
 
-// F2b (audit-correctness): when MkdirAll fails the row stays pending
-// (F2's existing contract), but the failure must still leave a trace
-// in audit.log — otherwise a mis-permissioned ~/.marunage/workspaces
-// silently retries forever with no visibility, violating invariant #2
-// "No silent execution".
+// J5 (PR-42b): NewWorkspace failure after ClaimWorkspace must clear the
+// __dispatching__ sentinel so the row is retryable.
+func TestRunClearsSentinelOnNewWorkspaceFailureAfterClaim(t *testing.T) {
+	f := newDispatchFixture(t)
+	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+		return cmux.Workspace{}, errors.New("cmux exploded")
+	}
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "sentinel cleanup", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusPending {
+		t.Errorf("status = %q; want still %q", row.Status, store.StatusPending)
+	}
+}
+
+// F2b (PR-43): when MkdirAll fails the row stays pending and the
+// failure leaves a trace in audit.log.
 func TestRunRecordsAuditOnWorkspaceMkdirFailure(t *testing.T) {
 	root := t.TempDir()
 	blocker := filepath.Join(root, "blocker")
@@ -1081,8 +1089,6 @@ func TestRunRecordsAuditOnWorkspaceMkdirFailure(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-
-	// Row stays pending (F2 contract preserved).
 	row, err := f.repo.Get(f.ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -1090,8 +1096,6 @@ func TestRunRecordsAuditOnWorkspaceMkdirFailure(t *testing.T) {
 	if row.Status != store.StatusPending {
 		t.Errorf("status = %q; want still %q (F2 contract)", row.Status, store.StatusPending)
 	}
-
-	// But the failure is now observable in audit.log.
 	var found *config.AuditEvent
 	for i, ev := range au.Events() {
 		if ev.Action == "dispatch.fail" && strings.Contains(ev.Value, "mkdir") {
@@ -1108,9 +1112,489 @@ func TestRunRecordsAuditOnWorkspaceMkdirFailure(t *testing.T) {
 	}
 }
 
-// F3: no WithWorkspaceDirs keeps PR-42 wire format intact.
+// J1/J2: two Dispatchers sharing one store + cmux must not double-claim
+// a row. Without an atomic claim step, both dispatchers can pick the
+// same pending row, both NewWorkspace, both SetWorkspace — leaving an
+// orphan cmux workspace and corrupted ws references. The test pins the
+// safety property that PR-42b promises ("(source, external_id) UNIQUE
+// と lock_key で safety が保たれる"): every pending row is dispatched
+// AT MOST ONCE under -race.
+func TestRunConcurrentDispatchersDoNotDoubleClaim(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
+
+	// Shared cmux client. NewWorkspace returns a unique ws ID per call so
+	// duplicate dispatches are observable as duplicate IDs in the cmux
+	// call log.
+	fcm := &fakeCmux{}
+
+	const N = 10
+	var ids []int64
+	for i := 0; i < N; i++ {
+		id, err := repo.Insert(context.Background(), store.Task{
+			Source: "manual", Title: fmt.Sprintf("t%d", i), CWD: "/tmp",
+		})
+		if err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	newDisp := func() *dispatch.Dispatcher {
+		d, err := dispatch.New(
+			dispatch.WithStore(repo),
+			dispatch.WithCmux(fcm),
+			dispatch.WithClock(func() time.Time { return now }),
+			dispatch.WithBaseSkill("BASE"),
+			dispatch.WithClaudeCommand("claude"),
+		)
+		if err != nil {
+			t.Fatalf("dispatch.New: %v", err)
+		}
+		return d
+	}
+	dA, dB := newDisp(), newDisp()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = dA.Run(context.Background(), dispatch.RunOptions{MaxParallel: N})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = dB.Run(context.Background(), dispatch.RunOptions{MaxParallel: N})
+	}()
+	wg.Wait()
+
+	// Every NewWorkspace call must correspond to a distinct task — there
+	// must be no row dispatched twice.
+	if got := len(fcm.newWorkspaceCalls); got != N {
+		t.Errorf("NewWorkspace calls = %d; want %d (each row dispatched exactly once)", got, N)
+	}
+	seenName := make(map[string]int)
+	for _, c := range fcm.newWorkspaceCalls {
+		seenName[c.Name]++
+	}
+	for name, n := range seenName {
+		if n > 1 {
+			t.Errorf("workspace name %q dispatched %d times; want 1 (double-claim)", name, n)
+		}
+	}
+
+	// Every row must end in running with a non-empty ws.
+	for _, id := range ids {
+		row, err := repo.Get(context.Background(), id)
+		if err != nil {
+			t.Fatalf("Get %d: %v", id, err)
+		}
+		if row.Status != store.StatusRunning {
+			t.Errorf("row %d status = %q; want running", id, row.Status)
+		}
+		if row.WS == "" {
+			t.Errorf("row %d ws is empty after dispatch", id)
+		}
+	}
+}
+
+// I1-I8: permission.Matcher + on_unknown_permission policy.
+//
+// HandlePermissionRequest is the dispatcher-side handler for Claude
+// tool-permission prompts (the cmux/MCP layer that actually intercepts
+// the prompt is out of scope for PR-42b — see docs/pr_split_plan.md
+// PR-42 "スコープ非該当"). What this PR pins is the WIRING: the
+// matcher decides allow / deny; on deny the configured policy runs
+// (escalate -> EscalateToHuman + dispatch.escalate audit; fail ->
+// MarkFailedWithReason + dispatch.fail audit; retry -> defer to caller).
+
+func newPermissionFixture(t *testing.T, policy string, autoAccept []string) (dispatchFixture, int64) {
+	t.Helper()
+	m, err := permission.New(autoAccept)
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission(policy),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "perm test", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	// Move row into running so EscalateToHuman is allowed (it gates on
+	// status IN ('running', 'waiting_human')).
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+	f.cmux = nil // unused in these tests; HandlePermissionRequest is direct.
+	_ = au
+	return f, id
+}
+
+// I1: matcher allow -> PermissionAllow, no row mutation.
+func TestHandlePermissionRequestAllowsWhenMatched(t *testing.T) {
+	f, id := newPermissionFixture(t, "escalate", []string{"Read", "Bash(git status:*)"})
+	d, err := f.disp.HandlePermissionRequest(f.ctx, id, "Read", "/tmp/x")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if d != dispatch.PermissionAllow {
+		t.Errorf("decision = %v; want PermissionAllow", d)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want running (allow must not mutate)", row.Status)
+	}
+}
+
+// I2: matcher deny + escalate policy -> waiting_human + dispatch.escalate.
+func TestHandlePermissionRequestEscalatesOnDeny(t *testing.T) {
+	au := &fakeAuditor{}
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("escalate"),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "escalate me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "Bash", "rm -rf /")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionEscalate {
+		t.Errorf("decision = %v; want PermissionEscalate", dec)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusWaitingHuman {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusWaitingHuman)
+	}
+	for _, want := range []string{"Bash", "rm -rf"} {
+		if !strings.Contains(row.JudgmentReason, want) {
+			t.Errorf("judgment_reason = %q; want it to mention %q", row.JudgmentReason, want)
+		}
+	}
+	var sawEscalate bool
+	for _, e := range au.Events() {
+		if e.Action == "dispatch.escalate" {
+			sawEscalate = true
+			if !strings.Contains(e.Key, fmt.Sprintf("%d", id)) {
+				t.Errorf("escalate audit Key = %q; want it to mention id %d", e.Key, id)
+			}
+			if !strings.Contains(e.Value, "Bash") {
+				t.Errorf("escalate audit Value = %q; want it to mention denied tool", e.Value)
+			}
+		}
+	}
+	if !sawEscalate {
+		t.Errorf("no dispatch.escalate audit event recorded; got %+v", au.Events())
+	}
+}
+
+// I3: matcher deny + fail policy -> failed + dispatch.fail.
+func TestHandlePermissionRequestFailsOnDeny(t *testing.T) {
+	au := &fakeAuditor{}
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("fail"),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "fail me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "WebFetch", "https://example.com")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionFail {
+		t.Errorf("decision = %v; want PermissionFail", dec)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusFailed)
+	}
+}
+
+// I4: matcher deny + retry policy -> PermissionAsk, no mutation.
+func TestHandlePermissionRequestAsksOnRetryPolicy(t *testing.T) {
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("retry"),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "ask me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "Edit", "/tmp/x")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionAsk {
+		t.Errorf("decision = %v; want PermissionAsk", dec)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (retry policy must not mutate)", row.Status, store.StatusRunning)
+	}
+}
+
+// I5: no matcher configured -> PermissionAsk (safe default; never silently allow).
+func TestHandlePermissionRequestNoMatcherAsks(t *testing.T) {
+	f := newDispatchFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "no matcher", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+	dec, err := f.disp.HandlePermissionRequest(f.ctx, id, "Bash", "anything")
+	if err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+	if dec != dispatch.PermissionAsk {
+		t.Errorf("decision = %v; want PermissionAsk (safe default)", dec)
+	}
+}
+
+// I7b: a non-bypass permission_mode (default / acceptEdits / plan /
+// custom) implies Claude will issue permission prompts at runtime. If
+// the dispatcher has no PermissionMatcher wired, those prompts will
+// either hang forever or be silently denied — both observable to the
+// user as "the dispatched session does nothing". Failing loud at New
+// time is the only way to surface the misconfiguration before the
+// dispatcher starts producing zombie workspaces.
+func TestNewRequiresMatcherWhenPermissionModeNotBypass(t *testing.T) {
+	cases := []string{"default", "acceptEdits", "plan", "custom"}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			_, err := dispatch.New(
+				dispatch.WithStore(stubStore{}),
+				dispatch.WithCmux(&fakeCmux{}),
+				dispatch.WithBaseSkill("BASE"),
+				dispatch.WithClaudeCommand("claude"),
+				dispatch.WithPermissionMode(mode),
+				// Intentionally no WithPermissionMatcher.
+			)
+			if err == nil {
+				t.Fatalf("New(WithPermissionMode(%q)) without matcher = nil; want error", mode)
+			}
+			if !errors.Is(err, dispatch.ErrInvalidConfig) {
+				t.Errorf("err = %v; want errors.Is(err, ErrInvalidConfig)", err)
+			}
+		})
+	}
+}
+
+// I7c: bypass mode does NOT require a matcher (the claude --dangerously
+// -skip-permissions binary never asks). Construction must succeed.
+func TestNewBypassModeDoesNotRequireMatcher(t *testing.T) {
+	_, err := dispatch.New(
+		dispatch.WithStore(stubStore{}),
+		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude --dangerously-skip-permissions"),
+		dispatch.WithPermissionMode("bypass"),
+	)
+	if err != nil {
+		t.Fatalf("New(WithPermissionMode(\"bypass\")) without matcher = %v; want nil", err)
+	}
+}
+
+// I7d: empty permission_mode (caller did not pass WithPermissionMode)
+// preserves the existing pre-PR-42b construction surface — no matcher
+// requirement. Otherwise every existing dispatcher test in this file
+// would have to learn about the new option.
+func TestNewEmptyPermissionModeDoesNotRequireMatcher(t *testing.T) {
+	_, err := dispatch.New(
+		dispatch.WithStore(stubStore{}),
+		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude"),
+	)
+	if err != nil {
+		t.Fatalf("New() with no permission_mode = %v; want nil (back-compat)", err)
+	}
+}
+
+// I7: an unknown on_unknown_permission value rejects construction.
+func TestNewRejectsUnknownPermissionPolicy(t *testing.T) {
+	_, err := dispatch.New(
+		dispatch.WithStore(stubStore{}),
+		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithBaseSkill("BASE"),
+		dispatch.WithClaudeCommand("claude"),
+		dispatch.WithOnUnknownPermission("nonsense"),
+	)
+	if err == nil {
+		t.Fatal("New with unknown on_unknown_permission = nil; want error")
+	}
+	if !errors.Is(err, dispatch.ErrInvalidConfig) {
+		t.Errorf("err = %v; want errors.Is(err, ErrInvalidConfig)", err)
+	}
+}
+
+// I8: the reason written into audit.log / judgment_reason on escalate
+// is sanitised by Redact, in case the tool args themselves carried a
+// secret (e.g. a Bash invocation that includes a curl with a Bearer
+// header).
+func TestHandlePermissionRequestRedactsReason(t *testing.T) {
+	au := &fakeAuditor{}
+	m, err := permission.New([]string{"Read"})
+	if err != nil {
+		t.Fatalf("permission.New: %v", err)
+	}
+	f := newDispatchFixture(t,
+		dispatch.WithPermissionMatcher(m),
+		dispatch.WithOnUnknownPermission("escalate"),
+		dispatch.WithAuditor(au),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "secret in args", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus(running): %v", err)
+	}
+	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+	args := "curl -H 'Authorization: Bearer " + leaked + "' https://api"
+
+	if _, err := f.disp.HandlePermissionRequest(f.ctx, id, "Bash", args); err != nil {
+		t.Fatalf("HandlePermissionRequest: %v", err)
+	}
+
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(row.JudgmentReason, leaked) {
+		t.Errorf("escalate reason leaked secret %q in:\n%s", leaked, row.JudgmentReason)
+	}
+	for _, e := range au.Events() {
+		if e.Action == "dispatch.escalate" && strings.Contains(e.Value, leaked) {
+			t.Errorf("escalate audit Value leaked secret %q: %q", leaked, e.Value)
+		}
+	}
+}
+
+// stubStore is a minimal Store impl that satisfies the interface for
+// construction-only tests (none of its methods are called).
+type stubStore struct{}
+
+func (stubStore) List(context.Context, store.ListFilter) ([]store.Task, error) {
+	return nil, nil
+}
+func (stubStore) Get(context.Context, int64) (store.Task, error)   { return store.Task{}, nil }
+func (stubStore) AcquireLock(context.Context, int64, string) error { return nil }
+func (stubStore) ReleaseLock(context.Context, int64) error         { return nil }
+func (stubStore) ClaimWorkspace(context.Context, int64, string) (bool, error) {
+	return true, nil
+}
+func (stubStore) SetWorkspace(context.Context, int64, string) error         { return nil }
+func (stubStore) UpdateStatus(context.Context, int64, string) error         { return nil }
+func (stubStore) SetStartedAt(context.Context, int64, time.Time) error      { return nil }
+func (stubStore) MarkFailedWithReason(context.Context, int64, string) error { return nil }
+func (stubStore) EscalateToHuman(context.Context, int64, string) error      { return nil }
+
+// H6 (PR-42b): redact dispatch failure reason before persisting.
+func TestRunRedactsSecretsInFailureReason(t *testing.T) {
+	au := &fakeAuditor{}
+	f := newDispatchFixture(t, dispatch.WithAuditor(au))
+	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return fmt.Errorf("cmux send: 401 unauthorized; Authorization: Bearer %s", leaked)
+	}
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "redact me", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(row.JudgmentReason, leaked) {
+		t.Errorf("judgment_reason leaked secret %q in:\n%s", leaked, row.JudgmentReason)
+	}
+	if !strings.Contains(row.JudgmentReason, "[REDACTED]") {
+		t.Errorf("judgment_reason missing [REDACTED] marker in:\n%s", row.JudgmentReason)
+	}
+	for _, e := range au.Events() {
+		if e.Action != "dispatch.fail" {
+			continue
+		}
+		if strings.Contains(e.Value, leaked) {
+			t.Errorf("dispatch.fail audit event leaked secret %q in Value=%q", leaked, e.Value)
+		}
+	}
+}
+
+// F3 (PR-43): no WithWorkspaceDirs keeps PR-42 wire format intact.
 func TestRunOmitsSentinelSectionWhenWorkspaceDirsUnset(t *testing.T) {
-	f := newDispatchFixture(t) // no WithWorkspaceDirs
+	f := newDispatchFixture(t)
 
 	if _, err := f.repo.Insert(f.ctx, store.Task{
 		Source: "manual", Title: "no sentinel", CWD: "/tmp",
@@ -1126,7 +1610,64 @@ func TestRunOmitsSentinelSectionWhenWorkspaceDirsUnset(t *testing.T) {
 	payload := f.cmux.sendCalls[0].Text
 	for _, banned := range []string{".exit_code", ".result_summary"} {
 		if strings.Contains(payload, banned) {
-			t.Errorf("Send payload unexpectedly contains %q (sentinel section should be off when WorkspaceDirs is unset):\n%s", banned, payload)
+			t.Errorf("Send payload unexpectedly contains %q:\n%s", banned, payload)
 		}
+	}
+}
+
+// PR-42b: workspaceName must trim by rune count, not byte count.
+func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
+	cases := []struct {
+		name    string
+		title   string
+		wantSub string
+	}{
+		{
+			name:    "japanese-overflow",
+			title:   strings.Repeat("あ", 50),
+			wantSub: strings.Repeat("あ", 40),
+		},
+		{
+			name:    "emoji-overflow",
+			title:   strings.Repeat("🍎", 50),
+			wantSub: strings.Repeat("🍎", 40),
+		},
+		{
+			name:    "ascii-overflow",
+			title:   strings.Repeat("a", 50),
+			wantSub: strings.Repeat("a", 40),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDispatchFixture(t)
+			id, err := f.repo.Insert(f.ctx, store.Task{
+				Source: "manual", Title: tc.title, CWD: "/tmp",
+			})
+			if err != nil {
+				t.Fatalf("Insert: %v", err)
+			}
+			if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if len(f.cmux.newWorkspaceCalls) != 1 {
+				t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+			}
+			got := f.cmux.newWorkspaceCalls[0].Name
+			if !utf8.ValidString(got) {
+				t.Errorf("workspace name %q is not valid UTF-8", got)
+			}
+			wantPrefix := fmt.Sprintf("#%d ", id)
+			if !strings.HasPrefix(got, wantPrefix) {
+				t.Errorf("name = %q; want prefix %q", got, wantPrefix)
+			}
+			if !strings.Contains(got, tc.wantSub) {
+				t.Errorf("name = %q; want %d-rune trimmed title %q", got, len([]rune(tc.wantSub)), tc.wantSub)
+			}
+			titlePart := strings.TrimPrefix(got, wantPrefix)
+			if got := len([]rune(titlePart)); got > 40 {
+				t.Errorf("title rune count = %d; want <= 40", got)
+			}
+		})
 	}
 }

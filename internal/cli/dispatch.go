@@ -13,6 +13,7 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -104,14 +105,18 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 	// (workspaces/<id>/) the PR-43 completion watcher polls.
 	//
 	// Pre-create the parent root with 0o700 so per-task subdirs inherit
-	// the tight permission. A pre-existing loose root would let a co-
-	// tenant snoop on per-task sentinel writes; explicit Chmod after
-	// MkdirAll closes the "MkdirAll respects existing modes" gap.
+	// the tight permission.
 	wsRoot := filepath.Join(filepath.Dir(dbPath), "workspaces")
 	if err := os.MkdirAll(wsRoot, 0o700); err == nil {
 		_ = os.Chmod(wsRoot, 0o700)
 	}
 	dirs := workspaceDirs{root: wsRoot}
+
+	matcher, err := permission.New(cfg.Execution.AutoAcceptTools)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("permission.New: %w", err)
+	}
 
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
@@ -122,6 +127,9 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
 		dispatch.WithAuditor(auditor),
 		dispatch.WithWorkspaceDirs(dirs),
+		dispatch.WithPermissionMatcher(matcher),
+		dispatch.WithOnUnknownPermission(cfg.Execution.OnUnknownPermission),
+		dispatch.WithPermissionMode(cfg.Execution.PermissionMode),
 	)
 	if err != nil {
 		_ = db.Close()
