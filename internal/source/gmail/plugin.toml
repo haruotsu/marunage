@@ -1,0 +1,12 @@
+[plugin]
+name = "gmail"
+version = "0.1.0"
+description = "Gmail unread-mail source (PR-80). Reads `is:unread to:me -label:auto-archived` and applies an auto-archive label on Complete."
+sync_mode = "bidirectional"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+    "since",
+    "complete",
+]

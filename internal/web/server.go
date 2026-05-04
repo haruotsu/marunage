@@ -55,6 +55,11 @@ type Options struct {
 	// in a real sqlDashboardStore-backed provider via the
 	// dashboard factory.
 	Dashboard DashboardProvider
+
+	// Skills wires the read-only PR-203 skill registry surface.
+	// The zero value disables /skills and /api/skills/* so PR-62's
+	// minimal index page keeps working.
+	Skills SkillsConfig
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -113,6 +118,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
 	mux.Handle("GET /events", NewSSEHandler(s.hub, SSEOptions{HeartbeatInterval: s.opts.HeartbeatInterval}))
 	mux.Handle("GET /static/", newStaticHandler())
+	mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
+	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
+	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
 
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())

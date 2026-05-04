@@ -294,3 +294,81 @@ func TestBuildPromptDoesNotEscapeTrustedSections(t *testing.T) {
 		}
 	}
 }
+
+// PR-72 T1: BuildPrompt with non-empty Triage emits the triage skill
+// section so the receiving Claude session loads the OODA Orient
+// guidance before deciding whether the row deserves a workspace.
+func TestBuildPromptIncludesTriageSectionWhenSet(t *testing.T) {
+	got := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base:           "BASE-SKILL",
+		SourceSpecific: "SOURCE-SKILL",
+		Triage:         "TRIAGE-SKILL",
+		Task: store.Task{
+			ID: 7, Source: "slack", Title: "Triage me", Body: "b",
+		},
+	})
+	if !strings.Contains(got, "TRIAGE-SKILL") {
+		t.Errorf("prompt missing triage section:\n%s", got)
+	}
+}
+
+// PR-72 T2: empty Triage keeps the PR-42 wire format intact (no
+// extra blank lines, no triage section). Existing callers that have
+// not opted in must observe identical output.
+func TestBuildPromptOmitsTriageSectionWhenEmpty(t *testing.T) {
+	with := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base: "BASE",
+		Task: store.Task{ID: 1, Source: "manual", Title: "t", Body: "b"},
+	})
+	withExplicitEmpty := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base:   "BASE",
+		Triage: "",
+		Task:   store.Task{ID: 1, Source: "manual", Title: "t", Body: "b"},
+	})
+	if with != withExplicitEmpty {
+		t.Errorf("explicit empty Triage altered the prompt; with:\n%s\nwithExplicitEmpty:\n%s", with, withExplicitEmpty)
+	}
+	if strings.Contains(with, "\n\n\n\n") {
+		t.Errorf("doubled blank-line separator around omitted triage section:\n%s", with)
+	}
+}
+
+// PR-72 T3: ordering — triage skill appears AFTER the source-specific
+// skill but BEFORE the task block so the Orient guidance is loaded
+// in time to reason about the task payload that follows.
+func TestBuildPromptOrdersTriageBetweenSourceAndTask(t *testing.T) {
+	got := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base:           "BASE-SKILL",
+		SourceSpecific: "SOURCE-SKILL",
+		Triage:         "TRIAGE-SKILL",
+		Task: store.Task{
+			ID: 9, Source: "slack", Title: "Order check", Body: "b",
+		},
+	})
+	srcAt := strings.Index(got, "SOURCE-SKILL")
+	triageAt := strings.Index(got, "TRIAGE-SKILL")
+	titleAt := strings.Index(got, "Order check")
+	if srcAt < 0 || triageAt < 0 || titleAt < 0 {
+		t.Fatalf("missing section in prompt:\n%s", got)
+	}
+	if srcAt >= triageAt || triageAt >= titleAt {
+		t.Errorf("section order wrong: src=%d triage=%d title=%d in:\n%s",
+			srcAt, triageAt, titleAt, got)
+	}
+}
+
+// PR-72 T4: Triage content originates from the embedded skill file
+// (trusted), so fence-escape must NOT rewrite literal "<<" runs.
+func TestBuildPromptDoesNotEscapeTriageSection(t *testing.T) {
+	const raw = "TRIAGE-CONTAINS-<<-RAW"
+	got := dispatch.BuildPrompt(dispatch.PromptInputs{
+		Base:   "BASE",
+		Triage: raw,
+		Task: store.Task{
+			ID: 1, Source: "manual", Title: "t", Body: "b",
+		},
+	})
+	if !strings.Contains(got, raw) {
+		t.Errorf("triage section was rewritten in:\n%s", got)
+	}
+}

@@ -36,6 +36,12 @@ type PromptInputs struct {
 	// Base and the task block so source-specific overrides can refine the
 	// base instructions.
 	SourceSpecific string
+	// Triage is the contents of skills/marunage-triage/SKILL.md, or empty
+	// when the dispatcher has not wired the triage skill (back-compat).
+	// PR-72 inserts it between SourceSpecific and the task block so the
+	// receiving Claude session loads the OODA Orient guidance before
+	// reading the user-derived task payload it must classify.
+	Triage string
 	// Task is the row being dispatched. BuildPrompt reads ID / Source /
 	// Title / Body and renders them into a labelled task block so the
 	// receiving Claude session can quote them back deterministically.
@@ -81,8 +87,8 @@ func fenced(label, value string) string {
 	return fmt.Sprintf("<<%s>>\n%s\n<</%s>>", label, value, label)
 }
 
-// BuildPrompt concatenates (Base, SourceSpecific, Task, Sentinel) in
-// that fixed order. Empty sections drop out cleanly.
+// BuildPrompt concatenates (Base, SourceSpecific, Triage, Task, Sentinel)
+// in that fixed order. Empty sections drop out cleanly.
 //
 // User-derived fields (Source, ExternalID, ExternalURL, Title, Body) go
 // through fenceEscape so a malicious payload cannot splice a forged
@@ -106,11 +112,14 @@ func BuildPrompt(in PromptInputs) string {
 		fenced("body", fenceEscape(in.Task.Body)),
 	}, "\n\n")
 
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 5)
 	if s := strings.TrimSpace(in.Base); s != "" {
 		parts = append(parts, s)
 	}
 	if s := strings.TrimSpace(in.SourceSpecific); s != "" {
+		parts = append(parts, s)
+	}
+	if s := strings.TrimSpace(in.Triage); s != "" {
 		parts = append(parts, s)
 	}
 	parts = append(parts, taskBlock)

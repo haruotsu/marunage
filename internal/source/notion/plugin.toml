@@ -1,0 +1,14 @@
+[plugin]
+name = "notion"
+version = "0.1.0"
+description = "Notion Discovery source (PR-201). Queries one Notion database and exposes its pages through the Discovery plugin contract; supports last_edited_time checkpointing and bidirectional archive."
+sync_mode = "bidirectional"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+    "since",
+    "add",
+    "complete",
+    "delete",
+]
