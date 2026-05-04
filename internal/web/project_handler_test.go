@@ -175,6 +175,7 @@ func TestProjectAPIHandler_InvalidBoardURLReturns400(t *testing.T) {
 		"data:text/html,<script>",
 		"ftp://example.com/board",
 		"file:///etc/passwd",
+		"//evil.com/path", // protocol-relative URL: scheme is empty, blocked by default case
 	} {
 		t.Run(bad, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/project?board_url="+bad, nil)
@@ -226,6 +227,22 @@ func TestNewEndpoints_CSRFBlocksUnauthenticatedPOST(t *testing.T) {
 				t.Errorf("POST %s without CSRF: status=%d; want 403", path, w.Code)
 			}
 		})
+	}
+}
+
+// GET /project with provider error still returns 200 with error banner.
+func TestProjectHandler_ProviderErrorRendersErrorBanner(t *testing.T) {
+	srv := newProjectServer(t, staticProjectProvider{err: errProjectTestFailed})
+
+	req := httptest.NewRequest(http.MethodGet, "/project", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200 (graceful degradation)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "unavailable") {
+		t.Errorf("error banner missing 'unavailable' in body: %q", w.Body.String())
 	}
 }
 
