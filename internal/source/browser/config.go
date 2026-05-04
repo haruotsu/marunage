@@ -12,6 +12,7 @@ package browser
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/pelletier/go-toml/v2"
@@ -77,6 +78,35 @@ func LoadConfig(path string) (*Config, error) {
 	return LoadConfigFromBytes(body)
 }
 
+// validateScrapeURL is the SSRF / arbitrary-code-execution gate the
+// design-review's 🔴 #1 finding demands: a `browser.toml` URL with a
+// `javascript:` / `file://` / `data:` / `ftp://` scheme would let a
+// malicious config drive `cmux browser goto` into JS execution or
+// local-file disclosure. We accept only http(s) here so a bad URL
+// never reaches the driver. Domain allowlisting (e.g. blocking
+// 169.254.169.254) is a future-PR concern noted in the design's
+// "今後の拡張余地".
+func validateScrapeURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+		// Accepted. Plain http is allowed for localhost / lab use; the
+		// production policy of "https only" belongs in a separate
+		// `allow_hosts` policy file.
+	case "":
+		return fmt.Errorf("scheme is empty (must be http or https)")
+	default:
+		return fmt.Errorf("scheme %q not allowed (only http/https permitted)", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("host is empty")
+	}
+	return nil
+}
+
 // LoadConfigFromBytes is the parsing core shared by LoadConfig and any
 // in-memory caller. Centralising validation here means the on-disk and
 // in-memory paths cannot drift in their accept/reject rules.
@@ -96,6 +126,9 @@ func LoadConfigFromBytes(body []byte) (*Config, error) {
 		}
 		if s.URL == "" {
 			return nil, fmt.Errorf("%w: site %q missing required field `url`", ErrInvalidConfig, s.Name)
+		}
+		if err := validateScrapeURL(s.URL); err != nil {
+			return nil, fmt.Errorf("%w: site %q url %q: %s", ErrInvalidConfig, s.Name, s.URL, err.Error())
 		}
 		if s.ItemSelector == "" {
 			return nil, fmt.Errorf("%w: site %q missing required field `item_selector`", ErrInvalidConfig, s.Name)

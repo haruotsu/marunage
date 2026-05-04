@@ -243,3 +243,70 @@ func TestLoadConfigMissingFileWraps(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+// TestLoadConfigRejectsNonHTTPScheme is the SSRF defence demanded by the
+// design review's 🔴 #1: a `browser.toml` URL with `javascript:` /
+// `file://` / `http://169.254.169.254/...` style scheme would let a
+// malicious config drive `cmux browser goto` into arbitrary code
+// execution or cloud-metadata exfiltration. The validator MUST reject
+// any scheme other than http(s) at load time so a bad URL never reaches
+// the driver.
+func TestLoadConfigRejectsNonHTTPScheme(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"javascript scheme", "javascript:alert(1)"},
+		{"file scheme", "file:///etc/passwd"},
+		{"data scheme", "data:text/html,<script>alert(1)</script>"},
+		{"ftp scheme", "ftp://example.com/"},
+		{"empty after parse", "://no-scheme"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `[[site]]
+name = "x"
+url = "` + tc.url + `"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`
+			path := writeFile(t, t.TempDir(), "browser.toml", body)
+			_, err := LoadConfig(path)
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("err = %v, want ErrInvalidConfig", err)
+			}
+			if !strings.Contains(err.Error(), "scheme") && !strings.Contains(err.Error(), "url") {
+				t.Errorf("err message %q missing scheme/url hint", err)
+			}
+		})
+	}
+}
+
+// TestLoadConfigAcceptsHTTPSchemes is the symmetric positive: http://
+// and https:// must continue to work. Plain http is allowed because
+// localhost / lab environments often serve over plain http; production
+// is expected to use https. The narrower allowlist (https-only) belongs
+// in a higher layer (allow_hosts policy file) the design review marks
+// as a future extension.
+func TestLoadConfigAcceptsHTTPSchemes(t *testing.T) {
+	t.Parallel()
+
+	for _, u := range []string{"http://example.com/", "https://example.com/"} {
+		body := `[[site]]
+name = "x"
+url = "` + u + `"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`
+			path := writeFile(t, t.TempDir(), "browser.toml", body)
+			if _, err := LoadConfig(path); err != nil {
+				t.Errorf("LoadConfig(%s): %v", u, err)
+			}
+	}
+}
