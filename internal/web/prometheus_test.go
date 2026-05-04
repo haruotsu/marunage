@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Test list:
@@ -20,19 +19,8 @@ import (
 // 9. GET /metrics with Accept: text/plain returns Prometheus format
 // 10. GET /metrics without Accept header returns HTML (existing behavior)
 // 11. acceptsTextPlain returns false when Accept is */* (browser wildcard)
-
-func newPrometheusServer(t *testing.T, prov MetricsProvider) *Server {
-	t.Helper()
-	srv, err := NewServer(Options{
-		TokenSource:       testTokenSource,
-		HeartbeatInterval: 25 * time.Millisecond,
-		Metrics:           prov,
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	return srv
-}
+// 12. GET /prometheus sets Cache-Control: no-store
+// 13. prometheusLabelEscape escapes only Prometheus-spec chars (\, ", \n)
 
 // 1. formatPrometheus includes marunage_tasks (gauge, no _total suffix)
 func TestFormatPrometheus_TasksTotal(t *testing.T) {
@@ -114,7 +102,7 @@ func TestFormatPrometheus_AvgDuration(t *testing.T) {
 
 // 6. GET /prometheus returns 200
 func TestPrometheusHandler_Returns200(t *testing.T) {
-	srv := newPrometheusServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
+	srv := newMetricsServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
 
 	req := httptest.NewRequest(http.MethodGet, "/prometheus", nil)
 	w := httptest.NewRecorder()
@@ -127,7 +115,7 @@ func TestPrometheusHandler_Returns200(t *testing.T) {
 
 // 7. GET /prometheus Content-Type is text/plain; version=0.0.4; charset=utf-8
 func TestPrometheusHandler_ContentType(t *testing.T) {
-	srv := newPrometheusServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
+	srv := newMetricsServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
 
 	req := httptest.NewRequest(http.MethodGet, "/prometheus", nil)
 	w := httptest.NewRecorder()
@@ -142,7 +130,7 @@ func TestPrometheusHandler_ContentType(t *testing.T) {
 
 // 8. GET /prometheus returns 500 on provider error
 func TestPrometheusHandler_ProviderErrorReturns500(t *testing.T) {
-	srv := newPrometheusServer(t, staticMetricsProvider{err: errMetricsTestFailed})
+	srv := newMetricsServer(t, staticMetricsProvider{err: errMetricsTestFailed})
 
 	req := httptest.NewRequest(http.MethodGet, "/prometheus", nil)
 	w := httptest.NewRecorder()
@@ -155,7 +143,7 @@ func TestPrometheusHandler_ProviderErrorReturns500(t *testing.T) {
 
 // 9. GET /metrics with Accept: text/plain returns Prometheus format
 func TestMetricsHandler_AcceptTextPlain_ReturnsPrometheus(t *testing.T) {
-	srv := newPrometheusServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
+	srv := newMetricsServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	req.Header.Set("Accept", "text/plain")
@@ -177,7 +165,7 @@ func TestMetricsHandler_AcceptTextPlain_ReturnsPrometheus(t *testing.T) {
 
 // 10. GET /metrics without Accept: text/plain returns HTML (existing behavior)
 func TestMetricsHandler_NoAcceptHeader_ReturnsHTML(t *testing.T) {
-	srv := newPrometheusServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
+	srv := newMetricsServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -207,6 +195,39 @@ func TestAcceptsTextPlain_MixedWithWildcard_ReturnsTrue(t *testing.T) {
 	req.Header.Set("Accept", "text/plain, */*")
 	if !acceptsTextPlain(req) {
 		t.Error("acceptsTextPlain should return true for Accept: text/plain, */*")
+	}
+}
+
+// 12. GET /prometheus sets Cache-Control: no-store
+func TestPrometheusHandler_SetsCacheControlNoStore(t *testing.T) {
+	srv := newMetricsServer(t, staticMetricsProvider{snap: sampleMetricsSnapshot()})
+
+	req := httptest.NewRequest(http.MethodGet, "/prometheus", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control=%q; want no-store", got)
+	}
+}
+
+// 13. prometheusLabelEscape escapes only Prometheus-spec chars (\, ", \n).
+func TestPrometheusLabelEscape(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"plain", "plain"},
+		{`with"quote`, `with\"quote`},
+		{`back\slash`, `back\\slash`},
+		{"new\nline", `new\nline`},
+		{"tab\there", "tab\there"}, // tab passes through unchanged per Prometheus spec
+	}
+	for _, tt := range tests {
+		got := prometheusLabelEscape(tt.in)
+		if got != tt.want {
+			t.Errorf("prometheusLabelEscape(%q) = %q; want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
