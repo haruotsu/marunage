@@ -26,7 +26,9 @@ package notion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 )
 
 // ErrUnauthorized is the typed sentinel surfaced by Client implementations
@@ -40,6 +42,36 @@ var ErrUnauthorized = errors.New("notion: unauthorized (token revoked)")
 // has aged past its TTL. Distinct from ErrUnauthorized so AuthStatus can
 // return AuthExpired (refresh) rather than AuthRevoked (re-grant).
 var ErrTokenExpired = errors.New("notion: token expired")
+
+// ErrRateLimited is the typed sentinel for 429 / "rate_limited" responses.
+// Wrapped by RateLimitedError so callers branching on errors.Is still get
+// the structured Retry-After delay via errors.As.
+var ErrRateLimited = errors.New("notion: rate limited")
+
+// RateLimitedError carries the Retry-After hint that 429 responses include
+// (or a conservative default when the header is absent). Daemons running
+// the Discovery loop should sleep RetryAfter before retrying so they
+// neither hammer Notion nor retry too eagerly.
+type RateLimitedError struct {
+	// RetryAfter is the documented Retry-After delay parsed from the
+	// response header, or a conservative 5s default when no header was
+	// returned (or it carried an unsupported HTTP-date form).
+	RetryAfter time.Duration
+	// Message is Notion's own human-readable explanation. Safe to log:
+	// the API does not include credential material here.
+	Message string
+}
+
+// Error returns the typed-error string. Wrapping ErrRateLimited via the
+// `%w` verb means errors.Is(err, ErrRateLimited) keeps working for
+// callers that only need the categorical bucket.
+func (e *RateLimitedError) Error() string {
+	return fmt.Sprintf("%s: %s (retry after %s)", ErrRateLimited.Error(), e.Message, e.RetryAfter)
+}
+
+// Unwrap lets errors.Is traverse to ErrRateLimited so the existing typed-
+// sentinel branch in callers stays correct.
+func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }
 
 // Page is the source-side neutral view of one Notion page returned by the
 // `databases/{id}/query` endpoint. We deliberately project only the fields
