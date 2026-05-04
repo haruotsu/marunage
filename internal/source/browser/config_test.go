@@ -368,9 +368,9 @@ key_field = "id"
 [site.fields]
 id = { selector = "[data-id]", attr = "data-id" }
 `
-			path := writeFile(t, t.TempDir(), "browser.toml", body)
-			if _, err := LoadConfig(path); err != nil {
-				t.Errorf("LoadConfig(%s): %v", u, err)
-			}
+		path := writeFile(t, t.TempDir(), "browser.toml", body)
+		if _, err := LoadConfig(path); err != nil {
+			t.Errorf("LoadConfig(%s): %v", u, err)
+		}
 	}
 }
