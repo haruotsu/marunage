@@ -34,6 +34,24 @@ func TestPluginImplementsContract(t *testing.T) {
 	var _ source.Deleter = (*Plugin)(nil)
 }
 
+// TestPluginDoesNotImplementSincer is the symmetric guard: the Google
+// Tasks API has no efficient delta endpoint, so the manifest deliberately
+// withholds the `since` capability. If a future PR adds a Since method
+// without also wiring a real upstream-delta path, ValidateAgainstManifest
+// would still pass (over-implementing is tolerated) — but the dispatcher
+// would then start cheap-polling against a method that secretly does a
+// full List, which is the failure mode the manifest is meant to prevent.
+// This test pins the contract the other direction so the design intent
+// is visible at compile time.
+func TestPluginDoesNotImplementSincer(t *testing.T) {
+	t.Parallel()
+
+	var p any = (*Plugin)(nil)
+	if _, ok := p.(source.Sincer); ok {
+		t.Fatalf("*Plugin must NOT implement source.Sincer until a real delta endpoint exists")
+	}
+}
+
 // TestAuthStatusWithoutClient is the "first run" state every other test
 // implicitly relies on: a plugin built without a Client must report
 // AuthNotConfigured so the CLI can prompt the user to run setup. Returning
