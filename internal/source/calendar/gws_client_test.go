@@ -24,10 +24,10 @@ type recordedCall struct {
 // so a single GWSClient method can be exercised across multiple scenarios
 // without the test having to know which call matches which response.
 type scriptedRunner struct {
-	calls    []recordedCall
-	outputs  [][]byte
-	outErrs  []error
-	callIdx  int
+	calls   []recordedCall
+	outputs [][]byte
+	outErrs []error
+	callIdx int
 }
 
 func (r *scriptedRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
