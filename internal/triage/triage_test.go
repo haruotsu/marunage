@@ -233,3 +233,28 @@ func TestErrInvalidDecisionMentionsBothConstants(t *testing.T) {
 			msg, triage.DecisionTask, triage.DecisionSkip)
 	}
 }
+
+// PR-72 TR10 (review-fix-loop iter 2): a stale id (the row was
+// deleted between discovery and apply) surfaces as store.ErrNotFound
+// on both branches. Pinning this prevents a future refactor from
+// swallowing the error and making `marunage review` lose the audit
+// trail for verdicts that never landed.
+func TestApplyPropagatesNotFoundOnSkipPath(t *testing.T) {
+	s := &fakeStore{skipErr: store.ErrNotFound}
+	err := triage.Apply(context.Background(), s, 7, triage.Decision{
+		Decision: triage.DecisionSkip, Reason: "rule 4: fyi",
+	})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Apply(skip on missing id): err = %v; want errors.Is(err, store.ErrNotFound)", err)
+	}
+}
+
+func TestApplyPropagatesNotFoundOnTaskPath(t *testing.T) {
+	s := &fakeStore{appErr: store.ErrNotFound}
+	err := triage.Apply(context.Background(), s, 8, triage.Decision{
+		Decision: triage.DecisionTask, Reason: "rule 1: direct mention",
+	})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Apply(task on missing id): err = %v; want errors.Is(err, store.ErrNotFound)", err)
+	}
+}
