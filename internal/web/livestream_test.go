@@ -225,3 +225,24 @@ func TestSendToWorkspaceHandler_SendError(t *testing.T) {
 		t.Fatalf("status = %d; want 500", rec.Code)
 	}
 }
+
+// TestSendToWorkspaceHandler_OversizedBody: body > 64KB -> 400.
+// MaxBytesReader wraps the body lazily; the limit fires during JSON decode.
+func TestSendToWorkspaceHandler_OversizedBody(t *testing.T) {
+	h := newSendToWorkspaceHandler(
+		&fakeWorkspaceStreamer{},
+		&fakeLiveStreamProvider{workspaceID: "workspace:1"},
+	)
+	body := make([]byte, 65*1024+1) // just over 64 KB
+	for i := range body {
+		body[i] = 'a'
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/1/send", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 for oversized body", rec.Code)
+	}
+}
