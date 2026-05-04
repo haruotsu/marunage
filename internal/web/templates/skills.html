@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>marunage skills</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <h1>marunage skills</h1>
+    <p>
+      Read-only view of the registry-installed skills under
+      <code>~/.claude/skills</code>. Use
+      <code>marunage skills install &lt;name&gt;</code> from the CLI to add more.
+    </p>
+    {{ if .Installed }}
+    <table>
+      <thead>
+        <tr><th scope="col">Name</th><th scope="col">Version</th><th scope="col">Source</th></tr>
+      </thead>
+      <tbody>
+      {{ range .Installed }}
+        <tr>
+          <td>{{ .Name }}</td>
+          <td>{{ .Version }}</td>
+          <td>{{ if .Source }}{{ .Source }}{{ else }}(unknown){{ end }}</td>
+        </tr>
+      {{ end }}
+      </tbody>
+    </table>
+    {{ else }}
+    <p class="hint">No registry-installed skills yet.</p>
+    {{ end }}
+
+    {{ if .RegistryURL }}
+    <p class="hint">Registry: <code>{{ .RegistryURL }}</code></p>
+    {{ else }}
+    <p class="hint">
+      Configure a registry by setting
+      <code>MARUNAGE_SKILLS_REGISTRY_URL</code> or starting
+      <code>marunage web</code> with a registry URL.
+    </p>
+    {{ end }}
+  </main>
+</body>
+</html>
