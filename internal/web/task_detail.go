@@ -64,4 +64,3 @@ type noopTaskDetailProvider struct{}
 func (noopTaskDetailProvider) TaskDetail(_ context.Context, _ int64) (store.Task, error) {
 	return store.Task{}, fmt.Errorf("task detail: %w", store.ErrNotFound)
 }
-
