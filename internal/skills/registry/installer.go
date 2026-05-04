@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/haruotsu/marunage/internal/config"
 )
 
 // ErrEmbeddedConflict is returned by Installer.Install when the
@@ -28,6 +30,13 @@ type Installer struct {
 	Client     *Client
 	SkillsRoot string
 	Clock      Clock
+	// Auditor receives one config.AuditEvent per registry-driven
+	// mutation (skills.registry.install / update / override). nil
+	// falls back to NopAuditor so the registry tests can run
+	// without wiring a JSONL writer. The "No silent execution"
+	// invariant from REQUIREMENTS.md requires every install /
+	// update to leave a trace just like the embedded installer.
+	Auditor config.Auditor
 }
 
 // InstallOptions tunes a single Install call.
@@ -117,6 +126,24 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (InstallR
 	if err := SaveState(in.SkillsRoot, state); err != nil {
 		return InstallReport{}, err
 	}
+
+	auditor := in.Auditor
+	if auditor == nil {
+		auditor = config.NopAuditor{}
+	}
+	action := "skills.registry.install"
+	if prev.Version != "" {
+		action = "skills.registry.update"
+	}
+	if opts.AllowEmbeddedOverride {
+		action = "skills.registry.override"
+	}
+	auditor.Record(config.AuditEvent{
+		Action: action,
+		Name:   opts.Name,
+		Path:   filepath.Join(dest, "SKILL.md"),
+		Value:  v.Version,
+	})
 
 	return InstallReport{
 		Name:       opts.Name,
