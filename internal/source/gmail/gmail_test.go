@@ -282,6 +282,57 @@ func TestListOmitsEmptyRawMetadataFrom(t *testing.T) {
 	}
 }
 
+// TestListOmitsEmptyRawMetadataThreadIDAndLabels mirrors the from-omit
+// rule for the other two sparse RawMetadata keys. Without this, a
+// future refactor of toTask could quietly start emitting
+// `"thread_id": ""` / `"labels": nil` while only the `from` branch
+// keeps its regression guard.
+func TestListOmitsEmptyRawMetadataThreadIDAndLabels(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{messages: []Message{
+		{ID: "m1", Subject: "bare"}, // no ThreadID, no Labels, no From
+	}}
+	p := New(WithClient(fc))
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, present := got[0].RawMetadata["thread_id"]; present {
+		t.Errorf("thread_id should be omitted when empty; got %#v", got[0].RawMetadata)
+	}
+	if _, present := got[0].RawMetadata["labels"]; present {
+		t.Errorf("labels should be omitted when empty; got %#v", got[0].RawMetadata)
+	}
+}
+
+// TestListLabelsAreDefensiveCopy pins the defensive-copy contract on
+// RawMetadata["labels"]. Without it, a downstream consumer mutating
+// the returned slice (e.g. sort, append) could reach back into the
+// Client's Message slice and cause a confusing aliasing bug under
+// concurrent List calls.
+func TestListLabelsAreDefensiveCopy(t *testing.T) {
+	t.Parallel()
+
+	original := []string{"INBOX", "UNREAD"}
+	fc := &fakeClient{messages: []Message{
+		{ID: "m1", Subject: "x", Labels: original},
+	}}
+	p := New(WithClient(fc))
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	gotLabels, ok := got[0].RawMetadata["labels"].([]string)
+	if !ok || len(gotLabels) != 2 {
+		t.Fatalf("labels missing/wrong shape: %#v", got[0].RawMetadata["labels"])
+	}
+	gotLabels[0] = "MUTATED"
+	if original[0] != "INBOX" {
+		t.Errorf("mutating RawMetadata[\"labels\"] reached back into the client's slice: original = %v", original)
+	}
+}
+
 // TestListMarksDoneWhenArchiveLabelPresent: the queue's reconciliation
 // path needs the upstream Done flag so it can mark a queue row finished
 // when the user archived the mail directly in Gmail. Without this, two
@@ -529,9 +580,10 @@ func TestSinceWrapsCheckpointerGetError(t *testing.T) {
 
 // TestSinceWrapsCheckpointerSetError covers the symmetric write path:
 // after a successful upstream fetch, a Set failure must surface to the
-// caller. The plugin already returned the new tasks before persisting
-// the checkpoint, so the caller sees both the result AND the error and
-// can choose to retry.
+// caller. The plugin discards the in-flight task slice on this error
+// (returns nil + wrap) — the next Since call will refetch from upstream
+// rather than risk handing the caller tasks that may not be replayable
+// if the checkpoint never reaches durable storage.
 func TestSinceWrapsCheckpointerSetError(t *testing.T) {
 	t.Parallel()
 
@@ -541,8 +593,12 @@ func TestSinceWrapsCheckpointerSetError(t *testing.T) {
 	cp.setErr = setErr
 	p := New(WithClient(fc), WithCheckpointer(cp))
 
-	if _, err := p.Since(context.Background(), ""); !errors.Is(err, setErr) {
+	tasks, err := p.Since(context.Background(), "")
+	if !errors.Is(err, setErr) {
 		t.Errorf("err = %v; want wrap of setErr", err)
+	}
+	if tasks != nil {
+		t.Errorf("tasks = %+v; want nil on Set failure (caller must refetch)", tasks)
 	}
 }
 
@@ -753,5 +809,45 @@ func TestSetupWrapsClientError(t *testing.T) {
 	p := New(WithClient(fc))
 	if err := p.Setup(context.Background(), source.SetupOptions{}); !errors.Is(err, sentinel) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// TestSetupHonoursContext mirrors List/Complete: a cancelled ctx must
+// not invoke the client. Symmetric coverage so a future refactor that
+// drops the ctx pre-check goes red here, not in production.
+func TestSetupHonoursContext(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{}
+	p := New(WithClient(fc))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Setup(ctx, source.SetupOptions{}); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
+	if len(fc.authCalls) != 0 {
+		t.Errorf("client.Authenticate should not have been invoked on cancelled ctx")
+	}
+}
+
+// TestAuthStatusHonoursContext mirrors the Setup test for the
+// credential probe. Same rationale: cancellation is a hard "do not
+// touch the network" signal that the plugin honours up-front.
+func TestAuthStatusHonoursContext(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	fc := &fakeClient{authStatusFn: func(context.Context) (source.AuthStatus, error) {
+		called = true
+		return source.AuthAuthenticated, nil
+	}}
+	p := New(WithClient(fc))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.AuthStatus(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
+	if called {
+		t.Errorf("client.AuthStatus should not have been invoked on cancelled ctx")
 	}
 }
