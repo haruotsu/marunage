@@ -30,7 +30,8 @@ type DraftMode struct {
 	Enabled bool `toml:"enabled"`
 }
 
-// DefaultConfig returns the built-in safe defaults.
+// DefaultConfig returns the built-in safe defaults. The Deny list is seeded
+// from hardcodedDenyCategories so there is a single source of truth.
 func DefaultConfig() Config {
 	return Config{
 		Permissions: Permissions{
@@ -39,12 +40,7 @@ func DefaultConfig() Config {
 				"information_sharing",
 				"known_questions",
 			},
-			Deny: []string{
-				"personal_information",
-				"contracts",
-				"financial_decisions",
-				"personnel_matters",
-			},
+			Deny: append([]string(nil), hardcodedDenyCategories...),
 		},
 		DraftMode: DraftMode{
 			Enabled: false,
