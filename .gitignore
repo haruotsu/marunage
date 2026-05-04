@@ -48,3 +48,5 @@ docs/
 CLAUDE.local.md
 .marunage-review/
 TASK.md
+.claude-task.md
+.test-list*.md
