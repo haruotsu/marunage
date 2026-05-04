@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Metrics — marunage</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">marunage</a></h1>
+    <p class="hint">Metrics dashboard</p>
+  </header>
+  <main>
+    {{if .LoadError}}
+      <section class="banner banner-error" role="alert">
+        <strong>Metrics data unavailable:</strong> {{.LoadError}}
+      </section>
+    {{end}}
+
+    <section class="panel" aria-labelledby="summary-heading">
+      <header class="panel-head">
+        <h2 id="summary-heading">Summary</h2>
+        <span class="count">{{.TotalTasks}} total tasks</span>
+      </header>
+      <ul class="summary">
+        <li class="summary-item summary-done">
+          <span class="num">{{index .ByStatus "done"}}</span>
+          <span class="label">done</span>
+        </li>
+        <li class="summary-item summary-failed">
+          <span class="num">{{index .ByStatus "failed"}}</span>
+          <span class="label">failed</span>
+        </li>
+        <li class="summary-item">
+          <span class="num">{{index .ByStatus "pending"}}</span>
+          <span class="label">pending</span>
+        </li>
+      </ul>
+      <dl class="metrics-stats">
+        <dt>Success rate</dt>
+        <dd>{{.SuccessRatePct}}</dd>
+        <dt>Avg duration</dt>
+        <dd>{{.AvgDurationSeconds}}</dd>
+      </dl>
+    </section>
+
+    {{if .BySource}}
+    <section class="panel" aria-labelledby="source-heading">
+      <header class="panel-head">
+        <h2 id="source-heading">By Source</h2>
+      </header>
+      <table class="breakdown">
+        <thead>
+          <tr><th scope="col">Source</th><th scope="col">Tasks</th></tr>
+        </thead>
+        <tbody>
+          {{range $src, $n := .BySource}}
+            <tr>
+              <th scope="row"><span class="badge badge-source">{{$src}}</span></th>
+              <td>{{$n}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+    {{end}}
+
+    {{if .DailyCounts}}
+    <section class="panel" aria-labelledby="daily-heading">
+      <header class="panel-head">
+        <h2 id="daily-heading">Daily (last 30 days)</h2>
+      </header>
+      <table class="breakdown">
+        <thead>
+          <tr><th scope="col">Date</th><th scope="col">Done</th><th scope="col">Failed</th></tr>
+        </thead>
+        <tbody>
+          {{range .DailyCounts}}
+            <tr>
+              <td>{{.Date}}</td>
+              <td>{{.Done}}</td>
+              <td>{{.Failed}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+    {{end}}
+  </main>
+</body>
+</html>
