@@ -1,0 +1,13 @@
+[plugin]
+name = "googletasks"
+version = "0.1.0"
+description = "Google Tasks Discovery source (PR-84). Bidirectional sync with the user's Google Tasks lists via google.golang.org/api/tasks/v1."
+sync_mode = "bidirectional"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+    "add",
+    "complete",
+    "delete",
+]
