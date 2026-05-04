@@ -515,6 +515,57 @@ func TestListWorkspacesWrapsExitErrorWithStderr(t *testing.T) {
 	}
 }
 
+// 19 + 20: ReadOutput shells out to `cmux pane-text <ws>` and returns trimmed stdout.
+func TestReadOutputShellsOutAndReturnsTrimmedOutput(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Stdout: "terminal output here\n"})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	out, err := c.ReadOutput(context.Background(), cmux.Workspace{ID: "workspace:7"})
+	if err != nil {
+		t.Fatalf("ReadOutput: %v", err)
+	}
+	if out != "terminal output here" {
+		t.Errorf("out = %q; want %q", out, "terminal output here")
+	}
+	calls := r.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d; want 1", len(calls))
+	}
+	if calls[0].Name != "cmux" {
+		t.Errorf("Calls()[0].Name = %q; want %q", calls[0].Name, "cmux")
+	}
+	want := []string{"pane-text", "workspace:7"}
+	if !equalArgs(calls[0].Args, want) {
+		t.Errorf("Args = %v; want %v", calls[0].Args, want)
+	}
+}
+
+// 21: ReadOutput returns ErrInvalidWorkspace for empty workspace ID.
+func TestReadOutputRejectsEmptyWorkspace(t *testing.T) {
+	r := &fakeRunner{}
+	c := cmux.NewClient(cmux.WithRunner(r))
+	_, err := c.ReadOutput(context.Background(), cmux.Workspace{})
+	if !errors.Is(err, cmux.ErrInvalidWorkspace) {
+		t.Fatalf("err = %v; want ErrInvalidWorkspace", err)
+	}
+	if len(r.Calls()) != 0 {
+		t.Errorf("Runner invoked %d times; want 0", len(r.Calls()))
+	}
+}
+
+// 22: ReadOutput maps a missing binary to ErrCmuxNotFound.
+func TestReadOutputMapsMissingBinaryToErrCmuxNotFound(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(runResult{Err: &exec.Error{Name: "cmux", Err: exec.ErrNotFound}})
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	_, err := c.ReadOutput(context.Background(), cmux.Workspace{ID: "workspace:7"})
+	if !errors.Is(err, cmux.ErrCmuxNotFound) {
+		t.Fatalf("err = %v; want ErrCmuxNotFound", err)
+	}
+}
+
 func equalArgs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
