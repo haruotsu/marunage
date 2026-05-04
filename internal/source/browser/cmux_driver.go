@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/haruotsu/marunage/internal/cmux"
 )
@@ -152,7 +153,15 @@ func truncateForLog(b []byte) string {
 	if len(s) <= logSnippetLen {
 		return s
 	}
-	return s[:logSnippetLen] + fmt.Sprintf("... (%d bytes truncated)", len(s)-logSnippetLen)
+	// Walk back to the previous rune boundary so the truncated prefix
+	// stays valid UTF-8. Without this a multi-byte character split
+	// across the cut point would leave invalid bytes in the message,
+	// which the structured log sink may reject or replace with U+FFFD.
+	cut := logSnippetLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("... (%d bytes truncated)", len(s)-cut)
 }
 
 // jsString returns s as a JS string literal. encoding/json's string

@@ -78,22 +78,27 @@ func LoadConfig(path string) (*Config, error) {
 	return LoadConfigFromBytes(body)
 }
 
-// invalidSiteNameByte returns the first byte in name that violates the
-// "<plugin>:<sub-id>" splitting contract documented on Task.Source. We
-// forbid `:` (would create an extra split position the dispatcher
-// cannot disambiguate), whitespace bytes (would smuggle into Source /
-// RawMetadata where downstream renderers may break), and `/` (would
-// look like a hierarchy in `external/browser/<site>` origin tags).
-// Returns 0 when the name is acceptable.
-func invalidSiteNameByte(name string) byte {
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		switch c {
-		case ':', ' ', '\t', '\n', '\r', '/':
-			return c
+// invalidSiteNameRune returns the first rune in name that falls outside
+// the positive allowlist. The site name flows into Task.Source
+// ("<plugin>:<sub-id>" — must split unambiguously on the first ':'),
+// into RawMetadata["origin"] ("external/browser/<site>" — must read as
+// one path segment), and may end up in downstream filenames. Rather
+// than enumerate every dangerous code point (whitespace, format
+// characters like NBSP/ZWSP, controls, separators), we restrict to a
+// small allowlist of safe ASCII identifier characters: letters,
+// digits, '-', '_', and '.'. Anything else is rejected at config
+// load. Returns (0, false) when the name is acceptable.
+func invalidSiteNameRune(name string) (rune, bool) {
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' {
+			continue
 		}
+		return r, true
 	}
-	return 0
+	return 0, false
 }
 
 // validateScrapeURL is the SSRF / arbitrary-code-execution gate the
@@ -142,8 +147,8 @@ func LoadConfigFromBytes(body []byte) (*Config, error) {
 		if s.Name == "" {
 			return nil, fmt.Errorf("%w: site #%d missing required field `name`", ErrInvalidConfig, i+1)
 		}
-		if invalid := invalidSiteNameByte(s.Name); invalid != 0 {
-			return nil, fmt.Errorf("%w: site name %q contains forbidden byte %q",
+		if invalid, ok := invalidSiteNameRune(s.Name); ok {
+			return nil, fmt.Errorf("%w: site name %q contains forbidden character %U",
 				ErrInvalidConfig, s.Name, invalid)
 		}
 		if s.URL == "" {

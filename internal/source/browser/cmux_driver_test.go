@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/haruotsu/marunage/internal/cmux"
 )
@@ -190,6 +191,40 @@ func TestCmuxDriverScrapeParseErrorTruncatesStdout(t *testing.T) {
 	// And the typed sentinel still propagates so callers can branch.
 	if !errors.Is(err, ErrUnparseableEval) {
 		t.Errorf("err = %v, want ErrUnparseableEval", err)
+	}
+}
+
+// TestTruncateForLogBoundaries pins the threshold behaviour around
+// logSnippetLen so a future bump (or accidental drop) of the constant
+// is caught by an explicit test rather than only the indirect 10 KB
+// upper-bound assertion in TestCmuxDriverScrapeParseErrorTruncatesStdout.
+// Also exercises the UTF-8 rune-boundary walk-back so a multi-byte
+// character straddling the cut does not leave invalid bytes in the
+// truncated string.
+func TestTruncateForLogBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// Exact-length input passes through unchanged.
+	exact := strings.Repeat("a", logSnippetLen)
+	if got := truncateForLog([]byte(exact)); got != exact {
+		t.Errorf("exact length: returned %q (want unchanged)", got)
+	}
+
+	// One byte over → truncates with suffix.
+	oneOver := strings.Repeat("a", logSnippetLen+1)
+	got := truncateForLog([]byte(oneOver))
+	if !strings.HasPrefix(got, exact) {
+		t.Errorf("one-over: prefix mismatch")
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("one-over: missing `truncated` suffix: %q", got)
+	}
+
+	// Multi-byte input must come back as valid UTF-8.
+	multi := strings.Repeat("あ", 200) // 600 bytes
+	gotMulti := truncateForLog([]byte(multi))
+	if !utf8.ValidString(gotMulti) {
+		t.Errorf("UTF-8 boundary not respected: %q", gotMulti)
 	}
 }
 
