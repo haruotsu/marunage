@@ -38,6 +38,13 @@ var (
 	// this as "run `marunage setup --source googletasks`" in the CLI.
 	ErrNotConfigured = errors.New("googletasks: source not configured")
 
+	// ErrSetupNotImplemented is returned by Setup while the OAuth flow
+	// is still queued for a follow-up PR (see design doc §F). Distinct
+	// from ErrNotConfigured so the CLI can distinguish "stub awaiting
+	// OAuth wire-up" (this PR's known limitation) from "user never
+	// injected a Client at runtime" (genuine misconfiguration).
+	ErrSetupNotImplemented = errors.New("googletasks: setup not implemented")
+
 	// ErrInvalidTitle is returned by Add when the supplied title is
 	// empty. Google Tasks accepts whitespace-only titles, but they
 	// produce an unidentifiable item in the user's list, so we reject
@@ -212,16 +219,16 @@ func makeSourceTask(l GTaskList, t GTask) source.Task {
 
 // Setup is the OAuth / smoke-test entry point for the source. PR-84
 // scaffolds the contract; the real OAuth dance lands in a follow-up PR
-// once the secrets backend integration story is settled. Returning
-// ErrNotConfigured here is the documented "not implemented yet" signal —
-// the CLI surface for `marunage setup --source googletasks` will report
-// it as "wire OAuth in PR-XX".
-func (p *Plugin) Setup(ctx context.Context, opts source.SetupOptions) error {
-	_ = opts
+// once the secrets backend integration story is settled. Until then we
+// signal the dedicated ErrSetupNotImplemented sentinel so the CLI can
+// branch on errors.Is and surface the "wire OAuth in a follow-up PR"
+// hint distinctly from the "Client never injected" path the other
+// methods use.
+func (p *Plugin) Setup(ctx context.Context, _ source.SetupOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return ErrNotConfigured
+	return ErrSetupNotImplemented
 }
 
 // AuthStatus translates the upstream Client's reachability into the
