@@ -75,6 +75,21 @@ func TestParseBoardURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "http scheme rejected",
+			rawURL:  "http://github.com/orgs/myorg/projects/5",
+			wantErr: true,
+		},
+		{
+			name:    "javascript scheme rejected",
+			rawURL:  "javascript://github.com/orgs/evil/projects/1",
+			wantErr: true,
+		},
+		{
+			name:    "no scheme",
+			rawURL:  "github.com/orgs/myorg/projects/5",
+			wantErr: true,
+		},
+		{
 			name:    "owner name with special characters",
 			rawURL:  "https://github.com/orgs/evil; rm -rf/projects/1",
 			wantErr: true,
