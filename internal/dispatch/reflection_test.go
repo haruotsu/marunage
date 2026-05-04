@@ -46,20 +46,12 @@ import (
 type reflectStore struct {
 	mu      sync.Mutex
 	calls   []reflectStoreCall
-	getRow  func(id int64) (store.Task, error)
 	setHook func(id int64, text string) error
 }
 
 type reflectStoreCall struct {
 	ID   int64
 	Text string
-}
-
-func (s *reflectStore) Get(_ context.Context, id int64) (store.Task, error) {
-	if s.getRow != nil {
-		return s.getRow(id)
-	}
-	return store.Task{}, fmt.Errorf("reflectStore.Get not configured for id=%d", id)
 }
 
 func (s *reflectStore) SetReflection(_ context.Context, id int64, text string) error {
@@ -105,7 +97,13 @@ func (c *reflectCmux) WaitReady(_ context.Context, _ cmux.Workspace) error {
 func (c *reflectCmux) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
 	return nil, nil
 }
-func (c *reflectCmux) Send(_ context.Context, ws cmux.Workspace, text string) error {
+func (c *reflectCmux) Send(ctx context.Context, ws cmux.Workspace, text string) error {
+	// Production cmux.Client honours ctx; the fake should too so tests
+	// cannot accidentally pass when production would not (review-fix-loop
+	// iter 1 finding: H6 was previously testing fake-only behaviour).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.sendDelay > 0 {
 		time.Sleep(c.sendDelay)
 	}
@@ -167,14 +165,11 @@ func (f reflectDirs) Dir(id int64) string { return f(id) }
 // always-accept sampler so the happy-path tests do not need to fight
 // randomness.
 type reflectFixture struct {
-	t     *testing.T
 	store *reflectStore
 	cmux  *reflectCmux
 	au    *reflectAuditor
 	dirs  reflectDirs
-	root  string
 	r     *dispatch.Reflector
-	now   time.Time
 	ctxBg context.Context
 }
 
@@ -209,14 +204,11 @@ func newReflectFixture(t *testing.T, opts ...dispatch.ReflectorOption) reflectFi
 	}
 	t.Cleanup(func() { r.Wait() })
 	return reflectFixture{
-		t:     t,
 		store: rs,
 		cmux:  rcm,
 		au:    au,
 		dirs:  dirs,
-		root:  root,
 		r:     r,
-		now:   now,
 		ctxBg: context.Background(),
 	}
 }
