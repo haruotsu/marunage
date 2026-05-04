@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -280,5 +281,25 @@ func TestWebAPIClientDoesNotShareDefaultHTTPClient(t *testing.T) {
 	}
 	if c1.httpClient == c2.httpClient {
 		t.Error("two NewWebAPIClient calls share the same *http.Client instance")
+	}
+}
+
+// WC13: PostDM returns a diagnostic error (mentioning the HTTP status code)
+// when the server responds with a non-2xx status, even if the body is not
+// valid JSON. This prevents silent decode errors masking HTTP-level failures.
+func TestWebAPIClientPostDMReturnsErrOnNon2xxStatus(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := NewWebAPIClient(srv.URL, "token")
+	err := client.PostDM(context.Background(), "D", "hi")
+	if err == nil {
+		t.Fatal("expected error for HTTP 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q should mention HTTP status code 500 for diagnostics", err.Error())
 	}
 }

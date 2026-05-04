@@ -1,8 +1,11 @@
+# Development/test only — do not use in production.
+# Runs the slackhog mock Slack API server for local manual testing.
+# Usage: docker compose up slackhog
 services:
   slackhog:
     build:
       context: hack/slackhog
       dockerfile: Dockerfile
     ports:
-      - "4112:4112"
+      - "127.0.0.1:4112:4112"
     restart: unless-stopped
