@@ -61,16 +61,15 @@
     }
   };
 
-  // Event delegation: attach a single listener on the table instead of
-  // individual onclick attributes (required by script-src 'self' CSP).
-  document.addEventListener("DOMContentLoaded", function () {
-    document.addEventListener("click", function (e) {
-      var btn = e.target.closest(".btn-promote");
-      if (!btn) { return; }
-      var id = parseInt(btn.dataset.taskId, 10);
-      if (isNaN(id)) { return; }
-      reviewOps.promote(id, btn);
-    });
+  // Event delegation: attach a single listener instead of per-button onclick
+  // (required by script-src 'self' CSP). The script is loaded with defer so
+  // the DOM is ready when this runs — no DOMContentLoaded wrapper needed.
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest(".btn-promote");
+    if (!btn) { return; }
+    var id = parseInt(btn.dataset.taskId, 10);
+    if (isNaN(id)) { return; }
+    reviewOps.promote(id, btn);
   });
 
   window.reviewOps = reviewOps;

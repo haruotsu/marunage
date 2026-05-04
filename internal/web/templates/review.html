@@ -48,6 +48,7 @@
       </header>
 
       {{if .Tasks}}
+        <div class="table-scroll">
         <table class="breakdown">
           <thead>
             <tr>
@@ -79,6 +80,7 @@
             {{end}}
           </tbody>
         </table>
+        </div>
       {{else}}
         <p class="hint">No skipped tasks found. Triage is working well!</p>
       {{end}}
