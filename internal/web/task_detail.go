@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/haruotsu/marunage/internal/store"
@@ -66,7 +65,3 @@ func (noopTaskDetailProvider) TaskDetail(_ context.Context, _ int64) (store.Task
 	return store.Task{}, fmt.Errorf("task detail: %w", store.ErrNotFound)
 }
 
-// isErrNotFound reports whether err wraps store.ErrNotFound.
-func isErrNotFound(err error) bool {
-	return errors.Is(err, store.ErrNotFound)
-}
