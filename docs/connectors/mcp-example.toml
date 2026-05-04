@@ -1,0 +1,13 @@
+[connector]
+name = "mcp-source"
+type = "discover"
+adapter_version = "v1"
+description = "MCP server acting as a Discovery source via HTTP adapter"
+
+[endpoint]
+discover = "http://localhost:3000/mcp/discover"
+notify   = "http://localhost:3000/mcp/notify"
+
+[auth]
+type  = "bearer"
+token = "${MCP_TOKEN}"
