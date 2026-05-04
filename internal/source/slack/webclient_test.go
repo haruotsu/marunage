@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -215,4 +216,90 @@ func TestWebAPIClientFetchDMsReturnsErrNotImplemented(t *testing.T) {
 func TestWebAPIClientImplementsClientInterface(t *testing.T) {
 	t.Parallel()
 	var _ Client = NewWebAPIClient("", "")
+}
+
+// WC10: Setup reads MARUNAGE_SLACK_TOKEN (not SLACK_TOKEN) when nonInteractive=true.
+// Only MARUNAGE_SLACK_TOKEN is set; SLACK_TOKEN is explicitly absent.
+// Current bug: code reads SLACK_TOKEN so token stays empty → test fails.
+func TestWebAPIClientSetupReadsMARUNAGESlackToken(t *testing.T) {
+	t.Setenv("MARUNAGE_SLACK_TOKEN", "xoxb-marunage-env")
+	// SLACK_TOKEN intentionally not set (t.Setenv with empty would override to "")
+
+	srv := newSlackhogServer(t)
+	client := NewWebAPIClient(srv.Server.URL, "")
+	if err := client.Setup(context.Background(), true); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if err := client.PostDM(context.Background(), "D", "ping"); err != nil {
+		t.Fatalf("PostDM: %v", err)
+	}
+	msgs := srv.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("captured %d message(s), want 1", len(msgs))
+	}
+	if msgs[0].Token != "xoxb-marunage-env" {
+		t.Errorf("Authorization token = %q, want xoxb-marunage-env (from MARUNAGE_SLACK_TOKEN)", msgs[0].Token)
+	}
+}
+
+// WC11: Setup does not overwrite an already-configured token.
+func TestWebAPIClientSetupDoesNotOverwriteExistingToken(t *testing.T) {
+	t.Setenv("MARUNAGE_SLACK_TOKEN", "xoxb-env-override")
+
+	srv := newSlackhogServer(t)
+	client := NewWebAPIClient(srv.Server.URL, "xoxb-original")
+	if err := client.Setup(context.Background(), true); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if err := client.PostDM(context.Background(), "D", "hi"); err != nil {
+		t.Fatalf("PostDM: %v", err)
+	}
+	msgs := srv.Messages()
+	if len(msgs) != 1 || msgs[0].Token != "xoxb-original" {
+		t.Errorf("token after Setup = %q, want xoxb-original (existing token must not be overwritten)",
+			func() string {
+				if len(msgs) > 0 {
+					return msgs[0].Token
+				}
+				return "(no message)"
+			}())
+	}
+}
+
+// WC12: NewWebAPIClient must not share http.DefaultClient; it must use a
+// dedicated client so that a misbehaving server cannot block other callers.
+func TestWebAPIClientDoesNotShareDefaultHTTPClient(t *testing.T) {
+	t.Parallel()
+	c1 := NewWebAPIClient("https://slack.com", "tok1")
+	c2 := NewWebAPIClient("https://slack.com", "tok2")
+	// Each instance should have its own *http.Client, not the global default.
+	if c1.httpClient == http.DefaultClient {
+		t.Error("NewWebAPIClient returned a client sharing http.DefaultClient; want a dedicated instance")
+	}
+	if c2.httpClient == http.DefaultClient {
+		t.Error("second NewWebAPIClient returned a client sharing http.DefaultClient")
+	}
+	if c1.httpClient == c2.httpClient {
+		t.Error("two NewWebAPIClient calls share the same *http.Client instance")
+	}
+}
+
+// WC13: PostDM returns a diagnostic error (mentioning the HTTP status code)
+// when the server responds with a non-2xx status, even if the body is not
+// valid JSON. This prevents silent decode errors masking HTTP-level failures.
+func TestWebAPIClientPostDMReturnsErrOnNon2xxStatus(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := NewWebAPIClient(srv.URL, "token")
+	err := client.PostDM(context.Background(), "D", "hi")
+	if err == nil {
+		t.Fatal("expected error for HTTP 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q should mention HTTP status code 500 for diagnostics", err.Error())
+	}
 }

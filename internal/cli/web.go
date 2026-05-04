@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/source"
@@ -18,6 +19,37 @@ import (
 	"github.com/haruotsu/marunage/internal/store"
 	"github.com/haruotsu/marunage/internal/web"
 )
+
+// cmuxClientStreamer adapts cmux.Client into web.WorkspaceStreamer so the
+// web layer does not import the cmux package directly.
+type cmuxClientStreamer struct {
+	client cmux.Client
+}
+
+func (s *cmuxClientStreamer) ReadOutput(ctx context.Context, workspaceID string) (string, error) {
+	return s.client.ReadOutput(ctx, cmux.Workspace{ID: workspaceID})
+}
+
+func (s *cmuxClientStreamer) Send(ctx context.Context, workspaceID string, text string) error {
+	return s.client.Send(ctx, cmux.Workspace{ID: workspaceID}, text)
+}
+
+// sqlLiveStreamProvider implements web.LiveStreamProvider by looking up
+// the ws field of a task row via TaskDetailStore.
+type sqlLiveStreamProvider struct {
+	store web.TaskDetailStore
+}
+
+func (p *sqlLiveStreamProvider) WorkspaceIDForTask(ctx context.Context, taskID int64) (string, error) {
+	task, err := p.store.TaskDetail(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if task.WS == "" {
+		return "", fmt.Errorf("live stream: task %d has no workspace: %w", taskID, store.ErrNotFound)
+	}
+	return task.WS, nil
+}
 
 // webRunner is the narrow surface newWebCmd needs from the assembled
 // web.Server.  Keeping it as an interface is the test seam: production
@@ -136,12 +168,23 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	}
 	auditReader := web.NewFileAuditReader(auditLogPathFor(opts.ConfigPath))
 	taskDetailProvider := web.NewTaskDetailProvider(taskDetailStore, auditReader)
+	taskRepo := store.NewTaskRepo(db)
+	reviewProvider := web.NewReviewProvider(taskRepo)
+	taskOps := web.NewSQLTaskOpsStore(db)
+	liveStreamer := &cmuxClientStreamer{client: cmux.NewClient()}
+	liveProvider := &sqlLiveStreamProvider{store: taskDetailStore}
 
 	srv, err := web.NewServer(web.Options{
 		AccessLogger: slogAccessLogger{logger: logger},
 		Dashboard:    dashboardProvider,
 		TaskDetail:   taskDetailProvider,
 		AuditLog:     auditReader,
+		Review:       reviewProvider,
+		TaskOps:      taskOps,
+		LiveStream: web.LiveStreamConfig{
+			Streamer: liveStreamer,
+			Provider: liveProvider,
+		},
 		// Production CSRF entropy + 30s SSE heartbeat are the
 		// zero-value defaults inside web.NewServer; explicitly
 		// listing them here would just add noise.

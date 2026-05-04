@@ -87,6 +87,9 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDiscoverCmd())
 	root.AddCommand(newWebCmd(&configPath))
 	root.AddCommand(newSkillsCmd(&configPath))
+	root.AddCommand(newTaskReviewCmd(&configPath))
+	root.AddCommand(newJournalCmd(&configPath))
+	root.AddCommand(newProjectCmd(&configPath))
 
 	return root
 }
@@ -102,7 +105,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"run-all", "Dispatch every pending task in priority order."},
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
 		{"notify", "Send completion / failure / waiting_human notifications."},
-		{"review", "Review past skipped tasks for triage feedback."},
 	}
 
 	cmds := make([]*cobra.Command, 0, len(specs))

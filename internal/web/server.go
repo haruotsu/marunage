@@ -75,6 +75,31 @@ type Options struct {
 	// Nil disables all /api/tasks/* mutating routes so existing tests
 	// that do not care about task ops keep passing without wiring a store.
 	TaskOps TaskOpsStore
+
+	// Review wires the read-side provider for the /review page.
+	// Nil disables GET /review and GET /api/review/skipped so servers
+	// that do not care about review keep passing without wiring a store.
+	Review ReviewProvider
+
+	// Metrics wires the metrics provider for GET /metrics, GET /api/metrics and
+	// GET /prometheus (Prometheus text format). Nil falls back to a noop provider
+	// that returns empty metrics.
+	Metrics MetricsProvider
+
+	// Journal wires the work journal provider for GET /journal and GET /api/journal.
+	// Nil falls back to a noop provider that returns empty entries.
+	Journal JournalProvider
+
+	// Project wires the project board provider for GET /project and GET /api/project.
+	// Nil falls back to a noop provider that returns empty phases.
+	Project ProjectProvider
+
+	// LiveStream wires the live terminal stream endpoints:
+	//   GET  /api/tasks/{id}/stream  — SSE feed of cmux pane output
+	//   POST /api/tasks/{id}/send    — forward text to the workspace
+	// Zero-valued fields fall back to noop implementations so servers that
+	// do not care about live streaming keep working without wiring a fake.
+	LiveStream LiveStreamConfig
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -88,13 +113,18 @@ type Server struct {
 	taskDetail TaskDetailProvider
 	auditLog   AuditReader
 	taskOps    TaskOpsStore
+	review     ReviewProvider
+	metrics    MetricsProvider
+	journal    JournalProvider
+	project    ProjectProvider
+	liveStream LiveStreamConfig
 	opts       Options
 }
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
 // the assembled struct (rather than a bare http.Handler) lets the CLI
-// layer reach into Hub later — PR-91 will hook real dispatch events
-// into the same hub instance.
+// layer reach into Hub for the global /events SSE feed. PR-91 live
+// stream uses its own per-task polling loop, not the shared Hub.
 func NewServer(opts Options) (*Server, error) {
 	if opts.TokenSource == nil {
 		opts.TokenSource = DefaultTokenSource
@@ -119,6 +149,25 @@ func NewServer(opts Options) (*Server, error) {
 	if auditLog == nil {
 		auditLog = noopAuditReader{}
 	}
+	metrics := opts.Metrics
+	if metrics == nil {
+		metrics = noopMetricsProvider{}
+	}
+	journal := opts.Journal
+	if journal == nil {
+		journal = noopJournalProvider{}
+	}
+	project := opts.Project
+	if project == nil {
+		project = noopProjectProvider{}
+	}
+	liveStream := opts.LiveStream
+	if liveStream.Streamer == nil {
+		liveStream.Streamer = noopWorkspaceStreamer{}
+	}
+	if liveStream.Provider == nil {
+		liveStream.Provider = noopLiveStreamProvider{}
+	}
 	return &Server{
 		csrf:       csrf,
 		hub:        NewHub(),
@@ -127,13 +176,17 @@ func NewServer(opts Options) (*Server, error) {
 		taskDetail: taskDetail,
 		auditLog:   auditLog,
 		taskOps:    opts.TaskOps,
+		review:     opts.Review,
+		metrics:    metrics,
+		journal:    journal,
+		project:    project,
+		liveStream: liveStream,
 		opts:       opts,
 	}, nil
 }
 
-// Hub exposes the shared event hub so PR-91 (and any in-tree caller
-// that wants to publish from the CLI side) can fan events into the
-// same fan-out the SSE handler reads from.
+// Hub exposes the shared event hub so in-tree callers can fan events
+// into the same fan-out the /events SSE handler reads from.
 func (s *Server) Hub() *Hub { return s.hub }
 
 // Routes returns the wired-up http.Handler.  Order of middleware
@@ -155,6 +208,33 @@ func (s *Server) Routes() http.Handler {
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
 	}
+
+	// Review endpoints registered only when a ReviewProvider is wired.
+	if s.review != nil {
+		mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
+		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
+	}
+
+	// Metrics, Journal, Project endpoints (PR-105, PR-202). Always registered: unlike
+	// Review (which has no meaningful empty state), these three pages provide
+	// useful UI even when no real provider is wired — the noop fallback renders
+	// an empty-but-valid dashboard so a fresh install looks functional rather
+	// than missing pages. Review stays nil-gated because an empty skipped-tasks
+	// page would be misleading without a real store.
+	mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
+	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
+	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
+	mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
+	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
+	mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
+	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+
+	// Live-stream endpoints (PR-91). Always registered with noop fallback so
+	// the route exists even when no real streamer/provider is wired — the noop
+	// provider returns 404 for every task, which is the correct behaviour for a
+	// server that has no cmux integration.
+	mux.Handle("GET /api/tasks/{id}/stream", newLiveStreamHandler(s.liveStream.Streamer, s.liveStream.Provider))
+	mux.Handle("POST /api/tasks/{id}/send", newSendToWorkspaceHandler(s.liveStream.Streamer, s.liveStream.Provider))
 
 	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
 	// has been wired so servers without a store never expose /api/tasks/*.
