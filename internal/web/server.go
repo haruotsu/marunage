@@ -80,6 +80,18 @@ type Options struct {
 	// Nil disables GET /review and GET /api/review/skipped so servers
 	// that do not care about review keep passing without wiring a store.
 	Review ReviewProvider
+
+	// Metrics wires the metrics provider for GET /metrics and GET /api/metrics.
+	// Nil falls back to a noop provider that returns empty metrics.
+	Metrics MetricsProvider
+
+	// Journal wires the work journal provider for GET /journal and GET /api/journal.
+	// Nil falls back to a noop provider that returns empty entries.
+	Journal JournalProvider
+
+	// Project wires the project board provider for GET /project and GET /api/project.
+	// Nil falls back to a noop provider that returns empty phases.
+	Project ProjectProvider
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -94,6 +106,9 @@ type Server struct {
 	auditLog   AuditReader
 	taskOps    TaskOpsStore
 	review     ReviewProvider
+	metrics    MetricsProvider
+	journal    JournalProvider
+	project    ProjectProvider
 	opts       Options
 }
 
@@ -125,6 +140,18 @@ func NewServer(opts Options) (*Server, error) {
 	if auditLog == nil {
 		auditLog = noopAuditReader{}
 	}
+	metrics := opts.Metrics
+	if metrics == nil {
+		metrics = noopMetricsProvider{}
+	}
+	journal := opts.Journal
+	if journal == nil {
+		journal = noopJournalProvider{}
+	}
+	project := opts.Project
+	if project == nil {
+		project = noopProjectProvider{}
+	}
 	return &Server{
 		csrf:       csrf,
 		hub:        NewHub(),
@@ -134,6 +161,9 @@ func NewServer(opts Options) (*Server, error) {
 		auditLog:   auditLog,
 		taskOps:    opts.TaskOps,
 		review:     opts.Review,
+		metrics:    metrics,
+		journal:    journal,
+		project:    project,
 		opts:       opts,
 	}, nil
 }
@@ -168,6 +198,19 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
 		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
 	}
+
+	// Metrics, Journal, Project endpoints (PR-105). Always registered: unlike
+	// Review (which has no meaningful empty state), these three pages provide
+	// useful UI even when no real provider is wired — the noop fallback renders
+	// an empty-but-valid dashboard so a fresh install looks functional rather
+	// than missing pages. Review stays nil-gated because an empty skipped-tasks
+	// page would be misleading without a real store.
+	mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
+	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
+	mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
+	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
+	mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
+	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
 
 	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
 	// has been wired so servers without a store never expose /api/tasks/*.
