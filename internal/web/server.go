@@ -123,8 +123,8 @@ type Server struct {
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
 // the assembled struct (rather than a bare http.Handler) lets the CLI
-// layer reach into Hub later — PR-91 will hook real dispatch events
-// into the same hub instance.
+// layer reach into Hub for the global /events SSE feed. PR-91 live
+// stream uses its own per-task polling loop, not the shared Hub.
 func NewServer(opts Options) (*Server, error) {
 	if opts.TokenSource == nil {
 		opts.TokenSource = DefaultTokenSource
@@ -185,9 +185,8 @@ func NewServer(opts Options) (*Server, error) {
 	}, nil
 }
 
-// Hub exposes the shared event hub so PR-91 (and any in-tree caller
-// that wants to publish from the CLI side) can fan events into the
-// same fan-out the SSE handler reads from.
+// Hub exposes the shared event hub so in-tree callers can fan events
+// into the same fan-out the /events SSE handler reads from.
 func (s *Server) Hub() *Hub { return s.hub }
 
 // Routes returns the wired-up http.Handler.  Order of middleware
