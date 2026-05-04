@@ -1919,3 +1919,94 @@ func TestTaskRepoListCreatedAfterZeroMeansNoFilter(t *testing.T) {
 		t.Errorf("zero CreatedAfter: got %d rows; want 2", len(got))
 	}
 }
+
+// Test list for PR-300 CorrectDeadlines.
+//
+//  CD-1. CorrectDeadlines shifts updated_at of waiting_human rows by delta
+//  CD-2. CorrectDeadlines does not modify non-waiting_human rows
+//  CD-3. CorrectDeadlines with zero or negative delta is a no-op
+
+func TestCorrectDeadlines_ShiftsWaitingHumanUpdatedAt(t *testing.T) {
+	t.Parallel()
+	db := openTempDB(t)
+	fixedTime := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return fixedTime }))
+	ctx := context.Background()
+
+	id, err := repo.Insert(ctx, store.Task{
+		Source: "manual",
+		Title:  "Waiting task",
+		Status: store.StatusWaitingHuman,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	before, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get before: %v", err)
+	}
+
+	delta := 30 * time.Minute
+	if err := repo.CorrectDeadlines(ctx, delta); err != nil {
+		t.Fatalf("CorrectDeadlines: %v", err)
+	}
+
+	after, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get after: %v", err)
+	}
+
+	diff := after.UpdatedAt.Sub(before.UpdatedAt)
+	if diff < 29*time.Minute || diff > 31*time.Minute {
+		t.Errorf("updated_at diff = %v; want ~30m", diff)
+	}
+}
+
+func TestCorrectDeadlines_IgnoresNonWaitingHumanRows(t *testing.T) {
+	t.Parallel()
+	db := openTempDB(t)
+	fixedTime := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return fixedTime }))
+	ctx := context.Background()
+
+	id, err := repo.Insert(ctx, store.Task{
+		Source: "manual",
+		Title:  "Pending task",
+		Status: store.StatusPending,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	before, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get before: %v", err)
+	}
+
+	if err := repo.CorrectDeadlines(ctx, 30*time.Minute); err != nil {
+		t.Fatalf("CorrectDeadlines: %v", err)
+	}
+
+	after, err := repo.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get after: %v", err)
+	}
+
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("pending row updated_at changed: before=%v after=%v", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+func TestCorrectDeadlines_NonPositiveDeltaIsNoop(t *testing.T) {
+	t.Parallel()
+	db := openTempDB(t)
+	repo := store.NewTaskRepo(db)
+	ctx := context.Background()
+
+	for _, delta := range []time.Duration{0, -time.Minute} {
+		if err := repo.CorrectDeadlines(ctx, delta); err != nil {
+			t.Errorf("CorrectDeadlines(%v) = %v; want nil", delta, err)
+		}
+	}
+}

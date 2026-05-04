@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,20 +17,48 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 )
 
+// ErrAlreadyRunning is returned (wrapped) by fileBackedDaemon.Start when a
+// live process is already registered in the pidfile. Callers that want to
+// distinguish "already running" from other start failures can use
+// errors.Is(err, ErrAlreadyRunning).
+var ErrAlreadyRunning = errors.New("daemon: already running")
+
 // daemonControl is the narrow control surface the start / stop / status
 // subcommands use against the background process. Production wires
 // fileBackedDaemon (pidfile + signal); tests inject a fake so the test
 // suite never spawns a real `marunage loop` subprocess.
-//
-// The interface is small on purpose: the daemon's responsibilities are
-// "manage one long-running background `marunage loop` invocation",
-// nothing more. Anything richer (LaunchAgent / systemd unit generation,
-// log rotation policy, etc.) belongs in a follow-up PR rather than
-// growing this surface.
 type daemonControl interface {
 	Start(args []string) (int, error)
 	Stop(timeout time.Duration) (int, error)
 	Status() (daemonStatus, error)
+	LogPath() string
+}
+
+// daemonInstaller manages OS-level service registration (LaunchAgent /
+// systemd unit / Windows Task Scheduler). Install is idempotent: if the
+// service file already exists with identical content it returns nil
+// immediately. Uninstall removes the registration.
+type daemonInstaller interface {
+	Install(exePath, configPath, logPath string) error
+	Uninstall() error
+}
+
+// daemonInstallerFactory builds a daemonInstaller for the given configPath.
+type daemonInstallerFactory func(configPath string) (daemonInstaller, error)
+
+var daemonInstallerHook daemonInstallerFactory
+
+func withDaemonInstaller(t interface{ Cleanup(func()) }, f daemonInstallerFactory) {
+	prev := daemonInstallerHook
+	daemonInstallerHook = f
+	t.Cleanup(func() { daemonInstallerHook = prev })
+}
+
+func activeDaemonInstaller() daemonInstallerFactory {
+	if daemonInstallerHook != nil {
+		return daemonInstallerHook
+	}
+	return productionDaemonInstaller
 }
 
 // daemonStatus captures a single status probe. Running == false with a
@@ -112,6 +141,8 @@ type fileBackedDaemon struct {
 	configPath string
 }
 
+func (d *fileBackedDaemon) LogPath() string { return d.logPath }
+
 func (d *fileBackedDaemon) Status() (daemonStatus, error) {
 	st := daemonStatus{Path: d.pidPath}
 	pid, err := readPID(d.pidPath)
@@ -140,7 +171,7 @@ func (d *fileBackedDaemon) Start(args []string) (int, error) {
 		cur = daemonStatus{Path: d.pidPath}
 	}
 	if cur.Running {
-		return cur.PID, fmt.Errorf("daemon already running (pid=%d, pidfile=%s)", cur.PID, cur.Path)
+		return cur.PID, fmt.Errorf("daemon already running (pid=%d, pidfile=%s): %w", cur.PID, cur.Path, ErrAlreadyRunning)
 	}
 	if cur.PID != 0 {
 		// Stale pidfile from a crashed prior daemon; clear it so the
@@ -313,9 +344,7 @@ func processAlive(pid int) bool {
 // render iteration before being killed.
 const daemonStopTimeout = 10 * time.Second
 
-// newDaemonCmd builds `marunage daemon {start|stop|status}`. The three
-// subcommands share productionDaemonControl behind activeDaemonControl
-// so tests can swap in a fake without touching real pidfiles.
+// newDaemonCmd builds `marunage daemon {start|stop|status|restart|install|uninstall|logs}`.
 func newDaemonCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -328,7 +357,129 @@ func newDaemonCmd(configPath *string) *cobra.Command {
 	cmd.AddCommand(newDaemonStartCmd(configPath))
 	cmd.AddCommand(newDaemonStopCmd(configPath))
 	cmd.AddCommand(newDaemonStatusCmd(configPath))
+	cmd.AddCommand(newDaemonRestartCmd(configPath))
+	cmd.AddCommand(newDaemonInstallCmd(configPath))
+	cmd.AddCommand(newDaemonUninstallCmd(configPath))
+	cmd.AddCommand(newDaemonLogsCmd(configPath))
 	return cmd
+}
+
+func newDaemonRestartCmd(configPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:          "restart",
+		Short:        "Restart the marunage daemon (stop then start).",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctl, err := activeDaemonControl()(*configPath)
+			if err != nil {
+				return err
+			}
+			oldPID, err := ctl.Stop(daemonStopTimeout)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "daemon stopped (pid=%d)\n", oldPID)
+			newPID, err := ctl.Start(nil)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "daemon started (pid=%d)\n", newPID)
+			return nil
+		},
+	}
+}
+
+func newDaemonInstallCmd(configPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:          "install",
+		Short:        "Register marunage as an OS service (LaunchAgent / systemd / Task Scheduler).",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctl, err := activeDaemonControl()(*configPath)
+			if err != nil {
+				return err
+			}
+			inst, err := activeDaemonInstaller()(*configPath)
+			if err != nil {
+				return err
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("install: resolve executable: %w", err)
+			}
+			if err := inst.Install(exe, *configPath, ctl.LogPath()); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "daemon service installed")
+			return nil
+		},
+	}
+}
+
+func newDaemonUninstallCmd(configPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:          "uninstall",
+		Short:        "Remove the marunage OS service registration.",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			inst, err := activeDaemonInstaller()(*configPath)
+			if err != nil {
+				return err
+			}
+			if err := inst.Uninstall(); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "daemon service uninstalled")
+			return nil
+		},
+	}
+}
+
+func newDaemonLogsCmd(configPath *string) *cobra.Command {
+	var follow bool
+	cmd := &cobra.Command{
+		Use:          "logs",
+		Short:        "Show the daemon log (~/.marunage/logs/daemon.log).",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctl, err := activeDaemonControl()(*configPath)
+			if err != nil {
+				return err
+			}
+			return streamLog(ctl.LogPath(), follow, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Stream log output continuously.")
+	return cmd
+}
+
+// streamLog reads (and optionally tails) the log file at path into w.
+func streamLog(path string, follow bool, w io.Writer) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("daemon log not found at %s", path)
+		}
+		return fmt.Errorf("daemon: open log: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := io.Copy(w, f); err != nil {
+		return err
+	}
+	if !follow {
+		return nil
+	}
+	for {
+		time.Sleep(200 * time.Millisecond)
+		if _, err := io.Copy(w, f); err != nil {
+			return err
+		}
+	}
 }
 
 func newDaemonStartCmd(configPath *string) *cobra.Command {
