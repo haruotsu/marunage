@@ -40,6 +40,13 @@ const PluginName = "calendar"
 // kept — the plugin does not pre-judge them.
 const AttendeeDeclined = "declined"
 
+// EventCancelled is the Google Calendar v3 event.status value the plugin
+// filters out. With singleEvents=true the upstream surfaces removed
+// exceptions of recurring events as Status="cancelled" items; passing
+// them through would leave the queue with rows the user already deleted
+// from the calendar and no good way to mark them done.
+const EventCancelled = "cancelled"
+
 // ErrClientRequired is returned by List / Setup when the Plugin was
 // constructed without a Client. AuthStatus does not return this error — it
 // downgrades to AuthNotConfigured instead, which is the more useful signal
@@ -95,6 +102,15 @@ type Event struct {
 	// "needsAction"). Empty when the user has no attendee record (e.g.
 	// they own the event but were not invited as an attendee).
 	AttendeeStatus string
+
+	// Status mirrors the Google Calendar v3 event.status field
+	// ("confirmed" / "tentative" / "cancelled"). Cancelled instances of
+	// recurring events surface here when the upstream is queried with
+	// singleEvents=true; the Plugin filters them out alongside declined
+	// invites. Non-cancelled values are surfaced verbatim so a future
+	// downstream consumer can distinguish "tentative event" from
+	// "tentative attendee response".
+	Status string
 }
 
 // Client is the seam between the Plugin core and the Google Calendar
@@ -163,17 +179,19 @@ func New(opts ...Option) *Plugin {
 // Name reports the canonical plugin identifier.
 func (p *Plugin) Name() string { return PluginName }
 
-// List returns today's events with declined invites filtered out. The
-// window is [startOfDay(now), startOfDay(now)+24h) computed in the local
-// timezone of `now`, so callers running in UTC or a fixed offset see a
-// boundary that matches their wall clock.
+// List returns today's events with declined and cancelled entries
+// filtered out. The window is [startOfDay(now), nextMidnight(now))
+// computed in the local timezone of `now`. Both bounds are calendar-
+// arithmetic results, NOT `timeMin + 24h`: on DST spring-forward days
+// the wall-clock distance between two local midnights is 23 hours, and
+// adding 24 hours would silently extend the agenda into the next day.
 func (p *Plugin) List(ctx context.Context) ([]Event, error) {
 	if p.client == nil {
 		return nil, ErrClientRequired
 	}
 	now := p.now()
 	timeMin := startOfDay(now)
-	timeMax := timeMin.Add(24 * time.Hour)
+	timeMax := nextMidnight(now)
 	events, err := p.client.ListEvents(ctx, timeMin, timeMax)
 	if err != nil {
 		return nil, fmt.Errorf("calendar: list events: %w", err)
@@ -181,6 +199,9 @@ func (p *Plugin) List(ctx context.Context) ([]Event, error) {
 	out := make([]Event, 0, len(events))
 	for _, ev := range events {
 		if ev.AttendeeStatus == AttendeeDeclined {
+			continue
+		}
+		if ev.Status == EventCancelled {
 			continue
 		}
 		out = append(out, ev)
@@ -217,4 +238,17 @@ func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 func startOfDay(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
+// nextMidnight returns the local midnight that begins the day after t.
+// `time.Date` normalises overflow (day=32 -> next month) so this works
+// across month and year boundaries without an extra calendar dance. We
+// use this rather than `startOfDay(t).Add(24 * time.Hour)` because that
+// addition is wall-clock arithmetic: on DST spring-forward days it
+// overshoots local midnight by an hour, and on fall-back days it
+// undershoots. The agenda window must always be [today 00:00, tomorrow
+// 00:00) regardless of DST.
+func nextMidnight(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
 }
