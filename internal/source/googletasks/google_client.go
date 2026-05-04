@@ -210,9 +210,32 @@ func translateError(err error) error {
 		case http.StatusNotFound:
 			return fmt.Errorf("%w: status=%d %s", ErrUpstreamTaskMissing, apiErr.Code, msg)
 		}
+		// Default branch: still return an error chain that exposes the
+		// typed *googleapi.Error via errors.As (so callers can inspect
+		// Code / Body / Header), but DO NOT let the verbose
+		// Error.Error() rendering — which concatenates the full Body —
+		// land in the wrapped error string. Otherwise a 5xx with a
+		// reflected query/token in the response body would flow
+		// straight into log sinks that have not yet had Redact applied.
+		return fmt.Errorf("googletasks: upstream %d: %s [%w]", apiErr.Code, msg, scrubbedErr{inner: apiErr})
 	}
 	return err
 }
+
+// scrubbedErr is the wrapper translateError uses for unmapped
+// googleapi error codes. It masks the verbose Error() rendering
+// (which inlines the full Body) while keeping the typed value
+// reachable via errors.As, so callers that explicitly want the raw
+// payload can still recover it.
+type scrubbedErr struct {
+	inner *googleapi.Error
+}
+
+func (e scrubbedErr) Error() string {
+	return fmt.Sprintf("googleapi error %d", e.inner.Code)
+}
+
+func (e scrubbedErr) Unwrap() error { return e.inner }
 
 // truncateMessage keeps an upstream error string from leaking unbounded
 // reflected content into the error chain. 120 bytes is enough to retain

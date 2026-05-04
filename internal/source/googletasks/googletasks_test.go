@@ -669,3 +669,69 @@ func TestDeleteTranslatesUpstreamMissingToTaskNotFound(t *testing.T) {
 		t.Fatalf("Delete err = %v, want ErrTaskNotFound", err)
 	}
 }
+
+// TestCompletePropagatesUpstreamError covers the symmetric error path
+// to TestAddPropagatesUpstreamError: a non-401/403/404 upstream failure
+// (network glitch, 500) must travel up unchanged so the daemon
+// supervisor sees the original error category and can apply its own
+// retry policy. The earlier TOCTOU test pins the 404 translation; this
+// one guards against accidentally translating *every* upstream error
+// to one of the typed sentinels.
+func TestCompletePropagatesUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("upstream 500")
+	fc := newFakeClient()
+	fc.addTask(defaultTaskListAlias, GTask{ID: "t1", Title: "x", Status: statusNeedsAction})
+	fc.patchErr = boom
+	p := New(WithClient(fc))
+	err := p.Complete(context.Background(), "t1")
+	if !errors.Is(err, boom) {
+		t.Fatalf("Complete err = %v, want wraps %v", err, boom)
+	}
+	if errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("Complete err = %v, must NOT translate generic 500 to ErrTaskNotFound", err)
+	}
+}
+
+// TestDeletePropagatesUpstreamError mirrors the Complete pin.
+func TestDeletePropagatesUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("upstream 500")
+	fc := newFakeClient()
+	fc.addTask(defaultTaskListAlias, GTask{ID: "t1", Title: "x", Status: statusNeedsAction})
+	fc.delErr = boom
+	p := New(WithClient(fc))
+	err := p.Delete(context.Background(), "t1")
+	if !errors.Is(err, boom) {
+		t.Fatalf("Delete err = %v, want wraps %v", err, boom)
+	}
+	if errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("Delete err = %v, must NOT translate generic 500 to ErrTaskNotFound", err)
+	}
+}
+
+// TestAuthStatusContextCancellationIsUnwrapped confirms a cancellation
+// error coming back from the upstream Client surfaces as a vanilla
+// context.Canceled, not wrapped under "googletasks: ping:". The daemon
+// supervisor branches on errors.Is(err, context.Canceled) to skip
+// retry-on-shutdown; an extra wrap layer breaks that branch on stricter
+// Go versions where %w chains are not transparently unwrapped by
+// errors.Is across multiple hops in some libraries.
+func TestAuthStatusContextCancellationIsUnwrapped(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.pingErr = context.Canceled
+	p := New(WithClient(fc))
+	_, err := p.AuthStatus(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("AuthStatus err = %v, want context.Canceled", err)
+	}
+	// And the message must not advertise a "ping:" prefix that would
+	// mask the cancellation cause for log readers.
+	if err != nil && err.Error() != context.Canceled.Error() {
+		t.Errorf("AuthStatus err string = %q, want bare %q", err.Error(), context.Canceled.Error())
+	}
+}
