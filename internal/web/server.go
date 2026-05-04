@@ -81,8 +81,9 @@ type Options struct {
 	// that do not care about review keep passing without wiring a store.
 	Review ReviewProvider
 
-	// Metrics wires the metrics provider for GET /metrics and GET /api/metrics.
-	// Nil falls back to a noop provider that returns empty metrics.
+	// Metrics wires the metrics provider for GET /metrics, GET /api/metrics and
+	// GET /prometheus (Prometheus text format). Nil falls back to a noop provider
+	// that returns empty metrics.
 	Metrics MetricsProvider
 
 	// Journal wires the work journal provider for GET /journal and GET /api/journal.
@@ -199,7 +200,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
 	}
 
-	// Metrics, Journal, Project endpoints (PR-105). Always registered: unlike
+	// Metrics, Journal, Project endpoints (PR-105, PR-202). Always registered: unlike
 	// Review (which has no meaningful empty state), these three pages provide
 	// useful UI even when no real provider is wired — the noop fallback renders
 	// an empty-but-valid dashboard so a fresh install looks functional rather
