@@ -22,3 +22,20 @@ func EmbeddedFS() fs.FS {
 	}
 	return sub
 }
+
+// EmbeddedSkillNames returns the names of the //go:embed-bundled
+// skills (`marunage-triage`, `marunage-execute`, `marunage-reflect`)
+// in deterministic order. The function is the single source of
+// truth for "is this skill name owned by PR-34?" so the registry
+// installer can refuse to clobber bundled skills without hard-coding
+// a parallel list.
+func EmbeddedSkillNames() []string {
+	names, err := listSkillDirs(EmbeddedFS())
+	if err != nil {
+		// listSkillDirs only fails when the embedded FS is unreadable,
+		// which the build guarantees against. Treat as programmer
+		// error — same rationale as EmbeddedFS panicking.
+		panic("skills: cannot enumerate embedded skills: " + err.Error())
+	}
+	return names
+}

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/haruotsu/marunage/internal/config"
 )
 
 // fixtureRegistry stands up a tiny in-memory registry that publishes
@@ -148,6 +150,70 @@ func TestInstaller_RecordsPreviousVersion(t *testing.T) {
 	}
 	if rep.NewVersion != "0.2.0" {
 		t.Errorf("NewVersion = %q; want 0.2.0", rep.NewVersion)
+	}
+}
+
+// recordingAuditor is the test double the audit-log assertions
+// drive. Captures every event in declaration order so per-event
+// assertions stay readable.
+type recordingAuditor struct {
+	events []config.AuditEvent
+}
+
+func (r *recordingAuditor) Record(e config.AuditEvent) {
+	r.events = append(r.events, e)
+}
+
+// TestInstaller_EmitsAuditOnInstall pins the "No silent execution"
+// invariant for the registry installer: a fresh install must record
+// `skills.registry.install`.
+func TestInstaller_EmitsAuditOnInstall(t *testing.T) {
+	fix := newFixtureRegistry(t, "marunage-source-x", "0.1.0",
+		"<!-- version: 0.1.0 -->\n# x\n")
+	root := filepath.Join(t.TempDir(), ".claude", "skills")
+
+	rec := &recordingAuditor{}
+	in := &Installer{
+		Client:     &Client{BaseURL: fix.URL, AllowInsecure: true},
+		SkillsRoot: root,
+		Auditor:    rec,
+	}
+	if _, err := in.Install(context.Background(), InstallOptions{Name: "marunage-source-x"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("len(events) = %d; want 1", len(rec.events))
+	}
+	if rec.events[0].Action != "skills.registry.install" {
+		t.Errorf("Action = %q; want skills.registry.install", rec.events[0].Action)
+	}
+	if rec.events[0].Name != "marunage-source-x" {
+		t.Errorf("Name = %q", rec.events[0].Name)
+	}
+}
+
+// TestInstaller_EmitsAuditOnUpdate pins that a re-install at a new
+// version records `skills.registry.update` so audit log grep
+// distinguishes upgrades from fresh installs.
+func TestInstaller_EmitsAuditOnUpdate(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".claude", "skills")
+
+	fix1 := newFixtureRegistry(t, "marunage-source-x", "0.1.0",
+		"<!-- version: 0.1.0 -->\n# x\n")
+	in1 := &Installer{Client: &Client{BaseURL: fix1.URL, AllowInsecure: true}, SkillsRoot: root, Auditor: &recordingAuditor{}}
+	if _, err := in1.Install(context.Background(), InstallOptions{Name: "marunage-source-x"}); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+
+	fix2 := newFixtureRegistry(t, "marunage-source-x", "0.2.0",
+		"<!-- version: 0.2.0 -->\n# x v2\n")
+	rec := &recordingAuditor{}
+	in2 := &Installer{Client: &Client{BaseURL: fix2.URL, AllowInsecure: true}, SkillsRoot: root, Auditor: rec}
+	if _, err := in2.Install(context.Background(), InstallOptions{Name: "marunage-source-x"}); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+	if len(rec.events) != 1 || rec.events[0].Action != "skills.registry.update" {
+		t.Errorf("events = %+v; want one skills.registry.update", rec.events)
 	}
 }
 

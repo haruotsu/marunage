@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/skills"
 )
 
 // StateFileName is the on-disk record of every skill `marunage skills
@@ -140,13 +142,15 @@ func (s State) Upsert(e InstalledSkill) State {
 
 // IsEmbeddedSkill reports whether name is one of the //go:embed
 // shipped skills the registry installer must NOT clobber by default.
-// Pinning the list here (rather than reaching into internal/skills)
-// avoids a circular dependency and keeps the registry package
-// self-contained for tests.
+// Authority lives in skills.EmbeddedSkillNames so adding or renaming
+// an embedded SKILL.md in PR-34's bundle automatically tightens the
+// registry's refusal list — no parallel hard-coded list to drift.
 func IsEmbeddedSkill(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "marunage-triage", "marunage-execute", "marunage-reflect":
-		return true
+	target := strings.TrimSpace(name)
+	for _, n := range skills.EmbeddedSkillNames() {
+		if n == target {
+			return true
+		}
 	}
 	return false
 }

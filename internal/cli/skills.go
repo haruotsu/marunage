@@ -9,6 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/skills/registry"
 )
 
@@ -37,7 +39,12 @@ var errSkillsRegistryNotConfigured = errors.New(
 // by `marunage setup --skills` is left untouched; this surface only
 // touches `~/.claude/skills/<name>/` for non-embedded names by
 // default.
-func newSkillsCmd() *cobra.Command {
+//
+// configPath is the persistent --config flag the root command owns.
+// install / update open an audit log derived from it so the
+// registry-driven mutations land in the same JSONL file as
+// init / config / setup events.
+func newSkillsCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
 		Short: "Install / list / search / update skills from a shared registry.",
@@ -57,15 +64,15 @@ func newSkillsCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&registryURL, "registry", "", "Override the registry base URL (default: $"+EnvRegistryURL+").")
 	cmd.PersistentFlags().BoolVar(&allowInsecure, "allow-insecure-registry", false, "Permit plain http:// registries (default: https-only).")
 
-	cmd.AddCommand(newSkillsInstallCmd(&registryURL, &allowInsecure))
+	cmd.AddCommand(newSkillsInstallCmd(&registryURL, &allowInsecure, configPath))
 	cmd.AddCommand(newSkillsListCmd())
 	cmd.AddCommand(newSkillsSearchCmd(&registryURL, &allowInsecure))
-	cmd.AddCommand(newSkillsUpdateCmd(&registryURL, &allowInsecure))
+	cmd.AddCommand(newSkillsUpdateCmd(&registryURL, &allowInsecure, configPath))
 
 	return cmd
 }
 
-func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Command {
+func newSkillsInstallCmd(registryURL *string, parentInsecure *bool, configPath *string) *cobra.Command {
 	var (
 		version    string
 		allowEmbed bool
@@ -86,6 +93,11 @@ func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Comma
 			}
 			allowInsecure := boolDeref(parentInsecure) || envInsecureEnabled()
 			warnIfEnvInsecure(cmd.ErrOrStderr())
+			auditor, closeAudit, err := openSkillsAuditor(stringDeref(configPath))
+			if err != nil {
+				return err
+			}
+			defer closeAudit()
 			in := &registry.Installer{
 				Client: &registry.Client{
 					BaseURL:       base,
@@ -93,6 +105,7 @@ func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Comma
 					AllowInsecure: allowInsecure,
 				},
 				SkillsRoot: root,
+				Auditor:    auditor,
 			}
 			rep, err := in.Install(cmd.Context(), registry.InstallOptions{
 				Name:                  args[0],
@@ -166,7 +179,7 @@ func newSkillsSearchCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 	return cmd
 }
 
-func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool) *cobra.Command {
+func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool, configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "update [name]",
 		Short:        "Re-install installed skills (or one named skill) at the latest version.",
@@ -187,6 +200,11 @@ func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 			}
 			allowInsecure := boolDeref(parentInsecure) || envInsecureEnabled()
 			warnIfEnvInsecure(cmd.ErrOrStderr())
+			auditor, closeAudit, err := openSkillsAuditor(stringDeref(configPath))
+			if err != nil {
+				return err
+			}
+			defer closeAudit()
 			client := &registry.Client{
 				BaseURL:       base,
 				UserAgent:     "marunage-cli",
@@ -211,7 +229,7 @@ func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 				}
 			}
 
-			in := &registry.Installer{Client: client, SkillsRoot: root}
+			in := &registry.Installer{Client: client, SkillsRoot: root, Auditor: auditor}
 			for _, name := range targets {
 				rep, err := in.Install(ctx, registry.InstallOptions{Name: name})
 				if err != nil {
@@ -233,6 +251,29 @@ func boolDeref(p *bool) bool {
 		return false
 	}
 	return *p
+}
+
+// stringDeref is the *string sibling of boolDeref; lets us pass the
+// root command's configPath through without nil checks at every
+// RunE boundary.
+func stringDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// openSkillsAuditor returns an audit writer rooted at the same
+// `<configDir>/logs/audit.log` location every other mutation site
+// uses. A failure to open is fatal — the "No silent execution"
+// invariant requires every install / update to leave a trace.
+func openSkillsAuditor(configPath string) (config.Auditor, func(), error) {
+	auditPath := auditLogPathFor(configPath)
+	a, err := logging.NewAuditLog(auditPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open audit log %s: %w", auditPath, err)
+	}
+	return a, func() { _ = a.Close() }, nil
 }
 
 // envInsecureEnabled reports whether the http opt-in env var is
