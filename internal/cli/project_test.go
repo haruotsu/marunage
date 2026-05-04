@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/project"
@@ -38,16 +39,20 @@ func (r *fakeProjectRunner) Run(_ context.Context, _ string, _ ...string) ([]byt
 // Once the list is exhausted, it keeps returning the last response. This lets
 // tests simulate a board that transitions from "has tasks" to "all done"
 // across multiple polling cycles without needing context cancellation.
+// mu guards callIdx so the struct is safe for concurrent Fetch calls.
 type sequentialBoardFetcher struct {
+	mu        sync.Mutex
 	responses []string
 	callIdx   int
 }
 
 func (f *sequentialBoardFetcher) Fetch(ctx context.Context, parsed project.ParsedURL) ([]project.BoardItem, error) {
+	f.mu.Lock()
 	resp := f.responses[f.callIdx]
 	if f.callIdx < len(f.responses)-1 {
 		f.callIdx++
 	}
+	f.mu.Unlock()
 	runner := &fakeProjectRunner{stdout: []byte(resp)}
 	return project.FetchItems(ctx, runner, parsed)
 }
@@ -167,13 +172,13 @@ func TestProjectRunCmd_IntervalTooShort(t *testing.T) {
 	code := Execute(
 		[]string{"project", "run",
 			"https://github.com/orgs/myorg/projects/5",
-			"--interval", "100ms"},
+			"--interval", "50ms"},
 		&stdout, &stderr)
 	if code == 0 {
-		t.Fatal("project run --interval 100ms exit=0; want non-zero")
+		t.Fatal("project run --interval 50ms exit=0; want non-zero")
 	}
-	if !strings.Contains(stderr.String(), "at least 1s") {
-		t.Errorf("stderr=%q; want 'at least 1s'", stderr.String())
+	if !strings.Contains(stderr.String(), "at least 100ms") {
+		t.Errorf("stderr=%q; want 'at least 100ms'", stderr.String())
 	}
 }
 
@@ -210,11 +215,11 @@ func TestProjectRunCmd_DispatchInvoked(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	// --interval 1s: after dispatch we wait 1s, then fetch empty board → done.
+	// --interval 100ms: after dispatch we wait 100ms, then fetch empty board → done.
 	code := Execute(
 		[]string{"project", "run",
 			"https://github.com/orgs/myorg/projects/5",
-			"--interval", "1s"},
+			"--interval", "100ms"},
 		&stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("project run (dispatch+complete) exit=%d; stderr=%q; stdout=%q",
