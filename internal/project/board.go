@@ -92,6 +92,12 @@ func ParseBoardURL(rawURL string) (ParsedURL, error) {
 	if err != nil {
 		return ParsedURL{}, fmt.Errorf("%w: %v", ErrInvalidBoardURL, err)
 	}
+	// Reject any scheme other than HTTPS. file://, javascript://, or http://
+	// URLs that happen to include "github.com" as a host would otherwise pass
+	// the host check and reach the gh CLI runner with unexpected arguments.
+	if u.Scheme != "https" {
+		return ParsedURL{}, fmt.Errorf("%w: %q (only https:// is supported, got %q)", ErrInvalidBoardURL, rawURL, u.Scheme)
+	}
 	// Reject any host that is not github.com to prevent SSRF: a crafted URL
 	// with an attacker-controlled host would still pass the path check and
 	// could redirect future API calls to an arbitrary server.
@@ -140,7 +146,11 @@ func FetchItems(ctx context.Context, runner Runner, parsed ParsedURL) ([]BoardIt
 	}
 	var resp rawProjectListResponse
 	if jsonErr := json.Unmarshal(stdout, &resp); jsonErr != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, jsonErr)
+		// Use %v (not %w) for jsonErr so callers cannot errors.Is against the
+		// internal json parse error — ErrInvalidResponse is the only sentinel
+		// this package promises. Double-wrapping would let internal error types
+		// leak across the package boundary.
+		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, jsonErr)
 	}
 	items := make([]BoardItem, 0, len(resp.Items))
 	for _, raw := range resp.Items {

@@ -78,7 +78,7 @@ func productionProjectDispatch(ctx context.Context, configPath string, item proj
 	}
 	cwd, err := expandHome(cfg.Core.DefaultCwd)
 	if err != nil {
-		cwd = cfg.Core.DefaultCwd
+		return fmt.Errorf("resolve core.default_cwd %q: %w", cfg.Core.DefaultCwd, err)
 	}
 
 	cm := cmux.NewClient()
@@ -146,8 +146,8 @@ func newProjectRunCmd(configPath *string) *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if pollInterval < time.Second {
-				return fmt.Errorf("--interval must be at least 1s (got %s)", pollInterval)
+			if pollInterval < 100*time.Millisecond {
+				return fmt.Errorf("--interval must be at least 100ms (got %s)", pollInterval)
 			}
 
 			boardURL := args[0]
