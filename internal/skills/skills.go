@@ -31,23 +31,10 @@ var ErrUnsafePath = errors.New("skills: refusing to follow symlink in target lay
 // can apply the same contract without re-deriving it.
 var RequiredTriageSections = []string{"判定ロジック", "出力フォーマット"}
 
-// RequiredAutoReplySections enumerates the H2 headers the autoreply
-// SKILL.md must contain. The four sections encode the permission boundary
-// contract; removing any one would silently break the trust model.
-var RequiredAutoReplySections = []string{
-	"Permissions",
-	"Auto-Reply OK",
-	"Auto-Reply NG (NEVER auto-reply)",
-	"Draft Mode",
-}
-
 // triageSkillName is the on-disk directory name the validation step
 // targets. We pin it in one place so renaming the embedded skill
 // directory automatically propagates here.
 const triageSkillName = "marunage-triage"
-
-// autoReplySkillName is the on-disk directory name for the autoreply skill.
-const autoReplySkillName = "marunage-autoreply"
 
 // SkillReport is the per-skill outcome row in InstallResult. The Old/New
 // version pair powers `--check-updates`-style reporting; on a fresh
@@ -244,9 +231,6 @@ func Install(opts InstallOptions) (InstallResult, error) {
 		if err := validateInstalledTriage(opts.Target); err != nil {
 			return res, err
 		}
-		if err := validateInstalledAutoReply(opts.Target); err != nil {
-			return res, err
-		}
 	}
 
 	return res, nil
@@ -391,21 +375,6 @@ func validateInstalledTriage(target string) error {
 		return fmt.Errorf("read installed triage: %w", err)
 	}
 	return ValidateRequiredSections(body, RequiredTriageSections)
-}
-
-// validateInstalledAutoReply runs the required-section check on the
-// post-install on-disk autoreply SKILL.md. Absent file is allowed so
-// --from-dir sources that ship only other skills are not broken.
-func validateInstalledAutoReply(target string) error {
-	p := filepath.Join(target, autoReplySkillName, "SKILL.md")
-	body, err := os.ReadFile(p)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("read installed autoreply: %w", err)
-	}
-	return ValidateRequiredSections(body, RequiredAutoReplySections)
 }
 
 // displayVersion turns the (oldVersion, hasExisting) pair into the

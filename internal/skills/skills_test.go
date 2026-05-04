@@ -14,17 +14,12 @@ import (
 )
 
 // TestEmbeddedFS_ContainsRequiredSkills pins that the //go:embed bundle
-// actually shipped all skills marunage's design depends on.
+// actually shipped the three skills marunage's Phase 1 design depends on.
 // Without this guard, a refactor that renamed the embed path could quietly
 // produce a binary that "installs" zero skills.
 func TestEmbeddedFS_ContainsRequiredSkills(t *testing.T) {
 	root := EmbeddedFS()
-	for _, name := range []string{
-		"marunage-autoreply",
-		"marunage-triage",
-		"marunage-execute",
-		"marunage-reflect",
-	} {
+	for _, name := range []string{"marunage-triage", "marunage-execute", "marunage-reflect"} {
 		path := name + "/SKILL.md"
 		f, err := root.Open(path)
 		if err != nil {
@@ -50,21 +45,6 @@ func TestEmbeddedSkills_PassRequiredSectionValidation(t *testing.T) {
 	}
 }
 
-// TestEmbeddedAutoReply_PassRequiredSectionValidation pins that the
-// autoreply SKILL.md carries all four mandatory permission-boundary
-// sections. Losing any one would silently break the trust model on fresh
-// installs.
-func TestEmbeddedAutoReply_PassRequiredSectionValidation(t *testing.T) {
-	root := EmbeddedFS()
-	body, err := fs.ReadFile(root, "marunage-autoreply/SKILL.md")
-	if err != nil {
-		t.Fatalf("read embedded autoreply: %v", err)
-	}
-	if err := ValidateRequiredSections(body, RequiredAutoReplySections); err != nil {
-		t.Errorf("embedded marunage-autoreply SKILL.md: %v", err)
-	}
-}
-
 // TestInstall_FreshTarget_CopiesAllSkillsFromEmbed pins the happy path:
 // no existing ~/.claude/skills, install writes every embedded skill, and
 // the result lists each one under Installed (not Skipped or Updated).
@@ -80,7 +60,7 @@ func TestInstall_FreshTarget_CopiesAllSkillsFromEmbed(t *testing.T) {
 	}
 
 	got := names(res.Installed)
-	want := []string{"marunage-autoreply", "marunage-execute", "marunage-reflect", "marunage-triage"}
+	want := []string{"marunage-execute", "marunage-reflect", "marunage-triage"}
 	if !equalSorted(got, want) {
 		t.Errorf("Installed names = %v; want %v", got, want)
 	}
@@ -182,7 +162,7 @@ func TestInstall_ExistingSameVersion_IsIdempotent(t *testing.T) {
 		t.Errorf("second Install reported Updated=%v; want empty (same version)", names(res.Updated))
 	}
 	got := names(res.Skipped)
-	want := []string{"marunage-autoreply", "marunage-execute", "marunage-reflect", "marunage-triage"}
+	want := []string{"marunage-execute", "marunage-reflect", "marunage-triage"}
 	if !equalSorted(got, want) {
 		t.Errorf("Skipped = %v; want %v", got, want)
 	}
@@ -410,25 +390,6 @@ func TestInstall_TriageMissingRequiredSection_Fails(t *testing.T) {
 	src := fstest.MapFS{
 		"marunage-triage/SKILL.md": &fstest.MapFile{
 			Data: []byte("<!-- version: 0.1.0 -->\n# broken triage\n## 判定ロジック\nonly half\n"),
-		},
-	}
-	target := filepath.Join(t.TempDir(), ".claude", "skills")
-
-	_, err := Install(InstallOptions{Target: target, Source: src})
-	if !errors.Is(err, ErrMissingSection) {
-		t.Errorf("err = %v; want errors.Is(_, ErrMissingSection)", err)
-	}
-}
-
-// TestInstall_AutoReplyMissingRequiredSection_Fails mirrors
-// TestInstall_TriageMissingRequiredSection_Fails for the autoreply skill:
-// a SKILL.md that omits one of the four permission-boundary sections must
-// cause Install to fail loudly rather than silently break the trust model.
-func TestInstall_AutoReplyMissingRequiredSection_Fails(t *testing.T) {
-	src := fstest.MapFS{
-		"marunage-autoreply/SKILL.md": &fstest.MapFile{
-			// Missing "Auto-Reply NG (NEVER auto-reply)" section.
-			Data: []byte("<!-- version: 0.1.0 -->\n# autoreply\n## Permissions\nok\n## Auto-Reply OK\nok\n## Draft Mode\nok\n"),
 		},
 	}
 	target := filepath.Join(t.TempDir(), ".claude", "skills")
