@@ -281,6 +281,58 @@ func TestGWSStatusReportsAuth(t *testing.T) {
 	})
 }
 
+// TestGWSListEventsParsesEventStatus — G7. status=cancelled items must
+// reach the Plugin layer so Plugin.List can drop them; the parser must
+// not pre-filter (test_list C14 owns the cancelled-event filtering at
+// the Plugin layer).
+func TestGWSListEventsParsesEventStatus(t *testing.T) {
+	t.Parallel()
+
+	items := []map[string]any{
+		{
+			"id":     "evt-cancelled",
+			"status": "cancelled",
+			"start":  map[string]any{"dateTime": "2026-05-04T10:00:00+09:00"},
+			"end":    map[string]any{"dateTime": "2026-05-04T11:00:00+09:00"},
+		},
+	}
+	runner := &scriptedRunner{
+		outputs: [][]byte{eventsListJSON(t, items)},
+		outErrs: []error{nil},
+	}
+	client := NewGWSClient(WithRunner(runner.run))
+	got, err := client.ListEvents(context.Background(), time.Now(), time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (parser does not filter; that is the Plugin's job)", len(got))
+	}
+	if got[0].Status != "cancelled" {
+		t.Errorf("Status = %q, want cancelled", got[0].Status)
+	}
+}
+
+// TestGWSSetupInteractiveSurfacesProbeError — G8. Interactive Setup
+// runs the calendarList smoke test directly and surfaces the runner
+// error (e.g. binary missing, network failure) verbatim — going through
+// Status would collapse those into AuthNotConfigured and hide the
+// underlying problem behind the "please run gws auth login" hint.
+func TestGWSSetupInteractiveSurfacesProbeError(t *testing.T) {
+	t.Parallel()
+
+	upstream := errors.New("exec: \"gws\": executable file not found in $PATH")
+	runner := &scriptedRunner{
+		outputs: [][]byte{nil},
+		outErrs: []error{upstream},
+	}
+	client := NewGWSClient(WithRunner(runner.run))
+	err := client.Setup(context.Background(), source.SetupOptions{NonInteractive: false})
+	if !errors.Is(err, upstream) {
+		t.Fatalf("err = %v, want it to wrap %v", err, upstream)
+	}
+}
+
 // TestGWSSetupNonInteractiveExplains — G6.
 func TestGWSSetupNonInteractiveExplains(t *testing.T) {
 	t.Parallel()

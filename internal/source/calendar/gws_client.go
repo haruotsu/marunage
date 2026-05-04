@@ -24,6 +24,7 @@ package calendar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"
@@ -36,18 +37,21 @@ import (
 // production wires exec.CommandContext via DefaultRunner.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// DefaultRunner runs the binary via os/exec and returns its combined
-// stdout. Errors include the captured output so a failure surfaces with
-// gws's own diagnostic message instead of just "exit status 1".
+// DefaultRunner runs the binary via os/exec and returns its stdout. The
+// command honours ctx (kill on cancel via exec.CommandContext) so a
+// caller can bound the subprocess from outside. Errors are wrapped with
+// the binary name; we deliberately do NOT include captured stderr in the
+// error message because gws diagnostics can carry OAuth refresh tokens
+// or PII (calendar id, attendee email) and the wrapped error frequently
+// ends up in slog / audit logs. Callers who need the raw stderr for
+// debugging can run gws directly.
 func DefaultRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.Output()
 	if err != nil {
-		// Surface stderr (when present) so callers see the gws error
-		// rather than a bare exit code. exec.ExitError carries Stderr
-		// when the command was constructed with Output (not Run).
-		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
-			return nil, fmt.Errorf("%s: %w: %s", name, err, exitErr.Stderr)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("%s: %w (exit code %d)", name, err, exitErr.ExitCode())
 		}
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
@@ -142,15 +146,26 @@ func (c *GWSClient) ListEvents(ctx context.Context, timeMin, timeMax time.Time) 
 
 // Status runs a cheap read against the calendarList endpoint to verify the
 // gws auth token works. Failure is interpreted as "not configured" rather
-// than as a hard error: the caller (`marunage doctor`, AuthStatus) cares
-// about the typed state, not about the underlying gws stderr line.
+// than as a hard error: AuthStatus callers (`marunage doctor`,
+// Plugin.AuthStatus) care about the typed state, not about the
+// underlying gws stderr line. Callers that DO need the raw error (Setup
+// interactive smoke test) should invoke probe directly.
 func (c *GWSClient) Status(ctx context.Context) (source.AuthStatus, error) {
-	params := map[string]any{"maxResults": 1}
-	paramsJSON, _ := json.Marshal(params) // map[string]any with primitives cannot fail to marshal.
-	if _, err := c.runner(ctx, c.binary, "calendar", "calendarList", "list", "--params", string(paramsJSON), "--format", "json"); err != nil {
+	if err := c.probe(ctx); err != nil {
 		return source.AuthNotConfigured, nil
 	}
 	return source.AuthAuthenticated, nil
+}
+
+// probe runs the calendarList smoke test and returns the runner error
+// verbatim. Pulled out so Status (which downgrades I/O failures to
+// AuthNotConfigured) and Setup (which must surface them) can share one
+// definition of "is gws + auth working right now?".
+func (c *GWSClient) probe(ctx context.Context) error {
+	params := map[string]any{"maxResults": 1}
+	paramsJSON, _ := json.Marshal(params) // map[string]any with primitives cannot fail to marshal.
+	_, err := c.runner(ctx, c.binary, "calendar", "calendarList", "list", "--params", string(paramsJSON), "--format", "json")
+	return err
 }
 
 // Setup is intentionally a no-op shell-out today: gws owns its own auth
@@ -162,11 +177,13 @@ func (c *GWSClient) Setup(ctx context.Context, opts source.SetupOptions) error {
 	if opts.NonInteractive {
 		return fmt.Errorf("calendar: gws auth must already be configured (run `gws auth login` separately; non-interactive Setup cannot launch a browser flow)")
 	}
-	// Interactive path: surface gws auth status as a smoke test. We do
-	// not invoke `gws auth login` ourselves — the user runs it once in
-	// their shell and marunage piggy-backs on the resulting token.
-	if status, _ := c.Status(ctx); status != source.AuthAuthenticated {
-		return fmt.Errorf("calendar: gws auth not authenticated; run `gws auth login` and retry")
+	// Interactive path: run the calendarList smoke test directly and
+	// surface the runner error verbatim. Going through Status would
+	// collapse "gws binary missing" and "auth missing" into the same
+	// AuthNotConfigured outcome, masking real environment problems
+	// behind the "please run gws auth login" hint.
+	if err := c.probe(ctx); err != nil {
+		return fmt.Errorf("calendar: gws smoke test failed (run `gws auth login` and verify gws is on PATH): %w", err)
 	}
 	return nil
 }
@@ -225,6 +242,7 @@ func (g gwsEvent) toEvent(calendarID string) (Event, error) {
 		Location:    g.Location,
 		HTMLLink:    g.HTMLLink,
 		CalendarID:  calendarID,
+		Status:      g.Status,
 	}
 	switch {
 	case g.Start.DateTime != "":

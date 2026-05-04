@@ -15,6 +15,8 @@
 - [x] C11. `Plugin.Setup` forwards opts to `client.Setup`; propagates error.
 - [x] C12. `Plugin.AuthStatus` with no client returns `source.AuthNotConfigured` and nil error.
 - [x] C13. `Plugin.AuthStatus` delegates to `client.Status`.
+- [x] C14. `Plugin.List` filters out events whose `Status == "cancelled"` (singleEvents=true exception items must not become queue rows).
+- [x] C15. `Plugin.List` boundary survives DST spring-forward: on a 23-wall-hour day the window must still end at *next local midnight*, not at `timeMin + 24h`.
 
 ## A. Adapter (adapter.go)
 
@@ -42,6 +44,8 @@
 - [x] G4. `(*GWSClient).ListEvents` returns wrapped error when the runner fails (non-zero exit).
 - [x] G5. `(*GWSClient).Status` runs `gws calendar calendarList list --params {"maxResults":1}` and returns AuthAuthenticated on success, AuthNotConfigured on failure.
 - [x] G6. `(*GWSClient).Setup(NonInteractive=true)` returns an error explaining gws auth must already be configured.
+- [x] G7. `(*GWSClient).ListEvents` parses `status` per item and surfaces it on `Event.Status` (does not pre-filter; that is the Plugin's job).
+- [x] G8. `(*GWSClient).Setup(NonInteractive=false)` runs the calendarList smoke test directly and surfaces the runner error verbatim — Status's "downgrade I/O failure to AuthNotConfigured" must NOT mask binary-missing / network errors here.
 
 ## Cross-cutting
 
