@@ -264,6 +264,35 @@ func TestDashboardProvider_GeneratedAtFromInjectedClock(t *testing.T) {
 	}
 }
 
+// TestCheckpointKeyBelongsTo pins the kv_state attribution helper
+// directly so the prefix-match table is regression-locked without
+// having to thread every edge case through the provider's six other
+// store calls.
+func TestCheckpointKeyBelongsTo(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{"markdown", "markdown:mtime:/tmp/foo.md", true},
+		{"markdown", "markdown_last_id", true},
+		{"markdown", "markdown", true},
+		{"markdown", "markdownish", false},
+		{"markdown", "other:markdown", false},
+		{"google_tasks", "google_tasks_last_id", true},
+		{"google_tasks", "google_tasks:cursor", true},
+		{"google_tasks", "google_last_id", false},
+		{"gmail", "", false},
+		{"gmail", "gma", false},
+	}
+	for _, c := range cases {
+		got := checkpointKeyBelongsTo(c.key, c.name)
+		if got != c.want {
+			t.Errorf("checkpointKeyBelongsTo(%q, %q) = %v; want %v", c.key, c.name, got, c.want)
+		}
+	}
+}
+
 func TestNoopDashboardProviderReturnsEmptySnapshot(t *testing.T) {
 	prov := noopDashboardProvider{now: func() time.Time { return time.Unix(42, 0).UTC() }}
 	snap, err := prov.Snapshot(context.Background())
