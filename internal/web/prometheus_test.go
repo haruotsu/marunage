@@ -192,7 +192,7 @@ func TestAcceptsTextPlain_WildcardOnly_ReturnsFalse(t *testing.T) {
 	}
 }
 
-// acceptsTextPlain returns true when Accept contains text/plain alongside */*
+// 14. acceptsTextPlain returns true when Accept contains text/plain alongside */*
 func TestAcceptsTextPlain_MixedWithWildcard_ReturnsTrue(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	req.Header.Set("Accept", "text/plain, */*")
@@ -234,7 +234,7 @@ func TestPrometheusLabelEscape(t *testing.T) {
 	}
 }
 
-// formatPrometheus does not panic when ByStatus or BySource is nil.
+// 15. formatPrometheus does not panic when ByStatus or BySource is nil.
 func TestFormatPrometheus_NilMaps_NoPanic(t *testing.T) {
 	snap := MetricsSnapshot{
 		TotalTasks:  0,
@@ -255,7 +255,7 @@ func TestFormatPrometheus_NilMaps_NoPanic(t *testing.T) {
 	}
 }
 
-// formatPrometheus escapes label values containing double-quotes and backslashes.
+// 16. formatPrometheus escapes label values containing double-quotes and backslashes.
 func TestFormatPrometheus_LabelEscaping(t *testing.T) {
 	snap := MetricsSnapshot{
 		TotalTasks:  1,
