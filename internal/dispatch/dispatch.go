@@ -174,6 +174,14 @@ func WithSourceSkill(f SourceSkillFunc) Option { return func(d *Dispatcher) { d.
 // receiving Claude session loads OODA Orient guidance before reasoning
 // about the task payload. Empty string disables the section entirely
 // (back-compat for callers that have not wired the triage skill yet).
+//
+// SECURITY: this string lands in the prompt as a TRUSTED section
+// (BuildPrompt skips the fence-escape pass for it, just like Base /
+// SourceSpecific). The caller MUST source it from the embedded
+// skill file or its on-disk install — never from user input, task
+// bodies, or any value derived from a discovery message — otherwise
+// an attacker could splice forged fences into the prompt and bypass
+// the protections fenceEscape gives the user-derived task fields.
 func WithTriageSkill(s string) Option { return func(d *Dispatcher) { d.triageSkill = s } }
 
 // WithLockKeys installs the [execution.lock_keys] regex map used to

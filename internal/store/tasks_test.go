@@ -1691,3 +1691,34 @@ func TestTaskRepoMarkSkippedWithReasonMissingReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("MarkSkippedWithReason(missing): err = %v; want ErrNotFound", err)
 	}
 }
+
+// PR-72 SK4 (review-fix-loop iter 2): MarkSkippedWithReason
+// OVERWRITES any existing judgment_reason rather than appending to
+// it. Triage is the OODA Orient phase — its verdict is the
+// canonical reason for archiving; whatever notes Discovery wrote
+// during Insert are superseded by the rule that matched. Pin this
+// asymmetry so a future refactor that "harmonises" with
+// MarkFailedFromRunningWithReason's CASE-append does not silently
+// flip semantics on the triage path.
+func TestTaskRepoMarkSkippedWithReasonOverwritesExistingReason(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "with prior note",
+		Status:         store.StatusPending,
+		JudgmentReason: "discovery: prior note from insert",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const reason = "rule 4: FYI broadcast, not actionable"
+	if err := f.repo.MarkSkippedWithReason(f.ctx, id, reason); err != nil {
+		t.Fatalf("MarkSkippedWithReason: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.JudgmentReason != reason {
+		t.Errorf("judgment_reason = %q; want %q (overwrite, not append)", got.JudgmentReason, reason)
+	}
+}
