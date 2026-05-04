@@ -38,21 +38,72 @@ func (r *htmlTemplateRenderer) Render(w http.ResponseWriter, name string, data a
 	return nil
 }
 
+// dashboardLoadFailedMessage is the user-facing banner / fragment
+// error string. The full err.Error() detail (which can include SQL
+// column names, file paths, or whatever the underlying driver
+// embedded) goes to the access log only — surfacing it on the page
+// would leak server state to anyone reachable on the bind address,
+// which the security review explicitly flagged as a regression risk
+// once `--remote` mode lands.
+const dashboardLoadFailedMessage = "Dashboard data unavailable. See daemon.log for details."
+
 // newIndexHandler returns the GET / handler.  The handler primes the
 // CSRF cookie via TokenFor so a brand-new visitor always leaves with
-// a token in their cookie jar, then renders the dashboard
-// placeholder.  PR-63's dashboard will start binding template data;
-// for now there is nothing to bind, so the template gets nil.
-func newIndexHandler(renderer Renderer, csrf *CSRF) http.Handler {
+// a token in their cookie jar, snapshots the dashboard data, and
+// renders the full page (which embeds the dashboard fragment as the
+// initial state).  Provider errors degrade gracefully: rather than
+// surfacing a 500 on the landing page (which would make a fresh
+// install look broken when the SQLite is empty), we render the page
+// with a banner that records the failure so the operator can still
+// reach /healthz / /static.
+func newIndexHandler(renderer Renderer, csrf *CSRF, provider DashboardProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := csrf.TokenFor(w, r); err != nil {
 			http.Error(w, "csrf token issue failed", http.StatusInternalServerError)
 			return
 		}
-		if err := renderer.Render(w, "index.html", nil); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		page := indexPageData{}
+		snap, err := provider.Snapshot(r.Context())
+		if err != nil {
+			page.LoadError = dashboardLoadFailedMessage
+		} else {
+			page.Dashboard = newDashboardView(snap)
+		}
+		if renderErr := renderer.Render(w, "index.html", page); renderErr != nil {
+			// Preserve the historical 500 contract (template
+			// failure is unrecoverable); avoid echoing the
+			// renderer message for the same reason as the
+			// snapshot path above.
+			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 	})
+}
+
+// newDashboardPartialHandler returns GET /partials/dashboard. The
+// fragment is what the polling script swaps into the dashboard
+// container every few seconds; setting Cache-Control: no-store keeps
+// the browser from showing a stale snapshot when the user navigates
+// back.
+func newDashboardPartialHandler(renderer Renderer, provider DashboardProvider) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		snap, err := provider.Snapshot(r.Context())
+		if err != nil {
+			http.Error(w, dashboardLoadFailedMessage, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		view := newDashboardView(snap)
+		if renderErr := renderer.Render(w, "dashboard.html", view); renderErr != nil {
+			http.Error(w, "render failed", http.StatusInternalServerError)
+		}
+	})
+}
+
+// indexPageData is the top-level template payload: the rendered
+// dashboard view plus an optional load-error banner.
+type indexPageData struct {
+	Dashboard dashboardView
+	LoadError string
 }
 
 // newHealthzHandler returns the always-200 "ok" probe handler.
