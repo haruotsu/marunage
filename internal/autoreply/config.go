@@ -55,6 +55,13 @@ func DefaultConfig() Config {
 
 // Load reads the autoreply config from path. A missing file returns DefaultConfig
 // so callers work out of the box without requiring manual setup.
+//
+// Note: go-toml v2 fully replaces slice fields on unmarshal. If the user writes
+// `deny = ["personal_information"]`, Config.Permissions.Deny will contain only
+// that one entry — the default deny list is NOT merged. The NG safety boundary
+// (personal_information, contracts, financial_decisions, personnel_matters) is
+// enforced unconditionally by Boundary.IsAllowed via hardcodedDenyCategories,
+// regardless of what Config.Permissions.Deny contains.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
