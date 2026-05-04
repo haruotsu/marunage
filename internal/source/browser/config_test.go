@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -303,7 +304,15 @@ func TestLoadConfigRejectsInvalidSiteName(t *testing.T) {
 		{"contains space", "foo bar"},
 		{"contains tab", "foo\tbar"},
 		{"contains newline", "foo\nbar"},
+		{"contains carriage return", "foo\rbar"},
+		{"contains vertical tab", "foo\vbar"},
+		{"contains form feed", "foo\fbar"},
 		{"contains slash", "foo/bar"},
+		{"contains nbsp", "foo\u00a0bar"},
+		{"contains zero width space", "foo\u200bbar"},
+		{"contains japanese", "foo\u65e5\u672cbar"},
+		{"contains dot then slash", "foo./bar"},
+		{"contains percent", "foo%bar"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,27 +336,18 @@ id = { selector = "[data-id]", attr = "data-id" }
 	}
 }
 
-// tomlString renders s as a TOML basic string with the bare-minimum
-// escapes the validator's negative tests require (`"`, `\`, `\n`,
-// `\t`). Avoids reaching for a full TOML encoder.
+// tomlString renders s as a TOML basic string. encoding/json's string
+// encoder produces output that is also a valid TOML basic string for
+// our inputs (it escapes control characters and `"` / `\`), so we
+// reuse it instead of hand-rolling another escape table.
 func tomlString(s string) string {
-	out := []byte{'"'}
-	for _, r := range s {
-		switch r {
-		case '"':
-			out = append(out, '\\', '"')
-		case '\\':
-			out = append(out, '\\', '\\')
-		case '\n':
-			out = append(out, '\\', 'n')
-		case '\t':
-			out = append(out, '\\', 't')
-		default:
-			out = append(out, []byte(string(r))...)
-		}
+	b, err := json.Marshal(s)
+	if err != nil {
+		// json.Marshal of a string never fails for valid UTF-8 input;
+		// the fallback is defence in depth for the test helper.
+		return `""`
 	}
-	out = append(out, '"')
-	return string(out)
+	return string(b)
 }
 
 // TestLoadConfigAcceptsHTTPSchemes is the symmetric positive: http://
