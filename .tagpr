@@ -4,3 +4,4 @@
 	release = true
 	majorLabels = tagpr:major
 	minorLabels = tagpr:minor
+	versionFile = -
