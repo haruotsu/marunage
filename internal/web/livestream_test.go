@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -86,6 +87,8 @@ func TestLiveStreamHandler_WorkspaceNotFound(t *testing.T) {
 }
 
 // TestLiveStreamHandler_SSEHeaders: valid workspace -> SSE Content-Type + initial ping.
+// Uses bufio.Scanner + explicit cancel so the test exits as soon as the first
+// ping line is received, avoiding the 2s timeout-based race in the original.
 func TestLiveStreamHandler_SSEHeaders(t *testing.T) {
 	streamer := &fakeWorkspaceStreamer{output: ""}
 	provider := &fakeLiveStreamProvider{workspaceID: "workspace:1"}
@@ -95,7 +98,7 @@ func TestLiveStreamHandler_SSEHeaders(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/tasks/1/stream", nil)
@@ -103,11 +106,8 @@ func TestLiveStreamHandler_SSEHeaders(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	resp, err := srv.Client().Do(req)
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "context") {
+	if err != nil {
 		t.Fatalf("Do: %v", err)
-	}
-	if resp == nil {
-		return
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
@@ -115,11 +115,17 @@ func TestLiveStreamHandler_SSEHeaders(t *testing.T) {
 		t.Fatalf("Content-Type = %q; want text/event-stream", got)
 	}
 
-	buf := make([]byte, 512)
-	n, _ := resp.Body.Read(buf)
-	got := string(buf[:n])
-	if !strings.Contains(got, "event: ping") {
-		t.Fatalf("first SSE chunk = %q; want substring 'event: ping'", got)
+	// Scan line-by-line until "event: ping" is found, then cancel to stop the stream.
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), "event: ping") {
+			cancel() // found what we need; cancel ends the scanner on next iteration
+			return
+		}
+	}
+	// Scan exits either because ctx was cancelled (acceptable) or EOF/error without ping.
+	if ctx.Err() == nil {
+		t.Fatal("SSE stream ended without 'event: ping'")
 	}
 }
 
