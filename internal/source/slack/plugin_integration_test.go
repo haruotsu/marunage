@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -29,9 +29,10 @@ func TestPluginCompleteViaWebAPIClientReachesSlackhog(t *testing.T) {
 	if msgs[0].Channel != "D-target" {
 		t.Errorf("channel = %q, want D-target", msgs[0].Channel)
 	}
-	// PI2: notification text follows the documented notifyMessageFormat.
-	if !strings.Contains(msgs[0].Text, "#7") || !strings.Contains(msgs[0].Text, "done") {
-		t.Errorf("notification text = %q, want contains #7 and done", msgs[0].Text)
+	// PI2: notification text follows the documented notifyMessageFormat exactly.
+	want := fmt.Sprintf(notifyMessageFormat, "7")
+	if msgs[0].Text != want {
+		t.Errorf("notification text = %q, want %q", msgs[0].Text, want)
 	}
 }
 
@@ -73,8 +74,9 @@ func TestAdapterCompleteViaWebAPIClientReachesSlackhog(t *testing.T) {
 	if msgs[0].Channel != "D-adapter" {
 		t.Errorf("channel = %q, want D-adapter", msgs[0].Channel)
 	}
-	if !strings.Contains(msgs[0].Text, "#99") {
-		t.Errorf("text = %q, want contains #99", msgs[0].Text)
+	want := fmt.Sprintf(notifyMessageFormat, "99")
+	if msgs[0].Text != want {
+		t.Errorf("text = %q, want %q", msgs[0].Text, want)
 	}
 }
 

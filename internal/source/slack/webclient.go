@@ -92,6 +92,9 @@ func (c *WebAPIClient) PostDM(ctx context.Context, channelID, text string) error
 		return fmt.Errorf("slack webclient: PostDM HTTP: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("slack webclient: PostDM unexpected HTTP status %d", resp.StatusCode)
+	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error,omitempty"`
@@ -117,8 +120,10 @@ func (c *WebAPIClient) FetchDMs(_ context.Context, _ string) ([]Message, error) 
 	return nil, ErrWebAPINotImplemented
 }
 
-// AuthStatus returns AuthAuthenticated when a non-empty token is
-// configured, AuthNotConfigured otherwise.
+// AuthStatus returns AuthAuthenticated when a non-empty token is configured,
+// AuthNotConfigured otherwise. Note: this check is local only — it does not
+// verify token validity against the Slack API (no round-trip). A revoked or
+// expired token will still report AuthAuthenticated until a PostDM fails.
 func (c *WebAPIClient) AuthStatus(_ context.Context) (source.AuthStatus, error) {
 	if c.token == "" {
 		return source.AuthNotConfigured, nil
