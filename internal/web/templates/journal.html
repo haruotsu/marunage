@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Work Journal — marunage</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">marunage</a></h1>
+    <p class="hint">Work journal</p>
+  </header>
+  <main>
+    {{if .LoadError}}
+      <section class="banner banner-error" role="alert">
+        <strong>Journal data unavailable:</strong> {{.LoadError}}
+      </section>
+    {{end}}
+
+    <section class="panel" aria-labelledby="journal-heading">
+      <header class="panel-head">
+        <h2 id="journal-heading">
+          Journal
+          {{if .Date}}<span class="hint">— {{.Date}}</span>{{end}}
+        </h2>
+        <span class="count">{{len .Entries}} entries</span>
+      </header>
+
+      <form class="filter-form" method="get" action="/journal">
+        <label for="date-filter">Date</label>
+        <input id="date-filter" name="date" type="date" value="{{.Date}}">
+        <button type="submit" class="btn btn-sm">Filter</button>
+      </form>
+
+      {{if .Entries}}
+        <ol class="task-list ordered">
+          {{range .Entries}}
+            <li class="task-row">
+              <div class="task-line">
+                <span class="badge badge-source">{{.Source}}</span>
+                <span class="task-meta">{{.Time}}</span>
+                <span class="task-title">{{.Summary}}</span>
+              </div>
+            </li>
+          {{end}}
+        </ol>
+      {{else}}
+        <p class="hint">No journal entries found{{if .Date}} for {{.Date}}{{end}}.</p>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>
