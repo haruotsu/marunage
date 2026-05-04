@@ -122,6 +122,36 @@ func TestAdapterSinceForwards(t *testing.T) {
 	}
 }
 
+// TestAdapterSinceDiscardsCheckpointArg pins the contract that the
+// inbound checkpoint string from source.Sincer is dropped by the
+// adapter — gmail.Plugin reads its own checkpoint key out of the
+// injected Checkpointer instead. Without this, a future PR-71 caller
+// supplying its own per-source checkpoint could silently bypass the
+// plugin's stored state and re-process every message.
+func TestAdapterSinceDiscardsCheckpointArg(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{messages: []Message{
+		{ID: "m3", Subject: "newest"},
+		{ID: "m2", Subject: "older"},
+	}}
+	cp := newFakeCheckpointer()
+	cp.values[DefaultCheckpointKey] = "m2" // anchor at m2; only m3 should come back
+	a := NewAdapter(New(WithClient(fc), WithCheckpointer(cp)))
+
+	got, err := a.Since(context.Background(), "this-string-should-be-ignored")
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	// If the adapter had used the inbound argument as the checkpoint, no
+	// message id matches "this-string-should-be-ignored" and the plugin
+	// would return both m3 and m2. The stored "m2" value is what truly
+	// governs the cutoff.
+	if len(got) != 1 || got[0].ExternalID != "m3" {
+		t.Errorf("Since = %+v; want only m3 (checkpoint should come from store, not argument)", got)
+	}
+}
+
 func TestAdapterCompleteForwardsByExternalID(t *testing.T) {
 	t.Parallel()
 

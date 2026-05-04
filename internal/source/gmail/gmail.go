@@ -22,8 +22,19 @@
 //
 //   - The plugin is read-mostly: only Complete writes upstream. We do not
 //     implement Adder (no "send mail from queue" use case) or Deleter
-//     (deleting mail from the queue would be irrecoverable), which keeps
-//     the manifest sync_mode to bidirectional with a tight blast radius.
+//     (deleting mail from the queue would be irrecoverable). Phase 1 has
+//     no dedicated "write-back-only" SyncMode, so the manifest declares
+//     bidirectional — the *narrow* shape of that bidirectionality is the
+//     "no Adder, no Deleter" guarantee enforced by the adapter type and
+//     the cross-check in RegisterBuiltin.
+//
+//   - Complete is upstream-mutating. Callers (PR-71 scheduler, web UI
+//     mutation handlers) MUST gate it behind the same human-approval /
+//     audit flow they use for any other outbound action; the plugin
+//     itself does not see the surrounding policy and so cannot enforce
+//     it. The interface deliberately accepts only an externalID so a
+//     misuse (e.g. a daemon iterating "everything") is loud at the call
+//     site rather than buried in this package.
 package gmail
 
 import (
@@ -93,9 +104,18 @@ type Checkpointer interface {
 	Set(ctx context.Context, key, value string) error
 }
 
-// Plugin is the entry point for the Gmail source. Construct with New and
-// reuse: the struct holds an internal mutex serialising mutating ops so
-// concurrent Complete calls do not interleave label writes.
+// Plugin is the entry point for the Gmail source. Construct with New
+// and reuse.
+//
+// The Plugin's only mutable shared state is the configuration set by
+// Option values — those are written by New and only read after.
+// `mu` therefore exists as defence-in-depth around Complete's call to
+// Client.ModifyLabels: the contract requires Client implementations to
+// be safe under concurrent use, but a hand-rolled fake or a partial
+// `gws` shell-out wrapper might not be, and serialising at this layer
+// removes one source of "looks-fine-in-tests / corrupts-in-prod" risk.
+// Since reads no shared state and so does NOT take the lock; that
+// asymmetry is deliberate, not an oversight.
 type Plugin struct {
 	client        Client
 	query         string
@@ -161,8 +181,10 @@ func New(opts ...Option) *Plugin {
 	return p
 }
 
-// Query reports the resolved search string for the plugin. Surfaced for
-// tests and `marunage discover --dump-config`-style introspection.
+// Query reports the resolved search string after option application.
+// Used by tests and by RegisterBuiltin / Phase 1 setup paths that need
+// to log the effective configuration; not part of the source.Plugin
+// contract.
 func (p *Plugin) Query() string { return p.query }
 
 // CompleteLabel reports the resolved auto-archive label.
@@ -332,18 +354,31 @@ func toTask(m Message, completeLabel string) source.Task {
 			break
 		}
 	}
+	// Build RawMetadata sparsely: empty optional fields are omitted
+	// rather than stored as zero values. Web UI / audit consumers
+	// otherwise have to filter "" everywhere, and the from key in
+	// particular is sender PII that should not be surfaced when there
+	// is nothing to surface.
+	meta := map[string]any{}
+	if m.ThreadID != "" {
+		meta["thread_id"] = m.ThreadID
+	}
+	if len(m.Labels) > 0 {
+		// Defensive copy so a downstream mutation of RawMetadata cannot
+		// reach back into the caller's Message slice.
+		meta["labels"] = append([]string(nil), m.Labels...)
+	}
+	if m.From != "" {
+		meta["from"] = m.From
+	}
 	return source.Task{
-		Source:     pluginName,
-		ExternalID: m.ID,
-		Title:      m.Subject,
-		Body:       m.Snippet,
-		Done:       done,
-		SourcePath: messageURL(m.ID),
-		RawMetadata: map[string]any{
-			"thread_id": m.ThreadID,
-			"labels":    append([]string(nil), m.Labels...),
-			"from":      m.From,
-		},
+		Source:      pluginName,
+		ExternalID:  m.ID,
+		Title:       m.Subject,
+		Body:        m.Snippet,
+		Done:        done,
+		SourcePath:  messageURL(m.ID),
+		RawMetadata: meta,
 	}
 }
 
