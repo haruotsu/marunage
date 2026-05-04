@@ -89,6 +89,13 @@ type DashboardProvider interface {
 // previewBytes is passed to Running so the SQL implementation can
 // truncate the body column on the database side rather than dragging
 // full bodies into memory.
+//
+// SourceCheckpoints intentionally returns the kv_state rows keyed by
+// their *raw* key, not by source. Source attribution lives in the
+// provider so it can use the registered source names as the
+// authoritative list and avoid mis-splitting a name that itself
+// contains an underscore (e.g. `google_tasks_last_id` must not be
+// credited to a phantom `google` source).
 type DashboardStore interface {
 	Running(ctx context.Context, limit, previewBytes int) ([]DashboardRunning, error)
 	PendingTop(ctx context.Context, limit int) ([]DashboardPending, error)
@@ -224,9 +231,33 @@ func (p *dashboardProvider) buildSources(ctx context.Context, checkpoints map[st
 	}
 	names := append([]string(nil), p.sources.Names()...)
 	sort.Strings(names)
+
+	// Match raw kv_state keys against the registered source names
+	// using a longest-prefix-wins rule. Source names may contain
+	// `_` themselves (`google_tasks`), so a shorter name that is
+	// also a prefix of a longer one (`google` if it ever appears)
+	// must not steal its keys. Pre-sorting the matcher list by
+	// length descending makes the first hit authoritative.
+	matchOrder := append([]string(nil), names...)
+	sort.SliceStable(matchOrder, func(i, j int) bool {
+		return len(matchOrder[i]) > len(matchOrder[j])
+	})
+
+	latestPerSource := make(map[string]time.Time, len(names))
+	for key, ts := range checkpoints {
+		for _, name := range matchOrder {
+			if checkpointKeyBelongsTo(key, name) {
+				if existing, ok := latestPerSource[name]; !ok || ts.After(existing) {
+					latestPerSource[name] = ts
+				}
+				break
+			}
+		}
+	}
+
 	out := make([]DashboardSource, 0, len(names))
 	for _, name := range names {
-		row := DashboardSource{Name: name, LastListedAt: checkpoints[name]}
+		row := DashboardSource{Name: name, LastListedAt: latestPerSource[name]}
 		status, err := p.sources.AuthStatus(ctx, name)
 		if err != nil {
 			row.AuthStatus = authStatusUnknown
@@ -236,6 +267,27 @@ func (p *dashboardProvider) buildSources(ctx context.Context, checkpoints map[st
 		out = append(out, row)
 	}
 	return out
+}
+
+// checkpointKeyBelongsTo reports whether a kv_state key is namespaced
+// under the given source name. Two delimiter conventions exist in the
+// wild — `<name>:<rest>` (markdown's `markdown:mtime:<path>`) and
+// `<name>_<rest>` (gmail's `gmail_last_id`) — so both are accepted.
+// A key that exactly equals the name (no suffix) is also a match,
+// which lets a plugin park a single sentinel checkpoint at its own
+// name if it has no further granularity.
+func checkpointKeyBelongsTo(key, name string) bool {
+	if key == name {
+		return true
+	}
+	if len(key) <= len(name) || key[:len(name)] != name {
+		return false
+	}
+	switch key[len(name)] {
+	case ':', '_':
+		return true
+	}
+	return false
 }
 
 // noopDashboardProvider is the fallback the server uses when a real
@@ -280,10 +332,10 @@ func (l RegistrySourceLister) AuthStatus(ctx context.Context, name string) (sour
 	return plugin.AuthStatus(ctx)
 }
 
-// FormatRelative renders a duration in a human-readable form for the
-// dashboard (e.g. "2m ago", "3h ago"). Stays in the web package since
-// it is only used by the template helpers.
-func FormatRelative(now, t time.Time) string {
+// formatRelative renders a duration in a human-readable form for the
+// dashboard (e.g. "2m ago", "3h ago"). Stays unexported because the
+// template flattening layer is the only consumer.
+func formatRelative(now, t time.Time) string {
 	if t.IsZero() {
 		return "never"
 	}

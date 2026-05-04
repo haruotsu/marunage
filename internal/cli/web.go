@@ -163,6 +163,15 @@ func daemonLogPathFor(configPath string) string {
 // display.  Unknown names are skipped silently: the dashboard panel
 // would otherwise emit a noisy "registration failed" row, but the
 // operator-facing surface for that error is the discover command.
+//
+// FIXME(pr-70): the switch below duplicates the
+// `cli/discover.go::builtins` table.  When PR-70 lands the source
+// pluggability rework, both call sites should converge on a single
+// `source.RegisterEnabledBuiltins(r, enabled)` so adding a new
+// built-in is a one-file change again (the design-review pluggability
+// agent flagged this).  Keeping the duplication in PR-63 because the
+// discover-side builtins map carries Markdown-specific
+// `WithFiles(...)` plumbing that the dashboard does not need.
 func buildWebSourceRegistry(enabled []string) *source.Registry {
 	r := source.NewRegistry()
 	for _, name := range enabled {

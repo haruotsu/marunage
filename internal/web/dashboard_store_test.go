@@ -2,7 +2,6 @@ package web_test
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,19 +18,10 @@ import (
 // the production package.
 type dashboardSQLFixture struct {
 	ctx       context.Context
-	db        *sql.DB
 	taskRepo  *store.TaskRepo
 	kvRepo    *store.KVStateRepo
 	sqlStore  web.DashboardStore
 	closeFunc func()
-}
-
-// kvRepoExec is the test-only escape hatch for rewriting kv_state
-// timestamps directly. The repo intentionally derives updated_at
-// from the injected clock, but the latest-per-source assertion
-// needs distinct timestamps for two adjacent Set calls.
-func (f *dashboardSQLFixture) kvRepoExec(q string, args ...any) (sql.Result, error) {
-	return f.db.ExecContext(f.ctx, q, args...)
 }
 
 func newDashboardSQLFixture(t *testing.T) *dashboardSQLFixture {
@@ -48,7 +38,6 @@ func newDashboardSQLFixture(t *testing.T) *dashboardSQLFixture {
 
 	return &dashboardSQLFixture{
 		ctx:       context.Background(),
-		db:        db,
 		taskRepo:  tasks,
 		kvRepo:    kv,
 		sqlStore:  web.NewSQLDashboardStore(db),
@@ -268,7 +257,12 @@ func TestSQLDashboardStore_RecentAggregatesByStatusAndSource(t *testing.T) {
 	}
 }
 
-func TestSQLDashboardStore_SourceCheckpointsReturnsLatestPerPrefix(t *testing.T) {
+// TestSQLDashboardStore_SourceCheckpointsReturnsRawKeys pins the
+// store-side contract: every kv_state row is surfaced under its
+// literal key. Source attribution (matching keys to registered
+// source names, longest prefix wins) lives in the provider layer
+// where the registry is in scope.
+func TestSQLDashboardStore_SourceCheckpointsReturnsRawKeys(t *testing.T) {
 	f := newDashboardSQLFixture(t)
 	t.Cleanup(f.closeFunc)
 
@@ -278,87 +272,18 @@ func TestSQLDashboardStore_SourceCheckpointsReturnsLatestPerPrefix(t *testing.T)
 	if err := f.kvRepo.Set(f.ctx, "slack_last_ts", "1700000000.000100"); err != nil {
 		t.Fatalf("set slack_last_ts: %v", err)
 	}
-	if err := f.kvRepo.Set(f.ctx, "gmail_state_other", "x"); err != nil {
-		t.Fatalf("set gmail_state_other: %v", err)
-	}
-
-	got, err := f.sqlStore.SourceCheckpoints(f.ctx)
-	if err != nil {
-		t.Fatalf("SourceCheckpoints: %v", err)
-	}
-	if _, ok := got["gmail"]; !ok {
-		t.Errorf("gmail missing from checkpoint map: %#v", got)
-	}
-	if _, ok := got["slack"]; !ok {
-		t.Errorf("slack missing from checkpoint map: %#v", got)
-	}
-}
-
-// TestSQLDashboardStore_SourceCheckpointsParsesMarkdownColonNamespace
-// guards the kv_state key shape the markdown plugin actually writes
-// (`markdown:mtime:<path>`).  A regex-only `_` split would silently
-// drop every markdown checkpoint and leave the dashboard's source
-// row stuck at "never" — the bug PR-63's first round-trip review
-// caught.
-func TestSQLDashboardStore_SourceCheckpointsParsesMarkdownColonNamespace(t *testing.T) {
-	f := newDashboardSQLFixture(t)
-	t.Cleanup(f.closeFunc)
-
 	if err := f.kvRepo.Set(f.ctx, "markdown:mtime:/tmp/todo.md", "2026-05-04T07:30:00Z"); err != nil {
 		t.Fatalf("set markdown checkpoint: %v", err)
 	}
+
 	got, err := f.sqlStore.SourceCheckpoints(f.ctx)
 	if err != nil {
 		t.Fatalf("SourceCheckpoints: %v", err)
 	}
-	if _, ok := got["markdown"]; !ok {
-		t.Errorf("markdown source missing from checkpoint map: %#v", got)
-	}
-}
-
-// TestSQLDashboardStore_SourceCheckpointsKeepsLatestPerSource pins
-// the "newest updated_at wins" contract for sources that publish
-// multiple kv_state entries (e.g. markdown writing one row per file).
-// Without this the dashboard might surface a stale per-file mtime
-// rather than the freshest discovery cycle.
-func TestSQLDashboardStore_SourceCheckpointsKeepsLatestPerSource(t *testing.T) {
-	f := newDashboardSQLFixture(t)
-	t.Cleanup(f.closeFunc)
-
-	// Two writes against the same source under the deterministic clock
-	// share the same updated_at; sleep equivalent: rewind the older
-	// one to a known earlier point via raw SQL so the assertion below
-	// can compare timestamps deterministically.
-	if err := f.kvRepo.Set(f.ctx, "markdown:mtime:/tmp/old.md", "v1"); err != nil {
-		t.Fatalf("set old: %v", err)
-	}
-	older := "2026-05-04T05:00:00.000Z"
-	newer := "2026-05-04T07:00:00.000Z"
-	exec := func(q string, args ...any) {
-		t.Helper()
-		// Reach into the underlying *sql.DB through the fixture's
-		// kvRepo by issuing a fresh statement; the fixture exposes
-		// neither, so fall through to a second Set + manual rewrite.
-		if _, err := f.kvRepoExec(q, args...); err != nil {
-			t.Fatalf("exec %q: %v", q, err)
+	for _, key := range []string{"gmail_last_id", "slack_last_ts", "markdown:mtime:/tmp/todo.md"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("raw key %q missing from checkpoint map: %#v", key, got)
 		}
-	}
-	exec(`UPDATE kv_state SET updated_at = ? WHERE key = ?`, older, "markdown:mtime:/tmp/old.md")
-	if err := f.kvRepo.Set(f.ctx, "markdown:mtime:/tmp/new.md", "v2"); err != nil {
-		t.Fatalf("set new: %v", err)
-	}
-	exec(`UPDATE kv_state SET updated_at = ? WHERE key = ?`, newer, "markdown:mtime:/tmp/new.md")
-
-	got, err := f.sqlStore.SourceCheckpoints(f.ctx)
-	if err != nil {
-		t.Fatalf("SourceCheckpoints: %v", err)
-	}
-	want, err := time.Parse("2006-01-02T15:04:05.000Z", newer)
-	if err != nil {
-		t.Fatalf("parse want: %v", err)
-	}
-	if !got["markdown"].Equal(want) {
-		t.Errorf("markdown checkpoint = %v; want %v", got["markdown"], want)
 	}
 }
 
