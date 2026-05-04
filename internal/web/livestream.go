@@ -146,6 +146,8 @@ func newSendToWorkspaceHandler(streamer WorkspaceStreamer, provider LiveStreamPr
 			return
 		}
 
+		// Limit body size before decoding to prevent DoS via large payloads.
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 		var req sendToWorkspaceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
