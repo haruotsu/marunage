@@ -136,12 +136,17 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	}
 	auditReader := web.NewFileAuditReader(auditLogPathFor(opts.ConfigPath))
 	taskDetailProvider := web.NewTaskDetailProvider(taskDetailStore, auditReader)
+	taskRepo := store.NewTaskRepo(db)
+	reviewProvider := web.NewReviewProvider(taskRepo)
+	taskOps := web.NewSQLTaskOpsStore(db)
 
 	srv, err := web.NewServer(web.Options{
 		AccessLogger: slogAccessLogger{logger: logger},
 		Dashboard:    dashboardProvider,
 		TaskDetail:   taskDetailProvider,
 		AuditLog:     auditReader,
+		Review:       reviewProvider,
+		TaskOps:      taskOps,
 		// Production CSRF entropy + 30s SSE heartbeat are the
 		// zero-value defaults inside web.NewServer; explicitly
 		// listing them here would just add noise.

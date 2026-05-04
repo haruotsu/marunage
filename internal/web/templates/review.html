@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Triage Review — marunage</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">marunage</a></h1>
+    <p class="hint">Triage review — skipped tasks</p>
+  </header>
+  <main>
+    {{if .LoadError}}
+      <section class="banner banner-error" role="alert">
+        <strong>Review data unavailable:</strong> {{.LoadError}}
+      </section>
+    {{end}}
+
+    {{if .FreqReport}}
+    <section class="panel" aria-labelledby="freq-heading">
+      <header class="panel-head">
+        <h2 id="freq-heading">Skip Reason Frequency</h2>
+        <span class="count">recurring patterns</span>
+      </header>
+      <table class="breakdown">
+        <thead>
+          <tr><th scope="col">Count</th><th scope="col">Reason</th></tr>
+        </thead>
+        <tbody>
+          {{range .FreqReport}}
+            <tr>
+              <td><strong>{{.Count}}</strong></td>
+              <td>{{.Reason}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="hint">Update <code>~/.claude/skills/marunage-triage/SKILL.md</code> to suppress recurring false negatives.</p>
+    </section>
+    {{end}}
+
+    <section class="panel" aria-labelledby="skipped-heading">
+      <header class="panel-head">
+        <h2 id="skipped-heading">Skipped tasks</h2>
+        <span class="count">{{len .Tasks}} total</span>
+      </header>
+
+      {{if .Tasks}}
+        <table class="breakdown">
+          <thead>
+            <tr>
+              <th scope="col">ID</th>
+              <th scope="col">Source</th>
+              <th scope="col">Title</th>
+              <th scope="col">Judgment reason</th>
+              <th scope="col">Created</th>
+              <th scope="col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Tasks}}
+              <tr>
+                <td><a href="/tasks/{{.ID}}">#{{.ID}}</a></td>
+                <td><span class="badge badge-source">{{.Source}}</span></td>
+                <td>{{.Title}}</td>
+                <td class="reason-cell">{{.JudgmentReason}}</td>
+                <td>{{.CreatedRel}}</td>
+                <td>
+                  <button class="btn btn-sm btn-promote"
+                          onclick="reviewOps.promote({{.ID}}, this)"
+                          title="Promote this task back to pending">
+                    Promote
+                  </button>
+                </td>
+              </tr>
+            {{end}}
+          </tbody>
+        </table>
+      {{else}}
+        <p class="hint">No skipped tasks found. Triage is working well!</p>
+      {{end}}
+    </section>
+
+    <p class="hint">Generated {{.GeneratedAt}}</p>
+  </main>
+  <script src="/static/review.js" defer></script>
+</body>
+</html>
