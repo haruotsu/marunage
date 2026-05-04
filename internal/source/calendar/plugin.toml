@@ -1,0 +1,10 @@
+[plugin]
+name = "calendar"
+version = "0.1.0"
+description = "Google Calendar source (PR-81). Returns today's events read-only via the OAuth-backed Client (gws CLI by default)."
+sync_mode = "read-only"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+]
