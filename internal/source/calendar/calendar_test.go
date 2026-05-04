@@ -168,6 +168,63 @@ func TestPluginListSkipsDeclinedEvents(t *testing.T) {
 	}
 }
 
+// TestPluginListSkipsCancelledEvents — C14. With singleEvents=true the
+// upstream API surfaces cancelled exceptions of recurring events as
+// items with Status="cancelled". Materialising those into the queue
+// would leave dangling rows the user already removed from the calendar,
+// so the Plugin filters them out alongside declined invites.
+func TestPluginListSkipsCancelledEvents(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{
+		listEvents: []Event{
+			{ID: "live", Summary: "happens", Status: "confirmed", AttendeeStatus: "accepted"},
+			{ID: "dead", Summary: "should be skipped", Status: "cancelled", AttendeeStatus: "accepted"},
+		},
+	}
+	p := New(WithClient(fake))
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "live" {
+		t.Errorf("got = %v, want only [live]", got)
+	}
+}
+
+// TestPluginListBoundarySurvivesSpringForwardDST — C15. On spring-forward
+// days local midnight to next local midnight is 23 wall-clock hours, not
+// 24. The plugin must still hand the upstream a window that ends on the
+// next local midnight, otherwise the daily agenda silently grows by an
+// hour and pulls in tomorrow's first event.
+func TestPluginListBoundarySurvivesSpringForwardDST(t *testing.T) {
+	t.Parallel()
+
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("America/New_York not available: %v", err)
+	}
+	// 2026-03-08 is a US spring-forward day (02:00 EST -> 03:00 EDT).
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, ny)
+	wantMin := time.Date(2026, 3, 8, 0, 0, 0, 0, ny)
+	wantMax := time.Date(2026, 3, 9, 0, 0, 0, 0, ny)
+
+	fake := &fakeClient{}
+	p := New(WithClient(fake), WithClock(fixedClock(now)))
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if !fake.lastTimeMin.Equal(wantMin) {
+		t.Errorf("timeMin = %s, want %s", fake.lastTimeMin, wantMin)
+	}
+	if !fake.lastTimeMax.Equal(wantMax) {
+		t.Errorf("timeMax = %s, want %s (DST: 23h after timeMin, NOT 24h)", fake.lastTimeMax, wantMax)
+	}
+	if delta := fake.lastTimeMax.Sub(fake.lastTimeMin); delta != 23*time.Hour {
+		t.Errorf("timeMax - timeMin = %s, want 23h on spring-forward day", delta)
+	}
+}
+
 // TestPluginListPreservesAllDayAndRegularInOrder — C7 + C8.
 func TestPluginListPreservesAllDayAndRegularInOrder(t *testing.T) {
 	t.Parallel()
