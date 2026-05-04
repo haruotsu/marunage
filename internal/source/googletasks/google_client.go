@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"unicode/utf8"
 
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -221,10 +222,20 @@ func translateError(err error) error {
 // `*googleapi.Error` via `errors.As` if it wants to inspect the
 // untruncated payload — the truncation only applies to what we put
 // into the wrapped error string.
+//
+// We cut on a UTF-8 rune boundary, not a byte one: Google's API returns
+// localised messages (Japanese, German, ...) where a byte-level cut
+// would split a multi-byte sequence and the wrapped error string would
+// no longer be valid UTF-8 — downstream log sinks would then either
+// emit U+FFFD or refuse the line altogether.
 func truncateMessage(s string) string {
 	const limit = 120
 	if len(s) <= limit {
 		return s
 	}
-	return s[:limit] + "...(truncated)"
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...(truncated)"
 }

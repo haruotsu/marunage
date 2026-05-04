@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/api/googleapi"
 )
@@ -75,8 +77,8 @@ func TestTranslateErrorMaps404ToUpstreamMissing(t *testing.T) {
 
 // TestTruncateMessageBoundsPayload guards the security fix: an upstream
 // error with a giant reflected payload must not enter the error chain
-// verbatim. We assert both the cap and the visible suffix so a future
-// edit that loosens the limit goes red.
+// verbatim. We pin the suffix and the rune-bounded behaviour so a
+// future edit that drops either invariant goes red.
 func TestTruncateMessageBoundsPayload(t *testing.T) {
 	t.Parallel()
 
@@ -85,8 +87,8 @@ func TestTruncateMessageBoundsPayload(t *testing.T) {
 		huge[i] = 'A'
 	}
 	got := truncateMessage(string(huge))
-	if len(got) > 200 { // limit (120) + " ...(truncated)" suffix headroom
-		t.Errorf("truncateMessage did not cap length: len=%d", len(got))
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Errorf("truncateMessage missing suffix: %q", got)
 	}
 	if got == string(huge) {
 		t.Errorf("truncateMessage returned the input verbatim")
@@ -94,5 +96,26 @@ func TestTruncateMessageBoundsPayload(t *testing.T) {
 	short := "ok"
 	if truncateMessage(short) != short {
 		t.Errorf("short message should pass through unchanged")
+	}
+}
+
+// TestTruncateMessageHonoursRuneBoundaries pins the UTF-8 fix: a
+// localised Google error message (Japanese, German, ...) must not be
+// chopped mid-rune, otherwise the wrapped error string becomes
+// invalid UTF-8 and downstream log sinks would emit replacement
+// characters or refuse the line altogether.
+func TestTruncateMessageHonoursRuneBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// 日本語: each rune is 3 bytes. 200 runes = 600 bytes, well over
+	// the 120-byte limit, so the truncate point lands inside a
+	// multi-byte sequence on the byte path.
+	var sb strings.Builder
+	for i := 0; i < 200; i++ {
+		sb.WriteString("あ")
+	}
+	got := truncateMessage(sb.String())
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateMessage produced invalid UTF-8: %q", got)
 	}
 }
