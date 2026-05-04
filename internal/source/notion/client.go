@@ -140,4 +140,3 @@ type Client interface {
 	// "permanent delete" so archive is the user-visible delete.
 	UpdatePage(ctx context.Context, pageID string, archived bool) error
 }
-
