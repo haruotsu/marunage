@@ -1,0 +1,33 @@
+package autoreply
+
+// Boundary enforces the auto-reply permission rules from a Config.
+// Deny always takes precedence over Allow; unknown categories are denied.
+type Boundary struct {
+	cfg Config
+}
+
+// NewBoundary creates a Boundary from the given Config.
+func NewBoundary(cfg Config) *Boundary {
+	return &Boundary{cfg: cfg}
+}
+
+// IsAllowed returns true only when category is in the Allow list
+// and NOT in the Deny list. Deny always wins.
+func (b *Boundary) IsAllowed(category string) bool {
+	for _, d := range b.cfg.Permissions.Deny {
+		if d == category {
+			return false
+		}
+	}
+	for _, a := range b.cfg.Permissions.Allow {
+		if a == category {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDraftOnly returns true when draft_mode.enabled is set in the config.
+func (b *Boundary) IsDraftOnly() bool {
+	return b.cfg.DraftMode.Enabled
+}
