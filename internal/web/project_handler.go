@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/url"
 )
 
 // ProjectItem is one item on the project board.
@@ -49,11 +50,34 @@ type projectPageData struct {
 	LoadError string
 }
 
+// validateBoardURL returns false when boardURL is non-empty but uses a disallowed scheme.
+// Only http and https are permitted; javascript:, data:, ftp:, file: etc. are rejected
+// to prevent SSRF and XSS vectors.
+func validateBoardURL(boardURL string) bool {
+	if boardURL == "" {
+		return true
+	}
+	u, err := url.Parse(boardURL)
+	if err != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
+}
+
 // newProjectAPIHandler returns GET /api/project.
 func newProjectAPIHandler(provider ProjectProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		boardURL := r.URL.Query().Get("board_url")
+		if !validateBoardURL(boardURL) {
+			writeJSONError(w, http.StatusBadRequest, "invalid board_url: only http and https schemes are allowed")
+			return
+		}
 		snap, err := provider.ProjectSnapshot(r.Context(), boardURL)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "project data unavailable")
@@ -72,6 +96,10 @@ func newProjectHandler(renderer Renderer, provider ProjectProvider) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		boardURL := r.URL.Query().Get("board_url")
+		if !validateBoardURL(boardURL) {
+			http.Error(w, "invalid board_url: only http and https schemes are allowed", http.StatusBadRequest)
+			return
+		}
 		snap, err := provider.ProjectSnapshot(r.Context(), boardURL)
 		if err != nil {
 			page := projectPageData{LoadError: projectLoadFailedMessage}
