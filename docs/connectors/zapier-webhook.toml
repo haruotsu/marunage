@@ -1,0 +1,12 @@
+[connector]
+name = "zapier-webhook"
+type = "discover"
+adapter_version = "v1"
+description = "Zapier webhook as a Discovery source"
+
+[endpoint]
+discover = "https://hooks.zapier.com/hooks/catch/your-id/discover/"
+notify   = "https://hooks.zapier.com/hooks/catch/your-id/notify/"
+
+[auth]
+type = "none"

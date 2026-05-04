@@ -1,0 +1,13 @@
+[connector]
+name = "n8n-webhook"
+type = "discover"
+adapter_version = "v1"
+description = "n8n workflow webhook as a Discovery source"
+
+[endpoint]
+discover = "https://your-n8n.example.com/webhook/discover"
+notify   = "https://your-n8n.example.com/webhook/notify"
+
+[auth]
+type  = "bearer"
+token = "${N8N_WEBHOOK_TOKEN}"
