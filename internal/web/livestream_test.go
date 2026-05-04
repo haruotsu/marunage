@@ -55,18 +55,6 @@ func (f *fakeLiveStreamProvider) WorkspaceIDForTask(_ context.Context, _ int64) 
 	return f.workspaceID, f.err
 }
 
-// doStreamRequest issues a GET to the live stream handler with the id path value set.
-func doStreamRequest(h http.Handler, taskID string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+taskID+"/stream", nil)
-	req.SetPathValue("id", taskID)
-	rec := httptest.NewRecorder()
-	// Use a cancelable context so the SSE loop exits.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately so handler exits after sending initial ping
-	h.ServeHTTP(rec, req.WithContext(ctx))
-	return rec
-}
-
 // TestLiveStreamHandler_BadID: non-numeric ID -> 400.
 func TestLiveStreamHandler_BadID(t *testing.T) {
 	h := newLiveStreamHandler(
