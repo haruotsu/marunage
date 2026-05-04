@@ -130,4 +130,3 @@ func convertTask(t Task) source.Task {
 		},
 	}
 }
-
