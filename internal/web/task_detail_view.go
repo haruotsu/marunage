@@ -54,11 +54,6 @@ type taskDetailView struct {
 	AuditEntries []AuditEntry
 }
 
-// taskDetailDisplayLayout is the human-readable display format for
-// timestamps in the task detail page. Matching dashboardDisplayLayout
-// keeps the two pages visually consistent.
-const taskDetailDisplayLayout = dashboardDisplayLayout
-
 // zeroTimeDisplay is the sentinel rendered when a timestamp is zero
 // (i.e. the event has not happened yet — pending task has no StartedAt,
 // running task has no CompletedAt, etc.).
