@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -196,6 +197,29 @@ func (s *sqlDashboardStore) Recent(ctx context.Context, since time.Time) (Dashbo
 		totals.BySource = append(totals.BySource, *bySource[name])
 	}
 	return totals, nil
+}
+
+// TaskDetail fetches the full store.Task row for the given id.
+// Returns store.ErrNotFound when the row does not exist, matching the
+// convention of store.TaskRepo.Get so the handler can use errors.Is.
+// Delegates to a throw-away TaskRepo to reuse the canonical scanTask
+// implementation rather than duplicating the column-scan order here.
+func (s *sqlDashboardStore) TaskDetail(ctx context.Context, id int64) (store.Task, error) {
+	repo := store.NewTaskRepo(s.db)
+	// repo.Get returns store.ErrNotFound directly (unwrapped) so the
+	// caller's errors.Is check works without extra unwrapping. We only
+	// wrap non-sentinel errors to keep the error chain navigable.
+	task, err := repo.Get(ctx, id)
+	if err != nil {
+		// Re-wrap only non-sentinel errors; ErrNotFound passes through
+		// as-is so the handler can distinguish 404 from 500 with
+		// errors.Is(err, store.ErrNotFound).
+		if errors.Is(err, store.ErrNotFound) {
+			return store.Task{}, err
+		}
+		return store.Task{}, fmt.Errorf("task detail: %w", err)
+	}
+	return task, nil
 }
 
 // SourceCheckpoints returns every kv_state row keyed by its raw key.
