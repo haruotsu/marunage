@@ -1676,6 +1676,33 @@ func TestTaskRepoSetReflectionMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
+// PR-102 R4 (post-design-review): SetReflection only applies to rows in
+// a terminal state (done / failed). The reflection hook fires from the
+// completion watcher right after a done transition, but `marunage reopen`
+// can flip the row back to pending while the goroutine is still
+// in-flight; persisting the late answer onto the now-pending row would
+// confuse the next dispatch with a reflection that does not match the
+// upcoming run.
+func TestTaskRepoSetReflectionRejectsNonTerminalState(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "still pending",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetReflection(f.ctx, id, "late answer"); !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("SetReflection on pending: err = %v; want ErrInvalidTransition", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Reflection != "" {
+		t.Errorf("reflection persisted despite guard: %q", got.Reflection)
+	}
+}
+
 // PR-102 R3: empty reflection clears the column to NULL. The hook may
 // receive an empty answer (Claude refused, the workspace dir contained an
 // empty .reflection file) and we want the column to reflect "no
@@ -1683,7 +1710,8 @@ func TestTaskRepoSetReflectionMissingReturnsErrNotFound(t *testing.T) {
 func TestTaskRepoSetReflectionEmptyClearsColumn(t *testing.T) {
 	f := newRepoFixture(t)
 	id, err := f.repo.Insert(f.ctx, store.Task{
-		Source: "manual", Title: "clear me", Reflection: "old reflection",
+		Source: "manual", Title: "clear me", Status: store.StatusDone,
+		Reflection: "old reflection",
 	})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)

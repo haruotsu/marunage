@@ -350,7 +350,10 @@ func TestReflectorOnDoneEmptyWSIsNoop(t *testing.T) {
 }
 
 // H3: Send carries the skill body + sentinel write instructions naming
-// the per-task workspace dir's .reflection path.
+// the per-task workspace dir's .reflection path. Post-design-review:
+// the prompt MUST use a heredoc (cat <<'EOF' ... EOF) rather than
+// printf, so a reflection containing %, ", or newlines round-trips
+// without shell mangling.
 func TestReflectorOnDoneSendsSkillAndSentinel(t *testing.T) {
 	f := newReflectFixture(t)
 	const id int64 = 11
@@ -377,6 +380,12 @@ func TestReflectorOnDoneSendsSkillAndSentinel(t *testing.T) {
 	}
 	if !strings.Contains(got.Text, ".reflection.tmp") {
 		t.Errorf("Send text missing atomic-rename hint; got %q", got.Text)
+	}
+	if strings.Contains(got.Text, "printf '%s") {
+		t.Errorf("Send text still uses printf format; want heredoc to survive %% / quote / newline payloads. got %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "<<'EOF'") {
+		t.Errorf("Send text missing heredoc fence (cat <<'EOF' ... EOF); got %q", got.Text)
 	}
 }
 
@@ -525,6 +534,31 @@ func TestReflectorOnDoneStartAuditPrecedesSend(t *testing.T) {
 		t.Errorf("reflection.start audit missing at Send time; events=%+v", f.au.Events())
 	}
 	f.r.Wait()
+}
+
+// H10 (post-design-review): a stray .reflection.tmp on its own does NOT
+// trigger SetReflection. The Reflector polls for the final .reflection
+// path, so the atomic publish contract is preserved end-to-end (no
+// half-written read into tasks.reflection).
+func TestReflectorIgnoresOrphanTmpFile(t *testing.T) {
+	f := newReflectFixture(t,
+		dispatch.WithReflectionTimeout(40*time.Millisecond),
+		dispatch.WithReflectionPollInterval(5*time.Millisecond),
+	)
+	const id int64 = 31
+	dir := f.dirs.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Write only the .tmp half (mid-publish state).
+	if err := os.WriteFile(filepath.Join(dir, ".reflection.tmp"), []byte("partial"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	f.r.OnDone(f.ctxBg, runningTask(id, "workspace:31"))
+	f.r.Wait()
+	if got := len(f.store.Calls()); got != 0 {
+		t.Errorf("SetReflection called %d times for orphan .tmp; want 0", got)
+	}
 }
 
 // Make sure the deferred Wait + atomic counter inside the package does
