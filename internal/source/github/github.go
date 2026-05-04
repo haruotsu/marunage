@@ -25,8 +25,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/haruotsu/marunage/internal/source"
 )
@@ -64,7 +66,23 @@ var (
 	// is missing. The Runner abstraction cannot drive `gh auth login` (which
 	// requires a TTY), so the right answer is to defer to the user.
 	ErrInteractiveSetupRequired = errors.New("github: interactive setup required (run `gh auth login`)")
+
+	// ErrInvalidCheckpoint is returned by Since when the supplied checkpoint
+	// is not a strict RFC3339 timestamp. Rejecting before concatenation into
+	// the gh search query closes the door on injection of additional
+	// qualifiers (e.g. `... author:victim`) by a daemon that mishandles
+	// stored state.
+	ErrInvalidCheckpoint = errors.New("github: invalid checkpoint (expected RFC3339)")
 )
+
+// ownerRepoSegment validates a single owner or repo path segment. GitHub's
+// own rules (lowercase + digit + dash; cannot start with hyphen) are looser
+// than this pattern in some legacy cases but the conservative regex below
+// rejects every shape that could be misinterpreted as a CLI flag (`-foo`)
+// or smuggle whitespace into a gh argv. We keep the same character class
+// for owners and repos because gh's own validation does not distinguish
+// the two.
+var ownerRepoSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Plugin is the GitHub Discovery source. Construct one with New and reuse
 // across goroutines: the struct holds only its dependencies.
@@ -128,12 +146,19 @@ func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
 
 // Since returns items updated at or after checkpoint. An empty checkpoint
 // degrades to List behaviour so first-run callers do not need a special
-// case. The checkpoint format is the RFC3339 string gh's `updatedAt` field
-// emits, so the daemon can store the max(updatedAt) it observed last
-// iteration verbatim.
+// case. checkpoint MUST be a strict RFC3339 timestamp — anything else is
+// rejected with ErrInvalidCheckpoint before the value reaches the gh
+// search query, so a daemon storage tier that has been tampered with
+// cannot smuggle additional `author:` / `label:` qualifiers into the
+// upstream call. The format matches gh's own `updatedAt` output, so the
+// daemon can store the max(updatedAt) it observed last iteration
+// verbatim.
 func (p *Plugin) Since(ctx context.Context, checkpoint string) ([]source.Task, error) {
 	if checkpoint == "" {
 		return p.List(ctx)
+	}
+	if _, err := time.Parse(time.RFC3339, checkpoint); err != nil {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidCheckpoint, checkpoint)
 	}
 	q := defaultQuery + " updated:>=" + checkpoint
 	return p.search(ctx, q)
@@ -172,7 +197,10 @@ func (p *Plugin) runSearch(ctx context.Context, kind, query string) ([]rawItem, 
 	}
 	var items []rawItem
 	if err := json.Unmarshal(stdout, &items); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		// Double-%w (Go 1.20+) so callers can `errors.Is(err, ErrInvalidResponse)`
+		// AND `errors.As(err, &*json.SyntaxError)` against the same value. The
+		// previous `%w: %v` form silently lost the inner error's type information.
+		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	return items, nil
 }
@@ -239,12 +267,17 @@ func (p *Plugin) Complete(ctx context.Context, externalID string) error {
 // into a user-facing "run gh auth login" hint without ever surfacing a Go
 // error to the caller — same mapping internal/doctor uses for missing
 // optional binaries.
+//
+// PR-83 deliberately collapses gh's "expired" / "revoked" / "never logged
+// in" outcomes into a single AuthNotConfigured: gh's stderr wording is not
+// a stable contract and a misclassification would silently downgrade a
+// real revocation into a "not configured" hint, which is the same user
+// action anyway (`gh auth login`). A future PR that wants to plumb
+// AuthExpired through can parse the captured stderr and branch here
+// without changing the call sites.
 func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 	_, _, err := p.runner.Run(ctx, "gh", "auth", "status")
 	if err != nil {
-		if isBinaryNotFound(err) {
-			return source.AuthNotConfigured, nil
-		}
 		return source.AuthNotConfigured, nil
 	}
 	return source.AuthAuthenticated, nil
@@ -269,6 +302,12 @@ func (p *Plugin) Setup(ctx context.Context, _ source.SetupOptions) error {
 // Returns ErrInvalidExternalID if the shape is wrong. Centralising the
 // parse keeps Complete (and any future Delete / reopen helper) honest
 // about the same format invariant.
+//
+// owner and repo are validated against ownerRepoSegment so a tampered
+// daemon storage tier cannot smuggle a value beginning with `-` (which
+// gh's flag parser would interpret as an unknown switch) into the gh
+// argv. number must be a strictly positive decimal integer; zero / negative
+// values are rejected because GitHub's issue / PR numbering is 1-based.
 func parseExternalID(id string) (owner, repo string, number int, err error) {
 	hash := strings.LastIndex(id, "#")
 	if hash <= 0 || hash == len(id)-1 {
@@ -282,6 +321,9 @@ func parseExternalID(id string) (owner, repo string, number int, err error) {
 	}
 	owner = prefix[:slash]
 	repo = prefix[slash+1:]
+	if !ownerRepoSegment.MatchString(owner) || !ownerRepoSegment.MatchString(repo) {
+		return "", "", 0, fmt.Errorf("%w: %q", ErrInvalidExternalID, id)
+	}
 	n, parseErr := strconv.Atoi(numStr)
 	if parseErr != nil || n <= 0 {
 		return "", "", 0, fmt.Errorf("%w: %q", ErrInvalidExternalID, id)
