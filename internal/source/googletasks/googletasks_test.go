@@ -455,15 +455,22 @@ func TestDeleteWithoutClient(t *testing.T) {
 	}
 }
 
-// TestSetupReturnsErrNotConfigured pins the Phase-1 stub contract: the
-// real OAuth flow lands in a follow-up PR, so today Setup signals
-// ErrNotConfigured. Without this pin a future "Setup landed but
-// silently does nothing" regression would slip through.
-func TestSetupReturnsErrNotConfigured(t *testing.T) {
+// TestSetupReturnsErrSetupNotImplemented pins the Phase-1 stub contract:
+// the real OAuth flow lands in a follow-up PR, so today Setup signals
+// the dedicated ErrSetupNotImplemented sentinel. Sharing ErrNotConfigured
+// (which List/Add/Complete/Delete also use for "Client missing") would
+// strip the CLI of any way to distinguish "stub awaiting OAuth wire-up"
+// from "Client never injected at runtime" — different problems with
+// different remedies.
+func TestSetupReturnsErrSetupNotImplemented(t *testing.T) {
 	t.Parallel()
 
-	if err := New().Setup(context.Background(), source.SetupOptions{}); !errors.Is(err, ErrNotConfigured) {
-		t.Fatalf("Setup err = %v, want ErrNotConfigured", err)
+	err := New().Setup(context.Background(), source.SetupOptions{})
+	if !errors.Is(err, ErrSetupNotImplemented) {
+		t.Fatalf("Setup err = %v, want ErrSetupNotImplemented", err)
+	}
+	if errors.Is(err, ErrNotConfigured) {
+		t.Errorf("Setup err = %v, must NOT also wrap ErrNotConfigured (the two states must stay distinguishable)", err)
 	}
 }
 

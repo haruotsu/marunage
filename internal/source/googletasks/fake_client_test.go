@@ -21,9 +21,12 @@ type fakeClient struct {
 	tasks       map[string][]GTask
 	nextTaskNum int
 
-	// pingErr / failNext let an individual test inject upstream
-	// failures without inventing a new fake every time. Set them in a
-	// table-driven test before invoking the Plugin method.
+	// pingErr / listErr / addErr / patchErr / delErr let an individual
+	// test inject upstream failures without inventing a new fake every
+	// time. Set them in a table-driven test before invoking the Plugin
+	// method. listErr fires from both ListTaskLists and ListTasks; if a
+	// test ever needs to distinguish the two, split into separate fields
+	// at that point.
 	pingErr  error
 	listErr  error
 	addErr   error
