@@ -1,0 +1,12 @@
+[plugin]
+name = "slack"
+version = "0.1.0"
+description = "Slack Discovery source (PR-82). Reads mentions and DMs through a Client interface (initially backed by Slack MCP) and posts task-completion notifications via Completer."
+sync_mode = "bidirectional"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+    "since",
+    "complete",
+]
