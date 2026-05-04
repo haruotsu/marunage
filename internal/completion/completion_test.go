@@ -895,3 +895,133 @@ func TestRunInvokesTickAndExitsOnContextCancel(t *testing.T) {
 		t.Errorf("status = %q; want %q (loop should have detected sentinel)", row.Status, store.StatusDone)
 	}
 }
+
+// PR-102 C1: WithDoneHook fires after a successful done transition,
+// receiving the post-update Task. The reflection hook (PR-102) wires
+// dispatch.Reflector.OnDone here to send a follow-up review prompt.
+func TestTickInvokesDoneHookOnSuccess(t *testing.T) {
+	var (
+		hookMu    sync.Mutex
+		hookCalls []store.Task
+	)
+	hook := func(_ context.Context, task store.Task) {
+		hookMu.Lock()
+		hookCalls = append(hookCalls, task)
+		hookMu.Unlock()
+	}
+
+	f := newFixture(t, completion.WithDoneHook(hook))
+	id := f.insertRunning("hook me")
+	f.writeSentinel(id, "0\n")
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if len(hookCalls) != 1 {
+		t.Fatalf("hook fired %d times; want 1", len(hookCalls))
+	}
+	got := hookCalls[0]
+	if got.ID != id {
+		t.Errorf("hook task ID = %d; want %d", got.ID, id)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("hook task status = %q; want %q (post-done snapshot)", got.Status, store.StatusDone)
+	}
+}
+
+// PR-102 C2: hook does NOT fire when MarkDoneWithSummary itself fails.
+// We exercise this through a Store wrapper that returns an error from
+// MarkDoneWithSummary; the hook count must stay at zero.
+func TestTickSuppressesDoneHookOnTransitionFailure(t *testing.T) {
+	var (
+		hookMu    sync.Mutex
+		hookCount int
+	)
+	hook := func(_ context.Context, _ store.Task) {
+		hookMu.Lock()
+		hookCount++
+		hookMu.Unlock()
+	}
+
+	root := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := store.NewTaskRepo(db)
+	failing := &failingMarkDoneStore{TaskRepo: repo}
+	dirs := dirsFunc(func(id int64) string {
+		return filepath.Join(root, fmt.Sprintf("%d", id))
+	})
+	w, err := completion.New(
+		completion.WithStore(failing),
+		completion.WithWorkspaceDirs(dirs),
+		completion.WithDoneHook(hook),
+	)
+	if err != nil {
+		t.Fatalf("completion.New: %v", err)
+	}
+
+	id, err := repo.Insert(context.Background(), store.Task{
+		Source: "manual", Title: "transition fails", Status: store.StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := os.MkdirAll(dirs.Dir(id), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirs.Dir(id), ".exit_code"), []byte("0\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := w.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if hookCount != 0 {
+		t.Errorf("hook fired %d times; want 0 when MarkDoneWithSummary failed", hookCount)
+	}
+}
+
+// PR-102 C3: hook does NOT fire on the failed (non-zero exit) branch —
+// reflection is opt-in for completed work, not for crashes.
+func TestTickSuppressesDoneHookOnFailedBranch(t *testing.T) {
+	var (
+		hookMu    sync.Mutex
+		hookCount int
+	)
+	hook := func(_ context.Context, _ store.Task) {
+		hookMu.Lock()
+		hookCount++
+		hookMu.Unlock()
+	}
+
+	f := newFixture(t, completion.WithDoneHook(hook))
+	id := f.insertRunning("crashed")
+	f.writeSentinel(id, "1\n")
+	if err := f.watcher.Tick(f.ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if hookCount != 0 {
+		t.Errorf("hook fired %d times on failed branch; want 0", hookCount)
+	}
+}
+
+// failingMarkDoneStore wraps a real *store.TaskRepo but forces
+// MarkDoneWithSummary to return an error. Used by C2 to keep the
+// transition from happening.
+type failingMarkDoneStore struct{ *store.TaskRepo }
+
+func (s *failingMarkDoneStore) MarkDoneWithSummary(_ context.Context, _ int64, _ string, _ time.Time) error {
+	return errors.New("forced MarkDoneWithSummary failure")
+}

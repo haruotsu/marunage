@@ -41,6 +41,10 @@ func TestDefaultConfig(t *testing.T) {
 	if c.Reflection.Enabled {
 		t.Errorf("Reflection.Enabled = true; want false (cost-conscious default)")
 	}
+	if c.Reflection.SampleRate != 1.0 {
+		t.Errorf("Reflection.SampleRate = %v; want 1.0 (PR-102: when Enabled flips on, every completion runs unless the operator dials it back)",
+			c.Reflection.SampleRate)
+	}
 	if !c.Journal.Enabled {
 		t.Errorf("Journal.Enabled = false; want true")
 	}

@@ -1632,6 +1632,102 @@ func TestTaskRepoMarkFailedFromRunningWithReasonMissingReturnsErrNotFound(t *tes
 	}
 }
 
+// PR-102 R1: SetReflection writes reflection text to an existing row and
+// leaves status / result_summary / completed_at untouched. The reflection
+// hook in internal/dispatch reads tasks.WS via Get, runs Claude, then
+// persists the answer through this helper so a future `marunage show`
+// can render it next to result_summary.
+func TestTaskRepoSetReflectionWritesText(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "reflect me", Status: store.StatusDone,
+		ResultSummary: "shipped",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const reflection = "1. consider edge case X\n   重大度: warning\n"
+	if err := f.repo.SetReflection(f.ctx, id, reflection); err != nil {
+		t.Fatalf("SetReflection: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Reflection != reflection {
+		t.Errorf("reflection = %q; want %q", got.Reflection, reflection)
+	}
+	if got.Status != store.StatusDone {
+		t.Errorf("status mutated: %q", got.Status)
+	}
+	if got.ResultSummary != "shipped" {
+		t.Errorf("result_summary mutated: %q", got.ResultSummary)
+	}
+}
+
+// PR-102 R2: SetReflection on a missing id returns ErrNotFound rather
+// than silently no-opping. Mirrors SetWorkspace / SetCompletedAt: a stale
+// id from a hook firing after the row was deleted should be visible to
+// the caller.
+func TestTaskRepoSetReflectionMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	if err := f.repo.SetReflection(f.ctx, 99999, "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetReflection(missing): err = %v; want ErrNotFound", err)
+	}
+}
+
+// PR-102 R4 (post-design-review): SetReflection only applies to rows in
+// a terminal state (done / failed). The reflection hook fires from the
+// completion watcher right after a done transition, but `marunage reopen`
+// can flip the row back to pending while the goroutine is still
+// in-flight; persisting the late answer onto the now-pending row would
+// confuse the next dispatch with a reflection that does not match the
+// upcoming run.
+func TestTaskRepoSetReflectionRejectsNonTerminalState(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "still pending",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetReflection(f.ctx, id, "late answer"); !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("SetReflection on pending: err = %v; want ErrInvalidTransition", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Reflection != "" {
+		t.Errorf("reflection persisted despite guard: %q", got.Reflection)
+	}
+}
+
+// PR-102 R3: empty reflection clears the column to NULL. The hook may
+// receive an empty answer (Claude refused, the workspace dir contained an
+// empty .reflection file) and we want the column to reflect "no
+// reflection" rather than the previous value.
+func TestTaskRepoSetReflectionEmptyClearsColumn(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "clear me", Status: store.StatusDone,
+		Reflection: "old reflection",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.SetReflection(f.ctx, id, ""); err != nil {
+		t.Fatalf("SetReflection(empty): %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Reflection != "" {
+		t.Errorf("reflection = %q; want empty (cleared)", got.Reflection)
+	}
+}
+
 // PR-72 SK1: MarkSkippedWithReason atomically flips status -> skipped
 // and writes the triage rationale into judgment_reason so the post-
 // mortem in `marunage review` can show why the row was archived.
