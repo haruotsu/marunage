@@ -259,6 +259,15 @@ func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 		if errors.Is(err, ErrUnauthorized) {
 			return source.AuthRevoked, nil
 		}
+		// Pass context cancellation through verbatim so daemon
+		// supervisors that branch on errors.Is(err, context.Canceled)
+		// (or DeadlineExceeded) skip retry on shutdown. Wrapping with
+		// "googletasks: ping:" would still chain via %w but adds a
+		// confusing prefix to log lines whose root cause is "we
+		// asked the goroutine to stop".
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
 		return "", fmt.Errorf("googletasks: ping: %w", err)
 	}
 	return source.AuthAuthenticated, nil

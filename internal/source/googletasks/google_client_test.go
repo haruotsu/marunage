@@ -75,6 +75,37 @@ func TestTranslateErrorMaps404ToUpstreamMissing(t *testing.T) {
 	}
 }
 
+// TestTranslateErrorScrubsBodyOnUnmappedStatus is the security regression
+// pin: a 5xx upstream error with a giant Body / sensitive Header detail
+// must not flow into the error chain verbatim through the default
+// branch. We assert the wrapped error string omits the "secret query
+// echo" payload, even though the upstream API still has it on the
+// underlying *googleapi.Error (which a caller can fish out via
+// errors.As if they really need it).
+func TestTranslateErrorScrubsBodyOnUnmappedStatus(t *testing.T) {
+	t.Parallel()
+
+	leaky := &googleapi.Error{
+		Code:    http.StatusInternalServerError,
+		Message: strings.Repeat("AAAA", 200) + "secret-token-please-dont-leak",
+		Body:    "secret-token-please-dont-leak",
+	}
+	err := translateError(leaky)
+	if err == nil {
+		t.Fatal("translateError(500): want non-nil")
+	}
+	if strings.Contains(err.Error(), "secret-token-please-dont-leak") {
+		t.Fatalf("translateError leaked the upstream payload into the error string: %q", err.Error())
+	}
+	// And callers that explicitly fish for the typed shape can still
+	// recover the full payload — the scrubbing is for the wrapped
+	// *string*, not the typed value.
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("translateError must keep *googleapi.Error reachable via errors.As, got %T", err)
+	}
+}
+
 // TestTruncateMessageBoundsPayload guards the security fix: an upstream
 // error with a giant reflected payload must not enter the error chain
 // verbatim. We pin the suffix and the rune-bounded behaviour so a
