@@ -51,9 +51,9 @@ type DiscoveryGmail struct {
 }
 
 type DiscoverySlack struct {
-	MCPServer       string                    `toml:"mcp_server"`
-	IncludeDM       bool                      `toml:"include_dm"`
-	IncludeMentions bool                      `toml:"include_mentions"`
+	MCPServer       string                     `toml:"mcp_server"`
+	IncludeDM       bool                       `toml:"include_dm"`
+	IncludeMentions bool                       `toml:"include_mentions"`
 	ReactionTrigger SlackReactionTriggerConfig `toml:"reaction_trigger"`
 }
 
