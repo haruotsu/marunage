@@ -87,9 +87,13 @@ func newJournalHandler(renderer Renderer, provider JournalProvider) http.Handler
 			}
 			return
 		}
+		entries := snap.Entries
+		if entries == nil {
+			entries = []JournalEntry{}
+		}
 		page := journalPageData{
 			Date:    snap.Date,
-			Entries: snap.Entries,
+			Entries: entries,
 		}
 		if renderErr := renderer.Render(w, "journal.html", page); renderErr != nil {
 			http.Error(w, "render failed", http.StatusInternalServerError)

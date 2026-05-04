@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"html/template"
 	"net/http"
 	"net/url"
 )
@@ -45,8 +46,11 @@ type projectAPIResponse struct {
 
 // projectPageData is the template payload for project.html.
 type projectPageData struct {
-	Phases    []ProjectPhase
-	BoardURL  string
+	Phases   []ProjectPhase
+	// BoardURL is typed as template.URL so html/template renders it as a safe
+	// URL rather than escaping the value. Only http/https pass validateBoardURL,
+	// so this cast is safe and makes the contract explicit.
+	BoardURL  template.URL
 	LoadError string
 }
 
@@ -110,7 +114,7 @@ func newProjectHandler(renderer Renderer, provider ProjectProvider) http.Handler
 		}
 		page := projectPageData{
 			Phases:   snap.Phases,
-			BoardURL: boardURL,
+			BoardURL: template.URL(boardURL), // safe: validateBoardURL ensures http/https only
 		}
 		if renderErr := renderer.Render(w, "project.html", page); renderErr != nil {
 			http.Error(w, "render failed", http.StatusInternalServerError)
