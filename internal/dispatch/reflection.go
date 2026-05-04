@@ -16,6 +16,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -33,15 +34,15 @@ import (
 // which the daemon shutdown path uses to drain in-flight reflections
 // before exiting.
 type Reflector struct {
-	store         ReflectionStore
-	cmux          cmux.Client
-	dirs          WorkspaceDirs
-	skill         string
-	auditor       config.Auditor
-	now           func() time.Time
-	sampler       Sampler
-	timeout       time.Duration
-	pollInterval  time.Duration
+	store        ReflectionStore
+	cmux         cmux.Client
+	dirs         WorkspaceDirs
+	skill        string
+	auditor      config.Auditor
+	now          func() time.Time
+	sampler      Sampler
+	timeout      time.Duration
+	pollInterval time.Duration
 
 	wg sync.WaitGroup
 }
@@ -75,10 +76,17 @@ type rateSampler struct {
 	mu   sync.Mutex
 }
 
-func newRateSampler(rate float64) *rateSampler {
+// newRateSampler seeds the PRNG from the injected clock (r.now), so a
+// test using WithReflectionClock pins both the audit timestamp source
+// and the sampler's draw sequence to one place. Production callers use
+// time.Now and get a different seed every process start.
+func newRateSampler(rate float64, now func() time.Time) *rateSampler {
+	if now == nil {
+		now = time.Now
+	}
 	return &rateSampler{
 		rate: rate,
-		rng:  rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0xC0FFEE)),
+		rng:  rand.New(rand.NewPCG(uint64(now().UnixNano()), 0xC0FFEE)),
 	}
 }
 
@@ -215,7 +223,7 @@ const (
 
 	reflectionFile          = ".reflection"
 	reflectionMaxBytes      = 64 * 1024
-	reflectionMaxDisplayLen = 64
+	reflectionAuditValueMax = 512
 )
 
 // NewReflector validates required options and returns a Reflector ready
@@ -256,9 +264,9 @@ func NewReflector(opts ...ReflectorOption) (*Reflector, error) {
 	case samplerSourceExplicit:
 		r.sampler = b.explicitSample
 	case samplerSourceRate:
-		r.sampler = newRateSampler(b.sampleRate)
+		r.sampler = newRateSampler(b.sampleRate, r.now)
 	default:
-		r.sampler = newRateSampler(defaultReflectionSampleRate)
+		r.sampler = newRateSampler(defaultReflectionSampleRate, r.now)
 	}
 	return r, nil
 }
@@ -296,38 +304,51 @@ func (r *Reflector) runOne(parent context.Context, task store.Task) {
 	defer cancel()
 
 	dir := r.dirs.Dir(task.ID)
-	prompt := buildReflectionPrompt(r.skill, dir)
+	prompt := r.buildReflectionPrompt(dir)
 
 	r.recordAudit(auditReflectionStart, task.ID, task.WS)
 
 	if err := r.cmux.Send(ctx, cmux.Workspace{ID: task.WS}, prompt); err != nil {
-		r.recordAudit(auditReflectionFail, task.ID,
-			fmt.Sprintf("cmux send failed: %v", err))
+		// Distinguish ctx-derived cancel / timeout from genuine cmux
+		// failures so audit.log can tell "we shut down" / "Claude was
+		// too slow" apart from "cmux blew up". Production cmux.Client
+		// returns ctx.Err() when ctx fires mid-Send.
+		r.classifyCtxOrFail(task.ID, err, "cmux send failed")
 		return
 	}
 
 	body, waitErr := r.waitForSentinel(ctx, dir)
 	if waitErr != nil {
-		switch {
-		case errors.Is(waitErr, context.DeadlineExceeded):
-			r.recordAudit(auditReflectionTimeout, task.ID,
-				fmt.Sprintf("waited %s for %s", r.timeout, reflectionFile))
-		case errors.Is(waitErr, context.Canceled):
-			r.recordAudit(auditReflectionCancel, task.ID, "parent context cancelled")
-		default:
-			r.recordAudit(auditReflectionFail, task.ID,
-				fmt.Sprintf("read %s failed: %v", reflectionFile, waitErr))
-		}
+		r.classifyCtxOrFail(task.ID, waitErr, "read "+reflectionFile+" failed")
 		return
 	}
 
 	if err := r.store.SetReflection(ctx, task.ID, body); err != nil {
-		r.recordAudit(auditReflectionFail, task.ID,
-			fmt.Sprintf("SetReflection failed: %v", err))
+		r.classifyCtxOrFail(task.ID, err, "SetReflection failed")
 		return
 	}
 	r.recordAudit(auditReflectionDone, task.ID,
 		fmt.Sprintf("len=%d", len(body)))
+}
+
+// classifyCtxOrFail centralises the "is this a ctx-driven exit or a
+// real failure?" decision so every error site (Send / wait / persist)
+// branches identically. context.DeadlineExceeded -> reflection.timeout,
+// context.Canceled -> reflection.cancel, anything else ->
+// reflection.fail. The descriptive prefix is glued onto the wrapped
+// error so the audit value tells operators *which* step bailed.
+func (r *Reflector) classifyCtxOrFail(taskID int64, err error, prefix string) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		r.recordAudit(auditReflectionTimeout, taskID,
+			fmt.Sprintf("%s: waited up to %s for %s", prefix, r.timeout, reflectionFile))
+	case errors.Is(err, context.Canceled):
+		r.recordAudit(auditReflectionCancel, taskID,
+			fmt.Sprintf("%s: parent context cancelled", prefix))
+	default:
+		r.recordAudit(auditReflectionFail, taskID,
+			fmt.Sprintf("%s: %v", prefix, err))
+	}
 }
 
 // waitForSentinel polls dir/.reflection until it appears, ctx fires, or
@@ -409,8 +430,13 @@ func readReflectionFile(path string) ([]byte, error) {
 // is delivered to disk verbatim — printf '%s' would mangle %-prefixed
 // substrings and quote nesting would silently lose lines (design-review
 // finding from go-design / security agents).
-func buildReflectionPrompt(skill, workspaceDir string) string {
-	body := strings.TrimSpace(skill)
+//
+// The advertised timeout / size cap comes from the receiver so an
+// operator who tightened WithReflectionTimeout / future per-Reflector
+// caps does not hand Claude a misleading deadline (review-fix-loop
+// finding: prompt body and Reflector were two SSOTs).
+func (r *Reflector) buildReflectionPrompt(workspaceDir string) string {
+	body := strings.TrimSpace(r.skill)
 	if workspaceDir == "" {
 		return body
 	}
@@ -419,7 +445,7 @@ func buildReflectionPrompt(skill, workspaceDir string) string {
 	return body + "\n\n## Reflection sentinel (auto-injected)\n\n" +
 		"After writing your review, publish it atomically so the marunage " +
 		"reflection hook can read a complete file. The hook waits up to " +
-		defaultReflectionTimeout.String() + " for the file to appear and reads at most " +
+		r.timeout.String() + " for the file to appear and reads at most " +
 		fmt.Sprintf("%d KiB", reflectionMaxBytes/1024) + " of plain UTF-8 text " +
 		"(symlinks and oversized files are rejected). Use a heredoc so the " +
 		"body survives quotes / newlines / percent signs:\n\n" +
@@ -433,11 +459,18 @@ func buildReflectionPrompt(skill, workspaceDir string) string {
 		"is rendered in the marunage Web UI."
 }
 
+// recordAudit is the single sink for audit events fired by this
+// package. Every Value runs through logging.Redact (so a Bearer header /
+// API key echoed back from cmux stderr cannot pin to audit.log) and is
+// then bounded so a 100KiB error payload does not bloat the trail.
+// dispatch.markFailed already follows this pattern; mirroring it here
+// keeps the dispatcher and the reflection hook on the same secrets-out
+// guarantee.
 func (r *Reflector) recordAudit(action string, id int64, value string) {
 	r.auditor.Record(config.AuditEvent{
 		Action: action,
 		Key:    "task:" + strconv.FormatInt(id, 10),
-		Value:  truncateAuditValue(value, reflectionMaxDisplayLen*8),
+		Value:  truncateAuditValue(logging.Redact(value), reflectionAuditValueMax),
 	})
 }
 

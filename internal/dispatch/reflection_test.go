@@ -167,15 +167,15 @@ func (f reflectDirs) Dir(id int64) string { return f(id) }
 // always-accept sampler so the happy-path tests do not need to fight
 // randomness.
 type reflectFixture struct {
-	t      *testing.T
-	store  *reflectStore
-	cmux   *reflectCmux
-	au     *reflectAuditor
-	dirs   reflectDirs
-	root   string
-	r      *dispatch.Reflector
-	now    time.Time
-	ctxBg  context.Context
+	t     *testing.T
+	store *reflectStore
+	cmux  *reflectCmux
+	au    *reflectAuditor
+	dirs  reflectDirs
+	root  string
+	r     *dispatch.Reflector
+	now   time.Time
+	ctxBg context.Context
 }
 
 const testReflectSkill = "REFLECT-SKILL-BODY"
@@ -558,6 +558,110 @@ func TestReflectorIgnoresOrphanTmpFile(t *testing.T) {
 	f.r.Wait()
 	if got := len(f.store.Calls()); got != 0 {
 		t.Errorf("SetReflection called %d times for orphan .tmp; want 0", got)
+	}
+}
+
+// review-fix-loop iter 1 (test-quality Critical): production cmux.Client
+// honours ctx.Err() — when the parent ctx is cancelled before Send
+// completes, Send returns context.Canceled. The Reflector must classify
+// that as reflection.cancel (not reflection.fail), so the audit trail
+// distinguishes "we shut down" from "Claude / cmux blew up".
+func TestReflectorOnDoneClassifiesSendCancelAsCancelAudit(t *testing.T) {
+	f := newReflectFixture(t)
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return context.Canceled
+	}
+	f.r.OnDone(f.ctxBg, runningTask(41, "workspace:41"))
+	f.r.Wait()
+
+	if got := len(f.store.Calls()); got != 0 {
+		t.Errorf("SetReflection called %d times after Send returned ctx.Canceled; want 0", got)
+	}
+	for _, ev := range f.au.Events() {
+		if ev.Action == "reflection.fail" {
+			t.Errorf("Send ctx.Canceled mis-classified as reflection.fail; events=%+v", f.au.Events())
+		}
+	}
+	cancelSeen := false
+	for _, ev := range f.au.Events() {
+		if ev.Action == "reflection.cancel" {
+			cancelSeen = true
+		}
+	}
+	if !cancelSeen {
+		t.Errorf("reflection.cancel audit not recorded; events=%+v", f.au.Events())
+	}
+}
+
+// review-fix-loop iter 1 (test-quality Critical): same shape as cancel —
+// Send returning context.DeadlineExceeded must record reflection.timeout.
+func TestReflectorOnDoneClassifiesSendDeadlineAsTimeoutAudit(t *testing.T) {
+	f := newReflectFixture(t)
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return context.DeadlineExceeded
+	}
+	f.r.OnDone(f.ctxBg, runningTask(43, "workspace:43"))
+	f.r.Wait()
+
+	for _, ev := range f.au.Events() {
+		if ev.Action == "reflection.fail" {
+			t.Errorf("Send DeadlineExceeded mis-classified as reflection.fail; events=%+v", f.au.Events())
+		}
+	}
+	timeoutSeen := false
+	for _, ev := range f.au.Events() {
+		if ev.Action == "reflection.timeout" {
+			timeoutSeen = true
+		}
+	}
+	if !timeoutSeen {
+		t.Errorf("reflection.timeout audit not recorded; events=%+v", f.au.Events())
+	}
+}
+
+// review-fix-loop iter 1 (design-conformance Critical): the cmux Send
+// error / SetReflection error message can echo back tokens (Bearer
+// headers, API keys). dispatch.markFailed already runs every audit value
+// through logging.Redact — Reflector must do the same so secrets do not
+// leak into audit.log.
+func TestReflectorRedactsSecretsBeforeAuditing(t *testing.T) {
+	f := newReflectFixture(t)
+	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+		return errors.New("cmux send: Bearer sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa rejected")
+	}
+	f.r.OnDone(f.ctxBg, runningTask(47, "workspace:47"))
+	f.r.Wait()
+	for _, ev := range f.au.Events() {
+		if strings.Contains(ev.Value, "sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {
+			t.Errorf("audit value leaked secret token: %q", ev.Value)
+		}
+		if strings.Contains(ev.Value, "Bearer sk-ant") {
+			t.Errorf("audit value leaked Bearer header: %q", ev.Value)
+		}
+	}
+}
+
+// review-fix-loop iter 1 (design Warning, real correctness): the prompt
+// embeds the timeout the hook will actually wait for. A custom
+// WithReflectionTimeout(40ms) must be reflected in the prompt text so
+// Claude is not lied to about the deadline.
+func TestReflectorPromptUsesConfiguredTimeout(t *testing.T) {
+	custom := 73 * time.Second
+	f := newReflectFixture(t,
+		dispatch.WithReflectionTimeout(custom),
+	)
+	const id int64 = 53
+	dir := f.dirs.Dir(id)
+	writeReflection(t, dir, "ok")
+	f.r.OnDone(f.ctxBg, runningTask(id, "workspace:53"))
+	f.r.Wait()
+	calls := f.cmux.SendCalls()
+	if len(calls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(calls))
+	}
+	if !strings.Contains(calls[0].Text, custom.String()) {
+		t.Errorf("prompt does not advertise custom timeout %s; got %q",
+			custom, calls[0].Text)
 	}
 }
 
