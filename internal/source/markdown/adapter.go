@@ -112,6 +112,13 @@ func (a *Adapter) Delete(ctx context.Context, externalID string) error {
 	return a.inner.Delete(ctx, externalID)
 }
 
+// Update is a no-op for the markdown source: file rewriting is handled by
+// Add/Complete/Delete; field-level updates are not supported at the file
+// layer. Returns nil so v2 dispatch succeeds without mutating the file.
+func (a *Adapter) Update(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 // convertTasks is a tiny lifting helper for the List / Since paths. Pulled
 // out so the conversion has one definition; otherwise a future field
 // addition would need three identical edits.

@@ -27,6 +27,7 @@ const (
 	CapAdd        Capability = "add"
 	CapComplete   Capability = "complete"
 	CapDelete     Capability = "delete"
+	CapUpdate     Capability = "update"
 )
 
 // knownCapabilities is the set the validator checks against. Keeping it as a
@@ -40,6 +41,7 @@ var knownCapabilities = map[Capability]struct{}{
 	CapAdd:        {},
 	CapComplete:   {},
 	CapDelete:     {},
+	CapUpdate:     {},
 }
 
 // mandatoryCapabilities are the three subcommands every Discovery plugin
@@ -63,11 +65,12 @@ const (
 // (`[settings]`, `[telemetry]`, ...). Storing the parsed form flat keeps
 // callers from having to walk through `m.Plugin.Name`.
 type Manifest struct {
-	Name         string
-	Version      string
-	Description  string
-	SyncMode     SyncMode
-	Capabilities []Capability
+	Name           string
+	Version        string
+	Description    string
+	SyncMode       SyncMode
+	Capabilities   []Capability
+	AdapterVersion string // "v1" (default) or "v2"
 }
 
 // HasCapability reports whether the manifest declares want. Linear scan is
@@ -88,11 +91,12 @@ func (m Manifest) HasCapability(want Capability) bool {
 // without breaking compilations.
 type rawManifest struct {
 	Plugin struct {
-		Name         string   `toml:"name"`
-		Version      string   `toml:"version"`
-		Description  string   `toml:"description"`
-		SyncMode     string   `toml:"sync_mode"`
-		Capabilities []string `toml:"capabilities"`
+		Name           string   `toml:"name"`
+		Version        string   `toml:"version"`
+		Description    string   `toml:"description"`
+		SyncMode       string   `toml:"sync_mode"`
+		AdapterVersion string   `toml:"adapter_version"`
+		Capabilities   []string `toml:"capabilities"`
 	} `toml:"plugin"`
 }
 
@@ -140,6 +144,16 @@ func LoadManifestFromBytes(body []byte) (*Manifest, error) {
 		return nil, fmt.Errorf("%w: unknown sync_mode %q", ErrInvalidManifest, raw.Plugin.SyncMode)
 	}
 
+	adapterVersion := raw.Plugin.AdapterVersion
+	switch adapterVersion {
+	case "", "v1":
+		adapterVersion = "v1"
+	case "v2":
+		// accepted
+	default:
+		return nil, fmt.Errorf("%w: unknown adapter_version %q", ErrInvalidManifest, raw.Plugin.AdapterVersion)
+	}
+
 	caps := make([]Capability, 0, len(raw.Plugin.Capabilities))
 	seen := map[Capability]struct{}{}
 	for _, s := range raw.Plugin.Capabilities {
@@ -158,12 +172,16 @@ func LoadManifestFromBytes(body []byte) (*Manifest, error) {
 			return nil, fmt.Errorf("%w: missing mandatory capability %q", ErrInvalidManifest, must)
 		}
 	}
+	if _, hasUpdate := seen[CapUpdate]; hasUpdate && adapterVersion != "v2" {
+		return nil, fmt.Errorf("%w: capability %q requires adapter_version = \"v2\"", ErrInvalidManifest, CapUpdate)
+	}
 
 	return &Manifest{
-		Name:         raw.Plugin.Name,
-		Version:      raw.Plugin.Version,
-		Description:  raw.Plugin.Description,
-		SyncMode:     mode,
-		Capabilities: caps,
+		Name:           raw.Plugin.Name,
+		Version:        raw.Plugin.Version,
+		Description:    raw.Plugin.Description,
+		SyncMode:       mode,
+		Capabilities:   caps,
+		AdapterVersion: adapterVersion,
 	}, nil
 }

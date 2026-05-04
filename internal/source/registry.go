@@ -119,6 +119,7 @@ func ValidateAgainstManifest(p Plugin, m *Manifest) error {
 		{CapAdd, implementsAdder(p), "Adder"},
 		{CapComplete, implementsCompleter(p), "Completer"},
 		{CapDelete, implementsDeleter(p), "Deleter"},
+		{CapUpdate, implementsUpdater(p), "Updater"},
 	}
 	for _, c := range checks {
 		if !m.HasCapability(c.capability) {
@@ -140,3 +141,4 @@ func implementsSincer(p Plugin) bool    { _, ok := p.(Sincer); return ok }
 func implementsAdder(p Plugin) bool     { _, ok := p.(Adder); return ok }
 func implementsCompleter(p Plugin) bool { _, ok := p.(Completer); return ok }
 func implementsDeleter(p Plugin) bool   { _, ok := p.(Deleter); return ok }
+func implementsUpdater(p Plugin) bool   { _, ok := p.(Updater); return ok }

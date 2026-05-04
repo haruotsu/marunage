@@ -181,6 +181,13 @@ type Deleter interface {
 	Delete(ctx context.Context, externalID string) error
 }
 
+// Updater is the optional `update` capability. Only v2 adapter plugins
+// implement this; callers must check SupportsUpdate (or Manifest.HasCapability)
+// before invoking.
+type Updater interface {
+	Update(ctx context.Context, taskID, field, value string) error
+}
+
 // ErrPluginNotFound is returned by Registry.Get for an unknown name. It
 // lives in this file (rather than registry.go) so callers branching on
 // plugin lookups can reference it without dragging the whole registry

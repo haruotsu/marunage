@@ -247,3 +247,103 @@ capabilities = ["list", "setup", "auth-status"]
 		t.Errorf("error should mention sync_mode: %v", err)
 	}
 }
+
+// TestLoadManifestAdapterVersionDefaultsToV1 verifies that omitting
+// adapter_version in plugin.toml is treated as "v1" for backward compatibility.
+func TestLoadManifestAdapterVersionDefaultsToV1(t *testing.T) {
+	t.Parallel()
+
+	m, err := LoadManifestFromBytes([]byte(`
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "read-only"
+capabilities = ["list", "setup", "auth-status"]
+`))
+	if err != nil {
+		t.Fatalf("LoadManifestFromBytes: %v", err)
+	}
+	if m.AdapterVersion != "v1" {
+		t.Errorf("AdapterVersion = %q, want %q", m.AdapterVersion, "v1")
+	}
+}
+
+// TestLoadManifestAdapterVersionV2 verifies that adapter_version = "v2" is
+// parsed and surfaced on the Manifest.
+func TestLoadManifestAdapterVersionV2(t *testing.T) {
+	t.Parallel()
+
+	m, err := LoadManifestFromBytes([]byte(`
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "read-only"
+adapter_version = "v2"
+capabilities = ["list", "setup", "auth-status"]
+`))
+	if err != nil {
+		t.Fatalf("LoadManifestFromBytes: %v", err)
+	}
+	if m.AdapterVersion != "v2" {
+		t.Errorf("AdapterVersion = %q, want %q", m.AdapterVersion, "v2")
+	}
+}
+
+// TestLoadManifestRejectsUnknownAdapterVersion verifies that an invalid
+// adapter_version value returns ErrInvalidManifest.
+func TestLoadManifestRejectsUnknownAdapterVersion(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadManifestFromBytes([]byte(`
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "read-only"
+adapter_version = "v99"
+capabilities = ["list", "setup", "auth-status"]
+`))
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("want ErrInvalidManifest, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "adapter_version") {
+		t.Errorf("error should mention adapter_version: %v", err)
+	}
+}
+
+// TestLoadManifestRejectsUpdateCapabilityOnV1 verifies that declaring "update"
+// in a v1 manifest is rejected: the spec requires adapter_version = "v2".
+func TestLoadManifestRejectsUpdateCapabilityOnV1(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadManifestFromBytes([]byte(`
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "bidirectional"
+capabilities = ["list", "setup", "auth-status", "update"]
+`))
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("want ErrInvalidManifest for update on v1 manifest, got %v", err)
+	}
+}
+
+// TestLoadManifestParsesUpdateCapability verifies that "update" is a known
+// capability and can be included in v2 manifests.
+func TestLoadManifestParsesUpdateCapability(t *testing.T) {
+	t.Parallel()
+
+	m, err := LoadManifestFromBytes([]byte(`
+[plugin]
+name = "x"
+version = "1"
+sync_mode = "bidirectional"
+adapter_version = "v2"
+capabilities = ["list", "setup", "auth-status", "update"]
+`))
+	if err != nil {
+		t.Fatalf("LoadManifestFromBytes: %v", err)
+	}
+	if !m.HasCapability(CapUpdate) {
+		t.Errorf("expected CapUpdate to be present, got %v", m.Capabilities)
+	}
+}
