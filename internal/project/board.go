@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,22 @@ var (
 	// ErrInvalidResponse is returned when gh produces output that cannot be
 	// parsed as the expected JSON shape.
 	ErrInvalidResponse = errors.New("project: invalid gh response")
+)
+
+// validOwnerName matches GitHub's org/user naming rules: starts with an
+// alphanumeric character, followed by alphanumerics or hyphens. Accepts
+// up to 39 characters (GitHub's documented limit). The leading character
+// cannot be a hyphen, which prevents values that gh's flag parser could
+// misinterpret as an unknown flag.
+var validOwnerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9\-]{0,38}$`)
+
+// Board status values as returned by gh project item-list. Defined as
+// constants so callers use symbolic names rather than string literals —
+// a typo in a comparison is a compile-time error rather than a silent
+// logic bug.
+const (
+	StatusDone       = "Done"
+	StatusInProgress = "In Progress"
 )
 
 // ParsedURL holds the parsed components of a GitHub Projects board URL.
@@ -63,9 +80,10 @@ type rawBoardItem struct {
 //	https://github.com/orgs/<org>/projects/<number>
 //	https://github.com/users/<user>/projects/<number>
 //
-// Returns ErrInvalidBoardURL for any deviation from the above, including
-// a non-numeric or non-positive project number, so a tampered value
-// cannot smuggle additional path segments into the gh invocation.
+// Returns ErrInvalidBoardURL for any deviation, including:
+//   - a host other than github.com (SSRF guard)
+//   - an owner name that does not match GitHub's naming rules
+//   - a non-numeric or non-positive project number
 func ParseBoardURL(rawURL string) (ParsedURL, error) {
 	if rawURL == "" {
 		return ParsedURL{}, fmt.Errorf("%w: empty URL", ErrInvalidBoardURL)
@@ -73,6 +91,12 @@ func ParseBoardURL(rawURL string) (ParsedURL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ParsedURL{}, fmt.Errorf("%w: %v", ErrInvalidBoardURL, err)
+	}
+	// Reject any host that is not github.com to prevent SSRF: a crafted URL
+	// with an attacker-controlled host would still pass the path check and
+	// could redirect future API calls to an arbitrary server.
+	if u.Host != "github.com" {
+		return ParsedURL{}, fmt.Errorf("%w: %q (only github.com is supported, got %q)", ErrInvalidBoardURL, rawURL, u.Host)
 	}
 	// Expected path: /orgs/<owner>/projects/<number>
 	//             or /users/<owner>/projects/<number>
@@ -87,12 +111,16 @@ func ParseBoardURL(rawURL string) (ParsedURL, error) {
 	if parts[2] != "projects" {
 		return ParsedURL{}, fmt.Errorf("%w: %q (missing 'projects' path segment)", ErrInvalidBoardURL, rawURL)
 	}
+	owner := parts[1]
+	if !validOwnerName.MatchString(owner) {
+		return ParsedURL{}, fmt.Errorf("%w: %q (invalid owner name %q)", ErrInvalidBoardURL, rawURL, owner)
+	}
 	n, parseErr := strconv.Atoi(parts[3])
 	if parseErr != nil || n <= 0 {
 		return ParsedURL{}, fmt.Errorf("%w: %q (project number must be a positive integer, got %q)", ErrInvalidBoardURL, rawURL, parts[3])
 	}
 	return ParsedURL{
-		Owner:     parts[1],
+		Owner:     owner,
 		Number:    n,
 		OwnerKind: kind,
 	}, nil
