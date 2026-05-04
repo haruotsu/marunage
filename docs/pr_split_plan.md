@@ -660,11 +660,11 @@ flowchart LR
     WEB -.read-only.-> ALL[全データ]
 ```
 
-### [機能] PR-100 Slack Reaction Trigger ✅ DONE (PR #47)
+### [機能] PR-100 Slack Reaction Trigger
 
-- [x] `reactions.added` ポーリング（`Client.FetchReactionEvents` 抽象）
-- [x] 設定 reaction（例：`:todo:`）でタスク化（`SlackReactionTriggerConfig.Reactions`）
-- [x] permalink 保存（`Notes` JSON + `SourcePath`）・DM 完了報告（`dm_on_complete` オプション）
+- [ ] `reactions.added` イベント購読 or ポーリング
+- [ ] 設定 reaction（例：`:todo:`）でタスク化
+- [ ] permalink 保存・DM 完了報告
 
 https://github.com/harakeishi/slackhog
 検証やテストはこれを使って
