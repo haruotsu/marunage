@@ -24,6 +24,7 @@
 - [x] A1. `Adapter.Name()` returns "calendar".
 - [x] A2. `Adapter.List` converts a regular event to `source.Task` with Source="calendar", ExternalID=ev.ID, Title=ev.Summary, Body=ev.Description, SourcePath=ev.HTMLLink, Done=false.
 - [x] A3. `Adapter.List` regular event RawMetadata carries `all_day=false`, `attendee_status`, `start` (RFC3339), `end` (RFC3339).
+- [x] A3b. `Adapter.List` omits RawMetadata.start / end when a regular event arrives with zero-value StartDateTime / EndDateTime (defensive: do not emit `"0001-01-01T00:00:00Z"`).
 - [x] A4. `Adapter.List` all-day event RawMetadata carries `all_day=true`, `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD).
 - [x] A5. `Adapter.List` populates `RawMetadata.location` only when `ev.Location != ""`.
 - [x] A6. `Adapter.Setup` delegates to inner.

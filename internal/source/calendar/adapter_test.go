@@ -119,6 +119,34 @@ func TestAdapterListConvertsAllDayEvent(t *testing.T) {
 	}
 }
 
+// TestAdapterListSkipsZeroValueRegularEventTimes — A3b. A defensive
+// guard in convertEvent: if a malformed Client somehow returns a
+// non-all-day event with zero-value StartDateTime/EndDateTime, the
+// adapter must NOT emit "0001-01-01T00:00:00Z" into RawMetadata. The
+// real GWSClient already rejects bad dateTime via G10, so this test
+// pins the second line of defence at the layer boundary.
+func TestAdapterListSkipsZeroValueRegularEventTimes(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{listEvents: []Event{{
+		ID:             "evt-no-time",
+		Summary:        "broken",
+		AllDay:         false,
+		AttendeeStatus: "accepted",
+	}}}
+	a := NewAdapter(New(WithClient(fake)))
+	tasks, err := a.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, ok := tasks[0].RawMetadata["start"]; ok {
+		t.Errorf("RawMetadata.start present for zero StartDateTime; want omitted")
+	}
+	if _, ok := tasks[0].RawMetadata["end"]; ok {
+		t.Errorf("RawMetadata.end present for zero EndDateTime; want omitted")
+	}
+}
+
 // TestAdapterListLocationOnlyWhenPresent — A5.
 func TestAdapterListLocationOnlyWhenPresent(t *testing.T) {
 	t.Parallel()
