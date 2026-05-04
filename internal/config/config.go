@@ -185,7 +185,7 @@ func Default() Config {
 		},
 		Reflection: ReflectionConfig{
 			Enabled:    false,
-			SampleRate: 0.0,
+			SampleRate: 1.0,
 			TaggedOnly: []string{"important"},
 		},
 		Journal: JournalConfig{

@@ -611,6 +611,50 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 	return nil
 }
 
+// SetReflection writes reflection text on a terminal row (done /
+// failed). The PR-102 reflection hook calls this from its async
+// goroutine after Claude has written its review answer to the workspace
+// dir; the status guard means a `marunage reopen` that flipped the row
+// back to pending mid-flight cannot have the late answer pinned onto
+// what is now a fresh dispatch.
+//
+// Empty text clears the column to NULL so a re-run that produced no
+// answer does not leave a stale value behind. Missing id surfaces
+// ErrNotFound; a non-terminal current state surfaces ErrInvalidTransition
+// (mirroring EscalateToHuman's two-step probe so callers can branch on
+// the typed sentinel).
+func (r *TaskRepo) SetReflection(ctx context.Context, id int64, text string) error {
+	const q = `
+		UPDATE tasks
+		   SET reflection = ?
+		 WHERE id = ?
+		   AND status IN ('done', 'failed')`
+	res, err := r.db.ExecContext(ctx, q, nullable(text), id)
+	if err != nil {
+		return fmt.Errorf("set reflection: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set reflection rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	// Disambiguate "id missing" vs "wrong status" so callers can decide
+	// whether a stale id is the cause or a reopen race.
+	var current string
+	err = r.db.QueryRowContext(ctx,
+		"SELECT status FROM tasks WHERE id = ?", id,
+	).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("set reflection probe: %w", err)
+	}
+	return fmt.Errorf("%w: cannot set reflection from %q", ErrInvalidTransition, current)
+}
+
 // MarkSkippedWithReason atomically flips a row to skipped and writes
 // the triage rationale into judgment_reason. PR-72's triage hook calls
 // this when the embedded marunage-triage skill judges that the row is
