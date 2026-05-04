@@ -91,6 +91,21 @@ type Store interface {
 // judgment_reason column. This mirrors dispatch.markFailed's defence
 // in depth — both sinks the operator can read post-mortem must scrub
 // secrets at the boundary, never trust the upstream caller.
+//
+// IDEMPOTENCY: Apply is NOT idempotent. The skip branch overwrites
+// judgment_reason (so re-applying the same skip verdict is benign);
+// the task branch APPENDS via store.AppendJudgmentReason, so calling
+// Apply twice with the same task verdict grows the column. The
+// caller (Discovery) owns dedup — a freshly-discovered row should
+// have its verdict applied exactly once per discovery run.
+//
+// AUDIT: Apply does not emit audit events of its own. judgment_reason
+// is the operator-visible record; the append-only audit.log is
+// reserved for events the dispatcher records (`dispatch.start`,
+// `dispatch.fail`, `dispatch.escalate`). If a future Discovery
+// caller needs to prove "verdict V was applied at time T", record
+// the audit event at the call site BEFORE Apply returns so a later
+// judgment_reason overwrite cannot erase the evidence.
 func Apply(ctx context.Context, s Store, id int64, d Decision) error {
 	if d.Reason == "" {
 		return store.ErrReasonRequired
