@@ -60,17 +60,28 @@ type Options struct {
 	// The zero value disables /skills and /api/skills/* so PR-62's
 	// minimal index page keeps working.
 	Skills SkillsConfig
+
+	// TaskDetail wires the task detail page provider. Nil falls back to
+	// a noop that returns 404 for all IDs so PR-62's handler tests keep
+	// passing without having to supply a fake store.
+	TaskDetail TaskDetailProvider
+
+	// AuditLog wires the audit log reader for the task detail page.
+	// Nil falls back to a noop reader that returns empty entries.
+	AuditLog AuditReader
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
 // Routes() returns the http.Handler the lifecycle methods (Serve, the
 // CLI command) wrap with a *http.Server.
 type Server struct {
-	csrf      *CSRF
-	hub       *Hub
-	renderer  Renderer
-	dashboard DashboardProvider
-	opts      Options
+	csrf       *CSRF
+	hub        *Hub
+	renderer   Renderer
+	dashboard  DashboardProvider
+	taskDetail TaskDetailProvider
+	auditLog   AuditReader
+	opts       Options
 }
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
@@ -93,12 +104,22 @@ func NewServer(opts Options) (*Server, error) {
 	if dashboard == nil {
 		dashboard = noopDashboardProvider{now: time.Now}
 	}
+	taskDetail := opts.TaskDetail
+	if taskDetail == nil {
+		taskDetail = noopTaskDetailProvider{}
+	}
+	auditLog := opts.AuditLog
+	if auditLog == nil {
+		auditLog = noopAuditReader{}
+	}
 	return &Server{
-		csrf:      csrf,
-		hub:       NewHub(),
-		renderer:  renderer,
-		dashboard: dashboard,
-		opts:      opts,
+		csrf:       csrf,
+		hub:        NewHub(),
+		renderer:   renderer,
+		dashboard:  dashboard,
+		taskDetail: taskDetail,
+		auditLog:   auditLog,
+		opts:       opts,
 	}, nil
 }
 
@@ -118,6 +139,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
 	mux.Handle("GET /events", NewSSEHandler(s.hub, SSEOptions{HeartbeatInterval: s.opts.HeartbeatInterval}))
 	mux.Handle("GET /static/", newStaticHandler())
+	mux.Handle("GET /tasks/{id}", newTaskDetailHandler(s.renderer, s.taskDetail, s.auditLog))
 	mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
 	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
