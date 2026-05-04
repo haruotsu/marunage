@@ -201,15 +201,15 @@ type gwsEventsResponse struct {
 // toEvent method translates the on-wire shape into the package-public
 // Event struct.
 type gwsEvent struct {
-	ID          string         `json:"id"`
-	Summary     string         `json:"summary"`
-	Description string         `json:"description"`
-	Location    string         `json:"location"`
-	HTMLLink    string         `json:"htmlLink"`
-	Status      string         `json:"status"`
-	Start       gwsTimeValue   `json:"start"`
-	End         gwsTimeValue   `json:"end"`
-	Attendees   []gwsAttendee  `json:"attendees"`
+	ID          string        `json:"id"`
+	Summary     string        `json:"summary"`
+	Description string        `json:"description"`
+	Location    string        `json:"location"`
+	HTMLLink    string        `json:"htmlLink"`
+	Status      string        `json:"status"`
+	Start       gwsTimeValue  `json:"start"`
+	End         gwsTimeValue  `json:"end"`
+	Attendees   []gwsAttendee `json:"attendees"`
 }
 
 // gwsTimeValue is the start/end shape: `date` for all-day, `dateTime` for
