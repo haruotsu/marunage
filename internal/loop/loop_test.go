@@ -782,8 +782,7 @@ func TestRunOnce_NoLockKey_AllowsConcurrent(t *testing.T) {
 // New-rejects-missing-X tests where the field is set but never read.
 type stubRepo struct{}
 
-func (stubRepo) Insert(context.Context, store.Task) (int64, error)  { return 0, nil }
-func (stubRepo) Get(context.Context, int64) (store.Task, error)     { return store.Task{}, nil }
+func (stubRepo) Insert(context.Context, store.Task) (int64, error) { return 0, nil }
 func (stubRepo) List(context.Context, store.ListFilter) ([]store.Task, error) {
 	return nil, nil
 }

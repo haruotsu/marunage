@@ -81,11 +81,14 @@ func productionDaemonControl(configPath string) (daemonControl, error) {
 	logPath := filepath.Join(root, "logs", "daemon.log")
 	exePath, err := os.Executable()
 	if err != nil {
-		// os.Executable resolves the running binary on every platform we
-		// target; falling back to the literal argv[0] the operator typed
-		// keeps `daemon start` usable when the resolution failed (e.g.
-		// stripped binary on a minimal container).
-		exePath = "marunage"
+		// Fail closed rather than falling back to the bare name
+		// "marunage" + PATH lookup: a hostile $PATH entry on a CI
+		// runner / unprivileged container could shadow the real
+		// binary and have `daemon start` spawn an attacker-controlled
+		// process with the operator's --config. The user can recover
+		// by re-invoking from an absolute path or fixing the
+		// environment that broke os.Executable.
+		return nil, fmt.Errorf("daemon: resolve executable path: %w (refuse to fall back to PATH lookup; invoke marunage by absolute path)", err)
 	}
 	return &fileBackedDaemon{
 		pidPath: pidPath,
@@ -126,7 +129,15 @@ func (d *fileBackedDaemon) Status() (daemonStatus, error) {
 func (d *fileBackedDaemon) Start(args []string) (int, error) {
 	cur, err := d.Status()
 	if err != nil {
-		return 0, err
+		// Status only ever fails when readPID hits a malformed
+		// pidfile (parse error) or a non-positive pid. Either case is
+		// "garbage on disk we cannot trust"; treat it like a stale
+		// pidfile rather than refusing to start. Without this branch
+		// a single typo in /usr/local/etc/marunage/daemon.pid would
+		// permanently wedge `daemon start` until the operator deleted
+		// the file by hand.
+		_ = os.Remove(d.pidPath)
+		cur = daemonStatus{Path: d.pidPath}
 	}
 	if cur.Running {
 		return cur.PID, fmt.Errorf("daemon already running (pid=%d, pidfile=%s)", cur.PID, cur.Path)
