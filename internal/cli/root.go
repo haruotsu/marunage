@@ -64,7 +64,8 @@ func newRootCmd() *cobra.Command {
 	for _, c := range buildLeafStubs() {
 		root.AddCommand(c)
 	}
-	root.AddCommand(newDaemonCmd())
+	root.AddCommand(newDaemonCmd(&configPath))
+	root.AddCommand(newLoopCmd(&configPath))
 	root.AddCommand(newConfigCmd(&configPath))
 	root.AddCommand(newDoctorCmd(&configPath))
 	root.AddCommand(newInitCmd(&configPath))
@@ -101,7 +102,6 @@ func buildLeafStubs() []*cobra.Command {
 		{"run-all", "Dispatch every pending task in priority order."},
 		{"open", "Render view.md and open it in cmux's markdown viewer."},
 		{"notify", "Send completion / failure / waiting_human notifications."},
-		{"loop", "Periodically run discover -> dispatch -> render -> notify -> reaper."},
 		{"review", "Review past skipped tasks for triage feedback."},
 	}
 
@@ -130,20 +130,9 @@ func newStubCmd(spec stubSpec, parentPath string) *cobra.Command {
 	}
 }
 
-func newDaemonCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "daemon",
-		Short: "Manage the marunage background daemon (LaunchAgent / systemd / cron).",
-	}
-	for _, s := range []stubSpec{
-		{"start", "Start the marunage daemon."},
-		{"stop", "Stop the marunage daemon."},
-		{"status", "Show the marunage daemon status."},
-	} {
-		cmd.AddCommand(newStubCmd(s, "daemon"))
-	}
-	return cmd
-}
+// newDaemonCmd is implemented in daemon.go; the stub it once held now
+// lives there alongside start / stop / status which manage the
+// pidfile-backed background `marunage loop` process.
 
 // commandNameFromUse extracts the bare command name from a cobra Use string
 // such as "add <title>" or "doctor [--fix]".
