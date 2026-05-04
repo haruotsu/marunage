@@ -175,6 +175,101 @@ func TestReviewHandler_NilProviderFallsBackToIndex(t *testing.T) {
 	}
 }
 
+// 7. GET /review sets Cache-Control: no-store.
+func TestReviewHandler_SetsCacheControlNoStore(t *testing.T) {
+	snap := ReviewSnapshot{Tasks: sampleSkippedTasks()}
+	srv := newReviewServer(t, staticReviewProvider{snap: snap})
+
+	req := httptest.NewRequest(http.MethodGet, "/review", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control=%q; want no-store", got)
+	}
+}
+
+// 8. GET /api/review/skipped sets Cache-Control: no-store.
+func TestReviewAPIHandler_SetsCacheControlNoStore(t *testing.T) {
+	snap := ReviewSnapshot{Tasks: sampleSkippedTasks()}
+	srv := newReviewServer(t, staticReviewProvider{snap: snap})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/review/skipped", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control=%q; want no-store", got)
+	}
+}
+
+// captureFilterProvider records the ListFilter passed to ReviewSnapshot.
+type captureFilterProvider struct {
+	snap    ReviewSnapshot
+	filters []store.ListFilter
+}
+
+func (c *captureFilterProvider) ReviewSnapshot(_ context.Context, f store.ListFilter) (ReviewSnapshot, error) {
+	c.filters = append(c.filters, f)
+	return c.snap, nil
+}
+
+// 9. GET /review?since=7d passes CreatedAfter to the provider.
+func TestReviewHandler_SinceQueryPassesCreatedAfter(t *testing.T) {
+	prov := &captureFilterProvider{snap: ReviewSnapshot{Tasks: sampleSkippedTasks()}}
+	srv, err := NewServer(Options{
+		TokenSource:       testTokenSource,
+		HeartbeatInterval: 25 * time.Millisecond,
+		Review:            prov,
+		TaskOps:           &fakeTasks{},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/review?since=7d", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200", w.Code)
+	}
+	if len(prov.filters) == 0 {
+		t.Fatal("ReviewSnapshot not called")
+	}
+	if prov.filters[0].CreatedAfter.IsZero() {
+		t.Errorf("CreatedAfter is zero; want non-zero for ?since=7d")
+	}
+}
+
+// 10. GET /api/review/skipped?since=7d passes CreatedAfter to the provider.
+func TestReviewAPIHandler_SinceQueryPassesCreatedAfter(t *testing.T) {
+	prov := &captureFilterProvider{snap: ReviewSnapshot{Tasks: sampleSkippedTasks()}}
+	srv, err := NewServer(Options{
+		TokenSource:       testTokenSource,
+		HeartbeatInterval: 25 * time.Millisecond,
+		Review:            prov,
+		TaskOps:           &fakeTasks{},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/review/skipped?since=7d", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200", w.Code)
+	}
+	if len(prov.filters) == 0 {
+		t.Fatal("ReviewSnapshot not called")
+	}
+	if prov.filters[0].CreatedAfter.IsZero() {
+		t.Errorf("CreatedAfter is zero; want non-zero for ?since=7d")
+	}
+}
+
 // errTestReviewFailed is the sentinel error for review provider test failures.
 var errTestReviewFailed = &testReviewError{}
 

@@ -156,6 +156,43 @@ func TestTaskReview_ReportShowsFrequencySection(t *testing.T) {
 	}
 }
 
+// parseSinceDuration table-driven tests.
+func TestParseSinceDuration(t *testing.T) {
+	fixedNow := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	withReviewNow(t, fixedNow)
+
+	tests := []struct {
+		input   string
+		wantErr bool
+		wantT   time.Time
+	}{
+		{"7d", false, fixedNow.Add(-7 * 24 * time.Hour)},
+		{"30d", false, fixedNow.Add(-30 * 24 * time.Hour)},
+		{"24h", false, fixedNow.Add(-24 * time.Hour)},
+		{"0d", true, time.Time{}},
+		{"-3d", true, time.Time{}},
+		{"abc", true, time.Time{}},
+		{"0h", true, time.Time{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := parseSinceDuration(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("parseSinceDuration(%q) = nil err; want error", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSinceDuration(%q) = %v; want nil", tc.input, err)
+			}
+			if !got.Equal(tc.wantT) {
+				t.Errorf("parseSinceDuration(%q) = %v; want %v", tc.input, got, tc.wantT)
+			}
+		})
+	}
+}
+
 // 6. List is called with status=skipped so non-skipped rows never reach
 // the reviewer; the filter wiring is observable via listFilters.
 func TestTaskReview_FilterPassesSkippedStatus(t *testing.T) {

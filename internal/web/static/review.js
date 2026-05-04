@@ -1,7 +1,6 @@
 // review.js provides the reviewOps namespace used by review.html.
-// It only needs the promote operation (skipped → pending); the CSRF
-// pattern mirrors dashboard.js so the cookie-based double-submit token
-// works identically.
+// Promote buttons use data-task-id + event delegation (no inline onclick)
+// so the page is compatible with the script-src 'self' CSP policy.
 
 (function () {
   "use strict";
@@ -30,20 +29,49 @@
   }
 
   var reviewOps = {
-    // promote transitions task id from skipped → pending and reloads
-    // the page so the row disappears from the review list.
     promote: function (id, btn) {
-      if (btn) { btn.disabled = true; }
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Promoting…";
+        btn.setAttribute("aria-busy", "true");
+      }
       apiPost("/api/tasks/" + id + "/promote")
         .then(function () {
           window.location.reload();
         })
         .catch(function (err) {
-          if (btn) { btn.disabled = false; }
-          alert("Promote failed: " + err.message);
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = "Promote";
+            btn.removeAttribute("aria-busy");
+          }
+          // Inline feedback instead of alert() to avoid popup-blocker issues.
+          var row = btn ? btn.closest("tr") : null;
+          if (row) {
+            var feedback = row.querySelector(".promote-feedback");
+            if (!feedback) {
+              feedback = document.createElement("span");
+              feedback.className = "promote-feedback hint";
+              feedback.setAttribute("aria-live", "assertive");
+              btn.parentNode.appendChild(feedback);
+            }
+            feedback.textContent = "Failed: " + err.message;
+          }
         });
     }
   };
+
+  // Event delegation: attach a single listener on the table instead of
+  // individual onclick attributes (required by script-src 'self' CSP).
+  document.addEventListener("DOMContentLoaded", function () {
+    document.addEventListener("click", function (e) {
+      var btn = e.target.closest(".btn-promote");
+      if (!btn) { return; }
+      var id = parseInt(btn.dataset.taskId, 10);
+      if (isNaN(id)) { return; }
+      reviewOps.promote(id, btn);
+    });
+  });
 
   window.reviewOps = reviewOps;
 }());
