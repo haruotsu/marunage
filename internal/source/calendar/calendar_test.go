@@ -322,6 +322,23 @@ func TestPluginAuthStatusWithoutClientIsNotConfigured(t *testing.T) {
 	}
 }
 
+// TestPluginAuthStatusPropagatesClientError — C16. AuthStatus must
+// surface the underlying client.Status error verbatim so a daemon
+// health check can distinguish "we asked and got an answer" from
+// "we asked and the I/O failed". The previous test only exercised the
+// (status, nil) shape; this one fixes the missing branch.
+func TestPluginAuthStatusPropagatesClientError(t *testing.T) {
+	t.Parallel()
+
+	upstream := errors.New("status probe boom")
+	fake := &fakeClient{statusErr: upstream}
+	p := New(WithClient(fake))
+	_, err := p.AuthStatus(context.Background())
+	if !errors.Is(err, upstream) {
+		t.Fatalf("err = %v, want wrap of %v", err, upstream)
+	}
+}
+
 // TestPluginAuthStatusDelegatesToClient — C13.
 func TestPluginAuthStatusDelegatesToClient(t *testing.T) {
 	t.Parallel()
