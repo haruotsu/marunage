@@ -213,13 +213,22 @@ func newReflectFixture(t *testing.T, opts ...dispatch.ReflectorOption) reflectFi
 	}
 }
 
+// writeReflection simulates what Claude does in production: write to
+// .reflection.tmp first, then atomically rename to .reflection. Using a
+// direct os.WriteFile to .reflection is non-atomic (create then write),
+// which lets the polling loop read an empty file between the two syscalls
+// and call SetReflection("") — a flaky failure seen on Linux CI.
 func writeReflection(t *testing.T, dir, body string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".reflection"), []byte(body), 0o600); err != nil {
-		t.Fatalf("WriteFile .reflection: %v", err)
+	tmp := filepath.Join(dir, ".reflection.tmp")
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile .reflection.tmp: %v", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, ".reflection")); err != nil {
+		t.Fatalf("Rename .reflection: %v", err)
 	}
 }
 
