@@ -63,7 +63,6 @@ func (f *fakeStopStore) MarkFailedWithReason(_ context.Context, id int64, reason
 	return nil
 }
 
-
 // fakeWorkspaceStopper records Stop calls.
 type fakeWorkspaceStopper struct {
 	mu      sync.Mutex
