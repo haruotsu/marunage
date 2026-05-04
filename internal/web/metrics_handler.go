@@ -92,7 +92,10 @@ func newMetricsAPIHandler(provider MetricsProvider) http.Handler {
 	})
 }
 
-// newMetricsHandler returns GET /metrics HTML page.
+// newMetricsHandler returns GET /metrics HTML page. Provider errors degrade
+// gracefully to a 200 with an error banner rather than a 500, matching the
+// dashboard.go newIndexHandler pattern so the page remains accessible and
+// /healthz / /static still reachable on a fresh install with an empty DB.
 func newMetricsHandler(renderer Renderer, provider MetricsProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

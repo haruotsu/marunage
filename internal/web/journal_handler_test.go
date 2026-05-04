@@ -188,6 +188,22 @@ func TestJournalAPIHandler_EmptyDateIsOK(t *testing.T) {
 	}
 }
 
+// GET /journal with provider error still returns 200 with error banner.
+func TestJournalHandler_ProviderErrorRendersErrorBanner(t *testing.T) {
+	srv := newJournalServer(t, staticJournalProvider{err: errJournalTestFailed})
+
+	req := httptest.NewRequest(http.MethodGet, "/journal", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200 (graceful degradation)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "unavailable") {
+		t.Errorf("error banner missing 'unavailable' in body: %q", w.Body.String())
+	}
+}
+
 var errJournalTestFailed = journalTestSentinel("journal provider test failure")
 
 type journalTestSentinel string
