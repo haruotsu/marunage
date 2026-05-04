@@ -3,6 +3,7 @@ name = "markdown"
 version = "0.1.0"
 description = "Markdown TODO file source (PR-50). Reads GitHub-flavoured task list lines and exposes them through the Discovery plugin contract."
 sync_mode = "bidirectional"
+adapter_version = "v2"
 capabilities = [
     "list",
     "setup",
@@ -11,4 +12,5 @@ capabilities = [
     "add",
     "complete",
     "delete",
+    "update",
 ]

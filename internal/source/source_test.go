@@ -136,4 +136,7 @@ func TestPluginInterfaceCompiles(t *testing.T) {
 	if _, ok := p.(Deleter); ok {
 		t.Errorf("stubPlugin must not implement Deleter")
 	}
+	if _, ok := p.(Updater); ok {
+		t.Errorf("stubPlugin must not implement Updater")
+	}
 }
