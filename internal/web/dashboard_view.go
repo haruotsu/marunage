@@ -39,11 +39,11 @@ type dashboardPendingView struct {
 }
 
 type dashboardSourceView struct {
-	Name           string
-	AuthStatus     string
-	AuthBadge      string
-	LastListedAt   string
-	LastListedRel  string
+	Name          string
+	AuthStatus    string
+	AuthBadge     string
+	LastListedAt  string
+	LastListedRel string
 }
 
 const dashboardDisplayLayout = "2006-01-02 15:04 MST"
@@ -83,11 +83,11 @@ func newDashboardView(snap DashboardSnapshot) dashboardView {
 	}
 	for _, src := range snap.Sources {
 		v.Sources = append(v.Sources, dashboardSourceView{
-			Name:           src.Name,
-			AuthStatus:     src.AuthStatus,
-			AuthBadge:      authBadgeClass(src.AuthStatus),
-			LastListedAt:   formatDisplayTime(src.LastListedAt),
-			LastListedRel:  FormatRelative(now, src.LastListedAt),
+			Name:          src.Name,
+			AuthStatus:    src.AuthStatus,
+			AuthBadge:     authBadgeClass(src.AuthStatus),
+			LastListedAt:  formatDisplayTime(src.LastListedAt),
+			LastListedRel: FormatRelative(now, src.LastListedAt),
 		})
 	}
 	return v
