@@ -136,7 +136,9 @@ func TestLoadConfigFile(t *testing.T) {
 	if _, err := f.WriteString(validTOML); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := connector.LoadConfig(f.Name())
 	if err != nil {

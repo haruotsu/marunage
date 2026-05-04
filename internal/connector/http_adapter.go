@@ -68,7 +68,7 @@ func (a *HTTPAdapter) discoverRequest(ctx context.Context, payload any) ([]sourc
 	if err != nil {
 		return nil, fmt.Errorf("POST %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("POST %s: status %d", url, resp.StatusCode)
@@ -126,7 +126,7 @@ func (a *HTTPAdapter) Notify(ctx context.Context, externalID, status string) err
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("POST %s: status %d", url, resp.StatusCode)

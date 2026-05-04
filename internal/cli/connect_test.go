@@ -33,7 +33,9 @@ func TestConnect_LocalPath(t *testing.T) {
 	if _, err := f.WriteString(testConnectorTOML); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"connect", f.Name()}, &stdout, &stderr)
