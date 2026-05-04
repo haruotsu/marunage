@@ -187,8 +187,8 @@ func TestClient_AllowsHTTPWhenOptedIn(t *testing.T) {
 }
 
 // TestClient_RejectsOversizedBody pins the slow-loris / DoS guard:
-// MaxBodyBytes truncates and surfaces an error rather than letting a
-// publisher exhaust the CLI's memory.
+// MaxBodyBytes truncates and surfaces ErrBodyTooLarge rather than
+// letting a publisher exhaust the CLI's memory.
 func TestClient_RejectsOversizedBody(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/index.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -199,8 +199,35 @@ func TestClient_RejectsOversizedBody(t *testing.T) {
 
 	c := &Client{BaseURL: srv.URL, MaxBodyBytes: 10, AllowInsecure: true}
 	_, err := c.FetchIndex(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "exceeded") {
-		t.Errorf("err = %v; want exceeded-bytes error", err)
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Errorf("err = %v; want errors.Is(_, ErrBodyTooLarge)", err)
+	}
+}
+
+// TestClient_RedactsCredentialsInErrors pins the userinfo-stripping
+// contract: when the operator passes `https://user:token@host/` and
+// the server returns a non-2xx, the token must NOT appear in the
+// error message that bubbles up to logs and the Web UI.
+func TestClient_RedactsCredentialsInErrors(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no", http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	// Splice "user:tokensecret@" into the host portion of the
+	// httptest URL. We cannot use url.Parse round-tripping because
+	// httptest URLs are http://, but the test exercises the same
+	// redaction code path the production https path uses.
+	tampered := strings.Replace(srv.URL, "http://", "http://user:tokensecret@", 1)
+	c := &Client{BaseURL: tampered, AllowInsecure: true}
+	_, err := c.FetchIndex(context.Background())
+	if err == nil {
+		t.Fatalf("err = nil; want upstream error")
+	}
+	if strings.Contains(err.Error(), "tokensecret") {
+		t.Errorf("error leaked credential: %q", err)
 	}
 }
 

@@ -143,6 +143,25 @@ func TestRoutes_SkillsRegistryAPI_FetchesAndFilters(t *testing.T) {
 	}
 }
 
+// TestRoutes_SkillsRegistryAPI_UpstreamFailure_502 pins the
+// distinct status code for "registry is configured but unreachable":
+// 502 BadGateway lets the dashboard surface a different hint than
+// the 503 it shows for "no registry configured".
+func TestRoutes_SkillsRegistryAPI_UpstreamFailure_502(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	})
+	upstream := httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+
+	srv := newSkillsServer(t, SkillsConfig{RegistryURL: upstream.URL, AllowInsecure: true})
+	rec := doGet(t, srv, "/api/skills/registry")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d; want 502", rec.Code)
+	}
+}
+
 // TestRoutes_SkillsRegistryAPI_NotConfigured pins the actionable
 // 503 when the registry URL is missing — the dashboard can render
 // "configure your registry" rather than an opaque 500.
