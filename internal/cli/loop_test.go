@@ -21,14 +21,14 @@ import (
 // the production loop.Loop semantics so tests for --once / --interval
 // behave the same way under the production wiring.
 type fakeLoopRunner struct {
-	mu             sync.Mutex
-	runOnceCalls   int
-	runOnceErr     error
-	runIntervals   []time.Duration
-	runErr         error
-	runOnceHook    func()
-	runHook        func(ctx context.Context, interval time.Duration)
-	runReturnsCtx  bool // when true Run blocks on ctx; when false Run returns runErr immediately
+	mu            sync.Mutex
+	runOnceCalls  int
+	runOnceErr    error
+	runIntervals  []time.Duration
+	runErr        error
+	runOnceHook   func()
+	runHook       func(ctx context.Context, interval time.Duration)
+	runReturnsCtx bool // when true Run blocks on ctx; when false Run returns runErr immediately
 }
 
 func (f *fakeLoopRunner) RunOnce(_ context.Context) error {
