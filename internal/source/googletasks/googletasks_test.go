@@ -454,3 +454,211 @@ func TestDeleteWithoutClient(t *testing.T) {
 		t.Fatalf("Delete err = %v, want ErrNotConfigured", err)
 	}
 }
+
+// TestSetupReturnsErrNotConfigured pins the Phase-1 stub contract: the
+// real OAuth flow lands in a follow-up PR, so today Setup signals
+// ErrNotConfigured. Without this pin a future "Setup landed but
+// silently does nothing" regression would slip through.
+func TestSetupReturnsErrNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	if err := New().Setup(context.Background(), source.SetupOptions{}); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("Setup err = %v, want ErrNotConfigured", err)
+	}
+}
+
+// TestSetupHonoursContextCancellation guards the daemon shutdown story:
+// every long-running operation must observe ctx promptly, and Setup is
+// the first method PR-71's discovery loop will call when re-priming
+// after auth refresh.
+func TestSetupHonoursContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := New().Setup(ctx, source.SetupOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Setup err = %v, want context.Canceled", err)
+	}
+}
+
+// TestAddPropagatesContextCancellation matches the List cancel test for
+// the write side. PR-71's daemon supervisor distinguishes
+// context.Canceled (shutdown, do not retry) from other errors (real
+// failure, count toward backoff), and the Plugin must surface the cancel
+// before issuing an upstream request.
+func TestAddPropagatesContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	p := New(WithClient(newFakeClient()))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Add(ctx, "x", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Add err = %v, want context.Canceled", err)
+	}
+}
+
+// TestCompletePropagatesContextCancellation mirrors the Add cancel test.
+func TestCompletePropagatesContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addTask(defaultTaskListAlias, GTask{ID: "t1", Title: "x", Status: statusNeedsAction})
+	p := New(WithClient(fc))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Complete(ctx, "t1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Complete err = %v, want context.Canceled", err)
+	}
+}
+
+// TestDeletePropagatesContextCancellation mirrors the Add cancel test.
+func TestDeletePropagatesContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addTask(defaultTaskListAlias, GTask{ID: "t1", Title: "x", Status: statusNeedsAction})
+	p := New(WithClient(fc))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Delete(ctx, "t1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Delete err = %v, want context.Canceled", err)
+	}
+}
+
+// TestAuthStatusPropagatesContextCancellation mirrors the others. The
+// Ping fake does check ctx.Err, but pinning the Plugin-level promise
+// means a future "AuthStatus dispatches even on cancel" regression in
+// Plugin.AuthStatus is caught here, not deep in a Client implementation.
+func TestAuthStatusPropagatesContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	p := New(WithClient(newFakeClient()))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.AuthStatus(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("AuthStatus err = %v, want context.Canceled", err)
+	}
+}
+
+// TestListPopulatesTaskListMetadata pins the data-model fix: when the
+// upstream task id collides across lists (Google's API does NOT
+// guarantee global uniqueness), the queue layer needs RawMetadata to
+// keep the rows distinguishable. We carry both id and title so a
+// future `marunage show` can render the human-friendly name without a
+// re-fetch.
+func TestListPopulatesTaskListMetadata(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addList("work", "Work")
+	fc.addTask("work", GTask{ID: "w1", Title: "x", Status: statusNeedsAction})
+	p := New(WithClient(fc))
+
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d", len(got))
+	}
+	meta := got[0].RawMetadata
+	if meta == nil {
+		t.Fatalf("RawMetadata is nil")
+	}
+	if meta["tasklist_id"] != "work" {
+		t.Errorf("tasklist_id = %v, want work", meta["tasklist_id"])
+	}
+	if meta["tasklist_title"] != "Work" {
+		t.Errorf("tasklist_title = %v, want Work", meta["tasklist_title"])
+	}
+}
+
+// TestAddPopulatesTaskListMetadata mirrors the List metadata pin for the
+// write side. The queue layer's reconciler joins List output and Add
+// output back together and must see the same RawMetadata shape from
+// both.
+func TestAddPopulatesTaskListMetadata(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addList("marunage", "Marunage")
+	p := New(WithClient(fc), WithDefaultTaskList("marunage"))
+
+	got, err := p.Add(context.Background(), "x", "")
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got.RawMetadata["tasklist_id"] != "marunage" {
+		t.Errorf("tasklist_id = %v, want marunage", got.RawMetadata["tasklist_id"])
+	}
+}
+
+// TestCompleteRejectsAmbiguousTaskID guards a subtle correctness bug:
+// when the same upstream task id appears in two tasklists, picking the
+// first hit silently completes the wrong row. We flag the ambiguity
+// loudly so the caller can disambiguate (or the user sees an error
+// rather than a silent mis-mirror).
+func TestCompleteRejectsAmbiguousTaskID(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addList("work", "Work")
+	fc.addTask(defaultTaskListAlias, GTask{ID: "shared", Title: "personal", Status: statusNeedsAction})
+	fc.addTask("work", GTask{ID: "shared", Title: "work", Status: statusNeedsAction})
+	p := New(WithClient(fc))
+
+	if err := p.Complete(context.Background(), "shared"); !errors.Is(err, ErrAmbiguousTaskID) {
+		t.Fatalf("Complete err = %v, want ErrAmbiguousTaskID", err)
+	}
+	if len(fc.patches) != 0 {
+		t.Errorf("no patch should be issued when ambiguous: %+v", fc.patches)
+	}
+}
+
+// TestDeleteRejectsAmbiguousTaskID mirrors the Complete ambiguity guard.
+func TestDeleteRejectsAmbiguousTaskID(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addList("work", "Work")
+	fc.addTask(defaultTaskListAlias, GTask{ID: "shared", Title: "personal", Status: statusNeedsAction})
+	fc.addTask("work", GTask{ID: "shared", Title: "work", Status: statusNeedsAction})
+	p := New(WithClient(fc))
+
+	if err := p.Delete(context.Background(), "shared"); !errors.Is(err, ErrAmbiguousTaskID) {
+		t.Fatalf("Delete err = %v, want ErrAmbiguousTaskID", err)
+	}
+	if len(fc.deletes) != 0 {
+		t.Errorf("no delete should be issued when ambiguous: %+v", fc.deletes)
+	}
+}
+
+// TestCompleteTranslatesUpstreamMissingToTaskNotFound covers the TOCTOU
+// race: findTaskList sees the row, then upstream removes it before the
+// patch lands. Without this translation the caller sees a fake / SDK-
+// shaped 404 instead of the typed sentinel.
+func TestCompleteTranslatesUpstreamMissingToTaskNotFound(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addTask(defaultTaskListAlias, GTask{ID: "t1", Title: "x", Status: statusNeedsAction})
+	fc.patchErr = fakeMissingError()
+	p := New(WithClient(fc))
+	if err := p.Complete(context.Background(), "t1"); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("Complete err = %v, want ErrTaskNotFound", err)
+	}
+}
+
+// TestDeleteTranslatesUpstreamMissingToTaskNotFound mirrors the Complete
+// TOCTOU pin.
+func TestDeleteTranslatesUpstreamMissingToTaskNotFound(t *testing.T) {
+	t.Parallel()
+
+	fc := newFakeClient()
+	fc.addTask(defaultTaskListAlias, GTask{ID: "t1", Title: "x", Status: statusNeedsAction})
+	fc.delErr = fakeMissingError()
+	p := New(WithClient(fc))
+	if err := p.Delete(context.Background(), "t1"); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("Delete err = %v, want ErrTaskNotFound", err)
+	}
+}

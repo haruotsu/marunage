@@ -2,7 +2,6 @@ package googletasks
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -205,7 +204,16 @@ func (f *fakeClient) Ping(ctx context.Context) error {
 }
 
 // errFakeTaskMissing is the "404" the fake returns when a Patch / Delete
-// targets an unknown task id. The Plugin's Complete / Delete catches this
-// and returns ErrTaskNotFound. Defined here (rather than as a pkg-level
-// var) so production code cannot accidentally branch on it.
-var errFakeTaskMissing = errors.New("fake: task not found")
+// targets an unknown task id. It wraps the package-level
+// ErrUpstreamTaskMissing so the Plugin's TOCTOU translation (Complete /
+// Delete catching ErrUpstreamTaskMissing -> ErrTaskNotFound) fires
+// uniformly whether the source is the fake or the real GoogleClient.
+var errFakeTaskMissing = fmt.Errorf("%w: fake", ErrUpstreamTaskMissing)
+
+// fakeMissingError is the helper tests inject into fake.patchErr /
+// fake.delErr to simulate a TOCTOU race: the row was visible at
+// findTaskList, then the upstream removed it before the patch /
+// delete landed. Exposing it as a function (rather than the bare
+// errFakeTaskMissing var) keeps the fake's internal sentinel out of
+// every test that just wants to say "act like upstream returned 404".
+func fakeMissingError() error { return errFakeTaskMissing }
