@@ -69,6 +69,21 @@ func TestParseBoardURL(t *testing.T) {
 			rawURL:  "",
 			wantErr: true,
 		},
+		{
+			name:    "non-github.com host (SSRF guard)",
+			rawURL:  "https://attacker.example.com/orgs/evil/projects/1",
+			wantErr: true,
+		},
+		{
+			name:    "owner name with special characters",
+			rawURL:  "https://github.com/orgs/evil; rm -rf/projects/1",
+			wantErr: true,
+		},
+		{
+			name:    "owner name starting with hyphen",
+			rawURL:  "https://github.com/orgs/-invalid/projects/1",
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
