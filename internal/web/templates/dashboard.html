@@ -12,7 +12,7 @@
           <li class="task-row">
             <div class="task-line">
               <span class="badge badge-source">{{.Source}}</span>
-              <span class="task-id">#{{.ID}}</span>
+              <a class="task-id" href="/tasks/{{.ID}}">#{{.ID}}</a>
               <span class="task-title">{{.Title}}</span>
             </div>
             <div class="task-meta">
@@ -43,7 +43,7 @@
           <li class="task-row">
             <div class="task-line">
               <span class="badge badge-source">{{.Source}}</span>
-              <span class="task-id">#{{.ID}}</span>
+              <a class="task-id" href="/tasks/{{.ID}}">#{{.ID}}</a>
               <span class="task-title">{{.Title}}</span>
               <span class="badge badge-priority" title="priority">P{{.Priority}}</span>
             </div>
