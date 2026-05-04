@@ -159,6 +159,40 @@ func TestCmuxDriverScrapeEvalErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestCmuxDriverScrapeParseErrorTruncatesStdout asserts that a long
+// non-JSON eval stdout (e.g. a page that printed every Slack DM body
+// to stdout via console.log) is TRUNCATED in the wrapped error
+// message before reaching log sinks. Without this guard a single
+// `marunage discover` failure would dump megabytes of attacker-
+// controlled content (potentially containing PII or even leaked
+// tokens displayed on the page) into the structured log. We assert
+// the wrapped error is bounded in length.
+func TestCmuxDriverScrapeParseErrorTruncatesStdout(t *testing.T) {
+	t.Parallel()
+
+	huge := strings.Repeat("x", 10_000)
+	runner := &scriptedRunner{steps: []scriptedStep{
+		{stdout: ""},
+		{stdout: huge},
+	}}
+	d := NewCmuxDriver(WithCmuxRunner(runner))
+	_, err := d.Scrape(context.Background(), ScrapeTarget{
+		URL:          "https://example.com/",
+		ItemSelector: ".x",
+		Fields:       map[string]FieldRule{"id": {Selector: "[data-id]", Attr: "data-id"}},
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if len(err.Error()) > 1024 {
+		t.Errorf("error message length = %d, want bounded under 1024 bytes (got truncated stdout?)", len(err.Error()))
+	}
+	// And the typed sentinel still propagates so callers can branch.
+	if !errors.Is(err, ErrUnparseableEval) {
+		t.Errorf("err = %v, want ErrUnparseableEval", err)
+	}
+}
+
 // TestCmuxDriverScrapeParseErrorIsTyped asserts that a non-JSON eval
 // stdout (e.g. a JS exception printed to stdout, or a cmux banner)
 // surfaces a typed sentinel so callers can distinguish "site changed
