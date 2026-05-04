@@ -820,13 +820,15 @@ func (r *TaskRepo) SetWorkspace(ctx context.Context, id int64, ws string) error 
 	return nil
 }
 
-// ListFilter narrows the rows List returns. Empty slices and zero Limit
-// mean "no constraint", matching the way `marunage list` falls back to a
-// full scan when no flags are passed.
+// ListFilter narrows the rows List returns. Empty slices, zero Limit, and
+// zero CreatedAfter mean "no constraint".
 type ListFilter struct {
 	Statuses []string
 	Sources  []string
 	Limit    int
+	// CreatedAfter, when non-zero, restricts results to rows whose created_at
+	// is strictly after this time. Used by `marunage review --since Xd`.
+	CreatedAfter time.Time
 }
 
 // maxFilterValues caps Statuses / Sources slice length so a caller (or a
@@ -871,6 +873,10 @@ func (r *TaskRepo) List(ctx context.Context, f ListFilter) ([]Task, error) {
 		for _, s := range f.Sources {
 			args = append(args, s)
 		}
+	}
+	if !f.CreatedAfter.IsZero() {
+		clauses = append(clauses, "created_at > ?")
+		args = append(args, formatTime(f.CreatedAfter))
 	}
 	q := "SELECT " + taskColumns + " FROM tasks"
 	if len(clauses) > 0 {
