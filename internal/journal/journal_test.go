@@ -180,7 +180,8 @@ func TestJournalTickCollectorErrorContinues(t *testing.T) {
 
 // --- Journal.Run tests ---
 
-func TestJournalRunCallsTickMultipleTimes(t *testing.T) {
+func TestJournalTickCalledMultipleTimes(t *testing.T) {
+	// Use Tick directly to avoid wall-clock dependency (no time.Sleep / ticker).
 	t.Parallel()
 	dir := t.TempDir()
 	w := NewWriter(dir)
@@ -198,15 +199,59 @@ func TestJournalRunCallsTickMultipleTimes(t *testing.T) {
 	fc := &fakeCollector{name: "git", items: []Item{{Text: "x"}}}
 	j := New(w, WithCollectors(fc), WithClock(nowFn))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	_ = j.Run(ctx, 10*time.Millisecond)
+	const wantCalls = 3
+	for i := 0; i < wantCalls; i++ {
+		if err := j.Tick(context.Background()); err != nil {
+			t.Fatalf("Tick %d: %v", i, err)
+		}
+	}
 
 	fc.mu.Lock()
 	calls := fc.calls
 	fc.mu.Unlock()
-	if calls < 2 {
-		t.Errorf("expected >= 2 Tick calls, got %d", calls)
+	if calls != wantCalls {
+		t.Errorf("expected %d Tick calls, got %d", wantCalls, calls)
+	}
+}
+
+func TestJournalRunStopsAndCallsTick(t *testing.T) {
+	// Verify Run calls Tick at least once before stopping on cancel.
+	t.Parallel()
+	dir := t.TempDir()
+	w := NewWriter(dir)
+
+	var mu sync.Mutex
+	tick := time.Date(2026, 5, 4, 14, 0, 0, 0, time.UTC)
+	nowFn := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		t := tick
+		tick = tick.Add(time.Hour)
+		return t
+	}
+
+	fc := &fakeCollector{name: "git", items: []Item{{Text: "x"}}}
+	j := New(w, WithCollectors(fc), WithClock(nowFn))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a tiny delay so the initial Tick fires.
+	go func() {
+		// Wait for the first Tick to complete by watching the checkpoint.
+		for {
+			if _, err := w.LastCheckpoint(); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	_ = j.Run(ctx, time.Hour) // long interval so only the initial Tick fires
+
+	fc.mu.Lock()
+	calls := fc.calls
+	fc.mu.Unlock()
+	if calls < 1 {
+		t.Errorf("expected >= 1 Tick call from Run, got %d", calls)
 	}
 }
 

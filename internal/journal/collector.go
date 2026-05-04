@@ -36,7 +36,7 @@ func WithGitCWD(cwd string) GitOption { return func(c *GitCollector) { c.cwd = c
 
 // NewGitCollector returns a GitCollector with the given options.
 func NewGitCollector(opts ...GitOption) *GitCollector {
-	c := &GitCollector{runner: execRunner{}}
+	c := &GitCollector{runner: ExecRunner{}}
 	for _, o := range opts {
 		o(c)
 	}
@@ -116,7 +116,7 @@ func WithGitHubRunner(r Runner) GitHubOption { return func(c *GitHubCollector) {
 
 // NewGitHubCollector returns a GitHubCollector with the given options.
 func NewGitHubCollector(opts ...GitHubOption) *GitHubCollector {
-	c := &GitHubCollector{runner: execRunner{}}
+	c := &GitHubCollector{runner: ExecRunner{}}
 	for _, o := range opts {
 		o(c)
 	}

@@ -37,8 +37,10 @@ func (w *Writer) Append(e Entry) error {
 		return fmt.Errorf("open journal file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	_, err = fmt.Fprint(f, Format(e))
-	return err
+	if _, err = fmt.Fprint(f, Format(e)); err != nil {
+		return fmt.Errorf("write journal: %w", err)
+	}
+	return nil
 }
 
 func (w *Writer) checkpointPath() string {
@@ -64,10 +66,8 @@ func (w *Writer) LastCheckpoint() (time.Time, error) {
 
 // UpdateCheckpoint atomically writes t as the new checkpoint using a
 // tmp-file + rename pattern so a mid-write crash cannot corrupt the file.
+// The directory must already exist (Append creates it).
 func (w *Writer) UpdateCheckpoint(t time.Time) error {
-	if err := os.MkdirAll(w.dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir journal dir: %w", err)
-	}
 	tmp := w.checkpointPath() + ".tmp"
 	if err := os.WriteFile(tmp, []byte(t.UTC().Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write checkpoint tmp: %w", err)
