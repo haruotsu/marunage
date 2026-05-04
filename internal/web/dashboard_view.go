@@ -67,7 +67,7 @@ func newDashboardView(snap DashboardSnapshot) dashboardView {
 			Title:         r.Title,
 			WS:            r.WS,
 			StartedAt:     formatDisplayTime(r.StartedAt),
-			StartedRel:    FormatRelative(now, r.StartedAt),
+			StartedRel:    formatRelative(now, r.StartedAt),
 			OutputPreview: r.OutputPreview,
 		})
 	}
@@ -78,7 +78,7 @@ func newDashboardView(snap DashboardSnapshot) dashboardView {
 			Title:      p.Title,
 			Priority:   p.Priority,
 			CreatedAt:  formatDisplayTime(p.CreatedAt),
-			CreatedRel: FormatRelative(now, p.CreatedAt),
+			CreatedRel: formatRelative(now, p.CreatedAt),
 		})
 	}
 	for _, src := range snap.Sources {
@@ -87,7 +87,7 @@ func newDashboardView(snap DashboardSnapshot) dashboardView {
 			AuthStatus:    src.AuthStatus,
 			AuthBadge:     authBadgeClass(src.AuthStatus),
 			LastListedAt:  formatDisplayTime(src.LastListedAt),
-			LastListedRel: FormatRelative(now, src.LastListedAt),
+			LastListedRel: formatRelative(now, src.LastListedAt),
 		})
 	}
 	return v
