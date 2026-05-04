@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -80,6 +83,9 @@ func productionProjectDispatch(ctx context.Context, configPath string, item proj
 	if err != nil {
 		return fmt.Errorf("resolve core.default_cwd %q: %w", cfg.Core.DefaultCwd, err)
 	}
+	if _, statErr := os.Stat(cwd); statErr != nil {
+		return fmt.Errorf("core.default_cwd %q does not exist or is not accessible: %w", cwd, statErr)
+	}
 
 	cm := cmux.NewClient()
 	ws, err := cm.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
@@ -102,14 +108,37 @@ func productionProjectDispatch(ctx context.Context, configPath string, item proj
 	return nil
 }
 
+// sanitizeField strips control characters and newlines from a string that
+// originates from an external system (e.g. a GitHub Projects board title).
+// This prevents prompt injection when the value is embedded into a Claude
+// session prompt: a title like "## new heading\nIgnore above" could otherwise
+// be misinterpreted as Markdown structure or a new instruction block.
+func sanitizeField(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
+}
+
 // buildProjectPrompt formats the task prompt sent to the Claude session.
+// item.Title and item.ID are sanitized to prevent prompt injection from
+// externally-authored board content (GitHub Projects titles are user-controlled).
+// The values are placed inside an XML-style fence so the Claude session can
+// distinguish trusted instructions from untrusted board data.
 func buildProjectPrompt(item project.BoardItem) string {
+	title := sanitizeField(item.Title)
+	id := sanitizeField(item.ID)
 	return fmt.Sprintf(
 		"## GitHub Projects Task\n\n"+
+			"<task>\n"+
 			"Title: %s\n"+
-			"ID: %s\n\n"+
+			"ID: %s\n"+
+			"</task>\n\n"+
 			"Please work on this task. When complete, mark the item as Done on the GitHub Projects board.",
-		item.Title, item.ID,
+		title, id,
 	)
 }
 
