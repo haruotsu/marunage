@@ -29,7 +29,7 @@ func NewAdapter(p *Plugin) *Adapter {
 }
 
 // Name reports the canonical plugin identifier.
-func (a *Adapter) Name() string { return PluginName }
+func (a *Adapter) Name() string { return pluginName }
 
 // List forwards to the inner Plugin and converts every surviving Event
 // (declined entries already filtered) into a source.Task.
@@ -81,8 +81,16 @@ func convertEvent(ev Event) source.Task {
 		meta["start_date"] = ev.AllDayStart
 		meta["end_date"] = ev.AllDayEnd
 	} else {
-		meta["start"] = ev.StartDateTime.Format(time.RFC3339)
-		meta["end"] = ev.EndDateTime.Format(time.RFC3339)
+		// Skip zero-value times rather than emitting
+		// "0001-01-01T00:00:00Z" — a malformed upstream payload that
+		// reaches the adapter without dateTime should not look like a
+		// year-1 event in the queue.
+		if !ev.StartDateTime.IsZero() {
+			meta["start"] = ev.StartDateTime.Format(time.RFC3339)
+		}
+		if !ev.EndDateTime.IsZero() {
+			meta["end"] = ev.EndDateTime.Format(time.RFC3339)
+		}
 	}
 	if ev.Location != "" {
 		meta["location"] = ev.Location
@@ -91,7 +99,7 @@ func convertEvent(ev Event) source.Task {
 		meta["calendar_id"] = ev.CalendarID
 	}
 	return source.Task{
-		Source:      PluginName,
+		Source:      pluginName,
 		ExternalID:  ev.ID,
 		Title:       ev.Summary,
 		Body:        ev.Description,

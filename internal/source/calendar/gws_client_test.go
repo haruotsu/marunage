@@ -281,6 +281,75 @@ func TestGWSStatusReportsAuth(t *testing.T) {
 	})
 }
 
+// TestGWSListEventsAssertsFormatJSONFlag — G1b. The client always
+// requests `--format json`; if a future refactor drops the flag the
+// gws default would still happen to be JSON today, but tests should
+// pin the contract so the regression surfaces in this package, not in
+// gws's behaviour.
+func TestGWSListEventsAssertsFormatJSONFlag(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{eventsListJSON(t, nil)},
+		outErrs: []error{nil},
+	}
+	client := NewGWSClient(WithRunner(runner.run))
+	if _, err := client.ListEvents(context.Background(), time.Now(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if got := findArg(runner.calls[0].args, "--format"); got != "json" {
+		t.Errorf("--format = %q, want json", got)
+	}
+}
+
+// TestGWSListEventsWrapsMalformedJSON — G9. A truncated or non-JSON
+// response from gws (binary update mid-call, network proxy returning
+// HTML, etc.) must surface as a wrapped error rather than panic.
+func TestGWSListEventsWrapsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{[]byte(`{"items": [`)}, // truncated JSON
+		outErrs: []error{nil},
+	}
+	client := NewGWSClient(WithRunner(runner.run))
+	_, err := client.ListEvents(context.Background(), time.Now(), time.Now().Add(time.Hour))
+	if err == nil {
+		t.Fatalf("ListEvents err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("err = %v, want it to mention decode", err)
+	}
+}
+
+// TestGWSListEventsWrapsBadDateTime — G10. An item whose start.dateTime
+// is not RFC3339 must be wrapped with the offending event id so an
+// operator can find it in the upstream calendar — silently dropping it
+// would hide real data corruption.
+func TestGWSListEventsWrapsBadDateTime(t *testing.T) {
+	t.Parallel()
+
+	items := []map[string]any{
+		{
+			"id":    "evt-bad-time",
+			"start": map[string]any{"dateTime": "not a real date"},
+			"end":   map[string]any{"dateTime": "2026-05-04T11:00:00+09:00"},
+		},
+	}
+	runner := &scriptedRunner{
+		outputs: [][]byte{eventsListJSON(t, items)},
+		outErrs: []error{nil},
+	}
+	client := NewGWSClient(WithRunner(runner.run))
+	_, err := client.ListEvents(context.Background(), time.Now(), time.Now().Add(time.Hour))
+	if err == nil {
+		t.Fatalf("ListEvents err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "evt-bad-time") {
+		t.Errorf("err = %v, want it to mention the offending event id", err)
+	}
+}
+
 // TestGWSListEventsParsesEventStatus — G7. status=cancelled items must
 // reach the Plugin layer so Plugin.List can drop them; the parser must
 // not pre-filter (test_list C14 owns the cancelled-event filtering at

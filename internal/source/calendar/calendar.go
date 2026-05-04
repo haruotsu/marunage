@@ -28,10 +28,11 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 )
 
-// PluginName is the canonical identifier the registry dispatches under and
-// the value Adapter stamps onto every emitted source.Task. Exported so the
-// CLI integration (PR-71+) can reference it without re-spelling the literal.
-const PluginName = "calendar"
+// pluginName is the canonical identifier the registry dispatches under and
+// the value Adapter stamps onto every emitted source.Task. Kept unexported
+// — the CLI integration (PR-71+) goes through Plugin.Name() / Manifest()
+// rather than this literal, mirroring the markdown source's pattern.
+const pluginName = "calendar"
 
 // AttendeeDeclined is the Google Calendar v3 responseStatus value the plugin
 // filters out before returning events. requirement.md treats declined
@@ -177,7 +178,7 @@ func New(opts ...Option) *Plugin {
 }
 
 // Name reports the canonical plugin identifier.
-func (p *Plugin) Name() string { return PluginName }
+func (p *Plugin) Name() string { return pluginName }
 
 // List returns today's events with declined and cancelled entries
 // filtered out. The window is [startOfDay(now), nextMidnight(now))

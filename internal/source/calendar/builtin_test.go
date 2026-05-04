@@ -15,8 +15,8 @@ func TestManifestEmbeddedReturnsValidManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
-	if m.Name != PluginName {
-		t.Errorf("Name = %q, want %q", m.Name, PluginName)
+	if m.Name != pluginName {
+		t.Errorf("Name = %q, want %q", m.Name, pluginName)
 	}
 	if m.Version == "" {
 		t.Errorf("Version is empty")
@@ -48,9 +48,9 @@ func TestRegisterBuiltinAttachesAdapterAndPassesValidation(t *testing.T) {
 	if err := RegisterBuiltin(r, WithClient(&fakeClient{statusOut: source.AuthAuthenticated})); err != nil {
 		t.Fatalf("RegisterBuiltin: %v", err)
 	}
-	got, err := r.Get(PluginName)
+	got, err := r.Get(pluginName)
 	if err != nil {
-		t.Fatalf("Get %s: %v", PluginName, err)
+		t.Fatalf("Get %s: %v", pluginName, err)
 	}
 	a, ok := got.(*Adapter)
 	if !ok {
