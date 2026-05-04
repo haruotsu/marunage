@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/haruotsu/marunage/internal/store"
+	"github.com/haruotsu/marunage/internal/web"
 )
 
 // reviewNowHook lets tests inject a deterministic "now" for --since parsing.
@@ -87,31 +87,10 @@ func newTaskReviewCmd(configPath *string) *cobra.Command {
 	return cmd
 }
 
-// parseSinceDuration parses a human-friendly duration string (e.g. "7d",
-// "30d", "24h") and returns the earliest time that falls within the window
-// relative to reviewNow().
-//
-// Supported suffixes: "d" (days) and anything time.ParseDuration accepts.
+// parseSinceDuration delegates to web.ParseSinceWindow with reviewNow() as the
+// clock so tests can inject a deterministic time via withReviewNow.
 func parseSinceDuration(s string) (time.Time, error) {
-	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "d") {
-		n := 0
-		if _, err := fmt.Sscanf(strings.TrimSuffix(s, "d"), "%d", &n); err != nil {
-			return time.Time{}, fmt.Errorf("invalid day count %q", s)
-		}
-		if n <= 0 {
-			return time.Time{}, fmt.Errorf("day count must be positive, got %q", s)
-		}
-		return reviewNow().Add(-time.Duration(n) * 24 * time.Hour), nil
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if d <= 0 {
-		return time.Time{}, fmt.Errorf("duration must be positive, got %q", s)
-	}
-	return reviewNow().Add(-d), nil
+	return web.ParseSinceWindow(s, reviewNow())
 }
 
 // writeReviewText prints skipped tasks in a tabwriter-aligned table.
