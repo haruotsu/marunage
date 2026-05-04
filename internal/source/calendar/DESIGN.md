@@ -17,7 +17,7 @@ The package implements the standard Discovery `Plugin` contract from
 
 | Method        | Status   | Notes                                                         |
 |---------------|----------|---------------------------------------------------------------|
-| `Name()`      | required | Returns `"calendar"` (exported as `PluginName`).              |
+| `Name()`      | required | Returns `"calendar"` (private `pluginName` constant).         |
 | `List(ctx)`   | required | Today's events, declined invites filtered, in client order.   |
 | `Setup(ctx)`  | required | Forwards to `Client.Setup`; smoke-test on success.            |
 | `AuthStatus`  | required | Forwards to `Client.Status`; `not_configured` when no client. |

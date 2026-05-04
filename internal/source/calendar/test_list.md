@@ -17,6 +17,7 @@
 - [x] C13. `Plugin.AuthStatus` delegates to `client.Status`.
 - [x] C14. `Plugin.List` filters out events whose `Status == "cancelled"` (singleEvents=true exception items must not become queue rows).
 - [x] C15. `Plugin.List` boundary survives DST spring-forward: on a 23-wall-hour day the window must still end at *next local midnight*, not at `timeMin + 24h`.
+- [x] C16. `Plugin.AuthStatus` propagates `client.Status` errors verbatim (so a daemon health check can distinguish "asked and got an answer" from "asked and the I/O failed").
 
 ## A. Adapter (adapter.go)
 
@@ -46,6 +47,9 @@
 - [x] G6. `(*GWSClient).Setup(NonInteractive=true)` returns an error explaining gws auth must already be configured.
 - [x] G7. `(*GWSClient).ListEvents` parses `status` per item and surfaces it on `Event.Status` (does not pre-filter; that is the Plugin's job).
 - [x] G8. `(*GWSClient).Setup(NonInteractive=false)` runs the calendarList smoke test directly and surfaces the runner error verbatim — Status's "downgrade I/O failure to AuthNotConfigured" must NOT mask binary-missing / network errors here.
+- [x] G1b. `(*GWSClient).ListEvents` always passes `--format json` (pin the contract independent of gws's default).
+- [x] G9. `(*GWSClient).ListEvents` wraps malformed JSON output (truncated body / non-JSON) with a "decode" message rather than panicking.
+- [x] G10. `(*GWSClient).ListEvents` wraps unparseable `dateTime` with the offending event id so an operator can locate the upstream record.
 
 ## Cross-cutting
 

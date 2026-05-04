@@ -14,8 +14,8 @@ func TestAdapterName(t *testing.T) {
 	t.Parallel()
 
 	a := NewAdapter(New())
-	if got := a.Name(); got != PluginName {
-		t.Fatalf("Name = %q, want %q", got, PluginName)
+	if got := a.Name(); got != pluginName {
+		t.Fatalf("Name = %q, want %q", got, pluginName)
 	}
 }
 
@@ -45,8 +45,8 @@ func TestAdapterListConvertsRegularEvent(t *testing.T) {
 		t.Fatalf("len = %d, want 1", len(tasks))
 	}
 	got := tasks[0]
-	if got.Source != PluginName {
-		t.Errorf("Source = %q, want %q", got.Source, PluginName)
+	if got.Source != pluginName {
+		t.Errorf("Source = %q, want %q", got.Source, pluginName)
 	}
 	if got.ExternalID != "evt-1" {
 		t.Errorf("ExternalID = %q", got.ExternalID)

@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"time"
 
@@ -47,6 +48,13 @@ type Runner func(ctx context.Context, name string, args ...string) ([]byte, erro
 // debugging can run gws directly.
 func DefaultRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Discard stderr explicitly: cmd.Output() would otherwise stash up
+	// to 32 KiB of stderr on (*exec.ExitError).Stderr, which a future
+	// caller doing `errors.As(err, &exitErr)` could surface into slog
+	// /audit logs and leak OAuth refresh tokens or attendee emails.
+	// Belt-and-braces alongside the "do not bundle stderr in the wrap"
+	// rule below.
+	cmd.Stderr = io.Discard
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
