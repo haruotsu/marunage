@@ -322,3 +322,9 @@ table.sources td:not(:first-child) {
   max-width: 28rem;
   word-break: break-word;
 }
+
+/* Scrollable table wrapper for narrow viewports */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
