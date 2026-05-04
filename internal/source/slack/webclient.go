@@ -6,7 +6,7 @@
 // (https://github.com/harakeishi/slackhog) implements the same HTTP
 // endpoints (POST /api/chat.postMessage, etc.) that WebAPIClient calls,
 // making the test infrastructure directly usable for manual end-to-end
-// verification with `go tool slackhog`.
+// verification with `docker compose up slackhog`.
 package slack
 
 import (
@@ -17,9 +17,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/haruotsu/marunage/internal/source"
 )
+
+const defaultHTTPTimeout = 30 * time.Second
 
 // ErrWebAPINotImplemented is returned by WebAPIClient methods whose
 // Slack API counterpart is handled by the MCP-backed Client rather than
@@ -55,7 +58,7 @@ func NewWebAPIClient(baseURL, token string, opts ...WebAPIClientOption) *WebAPIC
 	c := &WebAPIClient{
 		baseURL:    baseURL,
 		token:      token,
-		httpClient: http.DefaultClient,
+		httpClient: &http.Client{Timeout: defaultHTTPTimeout},
 	}
 	for _, o := range opts {
 		o(c)
@@ -123,12 +126,13 @@ func (c *WebAPIClient) AuthStatus(_ context.Context) (source.AuthStatus, error) 
 	return source.AuthAuthenticated, nil
 }
 
-// Setup reads the Slack bearer token from the SLACK_TOKEN environment
-// variable when nonInteractive is true. Interactive auth flow is handled
-// by the `marunage setup --source slack` wizard outside this package.
+// Setup reads the Slack bearer token from the MARUNAGE_SLACK_TOKEN environment
+// variable when nonInteractive is true and no token is already configured.
+// Interactive auth flow is handled by the `marunage setup --source slack`
+// wizard outside this package.
 func (c *WebAPIClient) Setup(_ context.Context, nonInteractive bool) error {
-	if nonInteractive {
-		if t := os.Getenv("SLACK_TOKEN"); t != "" {
+	if nonInteractive && c.token == "" {
+		if t := os.Getenv("MARUNAGE_SLACK_TOKEN"); t != "" {
 			c.token = t
 		}
 	}
