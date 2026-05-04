@@ -631,8 +631,8 @@ flowchart LR
 
 ### [UI] PR-91 Web UI ライブストリーム ✅ DONE (PR #53)
 
-- [x] cmux ターミナル出力を WebSocket で配信
-- [x] ブラウザからの `cmux send` 相当
+- [x] cmux ターミナル出力を SSE（EventSource）でブラウザに配信
+- [x] ブラウザからの `cmux send` 相当（POST /api/tasks/{id}/send）
 
 **できるようになること：** 物理的に手元にいなくても介入できる。
 
