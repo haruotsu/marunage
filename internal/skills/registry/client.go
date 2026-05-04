@@ -35,11 +35,18 @@ type Doer interface {
 // Client speaks the registry protocol over HTTP(S). The zero value is
 // not usable — callers must set BaseURL. HTTPClient defaults to a
 // timeout-bounded *http.Client; tests inject a httptest server.
+//
+// AllowInsecure is the explicit opt-in switch for plain `http://`
+// registries. The default refuses http to keep MITM-rewriting of the
+// sha256 manifest itself out of scope (OpenClaw §11.1 #10). Tests
+// flip it for httptest, and the CLI surfaces it via
+// `--allow-insecure-registry`.
 type Client struct {
-	BaseURL      string
-	HTTPClient   Doer
-	MaxBodyBytes int64
-	UserAgent    string
+	BaseURL       string
+	HTTPClient    Doer
+	MaxBodyBytes  int64
+	UserAgent     string
+	AllowInsecure bool
 }
 
 // ErrInsecureRegistry is returned when BaseURL uses a scheme other
@@ -102,7 +109,7 @@ func (c *Client) FetchTarball(ctx context.Context, v Version) ([]byte, error) {
 	if strings.TrimSpace(v.SHA256) == "" {
 		return nil, fmt.Errorf("registry: FetchTarball: empty SHA256")
 	}
-	if err := assertSafeScheme(v.TarballURL); err != nil {
+	if err := c.assertScheme(v.TarballURL); err != nil {
 		return nil, err
 	}
 	body, err := c.get(ctx, v.TarballURL)
@@ -129,7 +136,7 @@ func (c *Client) resolve(rel string) (string, error) {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return "", fmt.Errorf("registry: BaseURL is empty")
 	}
-	if err := assertSafeScheme(c.BaseURL); err != nil {
+	if err := c.assertScheme(c.BaseURL); err != nil {
 		return "", err
 	}
 	base := strings.TrimRight(c.BaseURL, "/")
@@ -174,14 +181,22 @@ func (c *Client) get(ctx context.Context, full string) ([]byte, error) {
 	return body, nil
 }
 
-func assertSafeScheme(raw string) error {
+// assertScheme is the per-Client scheme guard. https is always
+// accepted; http requires AllowInsecure. Anything else (file://,
+// ftp://, ...) is rejected with ErrInsecureRegistry.
+func (c *Client) assertScheme(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("registry: parse url %s: %w", raw, err)
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
+	case "https":
 		return nil
+	case "http":
+		if c.AllowInsecure {
+			return nil
+		}
+		return fmt.Errorf("%w: http registries require AllowInsecure (CLI: --allow-insecure-registry)", ErrInsecureRegistry)
 	}
 	return fmt.Errorf("%w: %s", ErrInsecureRegistry, u.Scheme)
 }

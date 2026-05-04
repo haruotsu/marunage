@@ -99,7 +99,7 @@ func TestSkills_Install_WritesSkillUnderHome(t *testing.T) {
 		"<!-- version: 0.1.0 -->\n# jira\n")
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"skills", "install", "marunage-source-jira", "--registry", url}, &stdout, &stderr)
+	code := Execute([]string{"skills", "install", "marunage-source-jira", "--registry", url, "--allow-insecure-registry"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
@@ -144,6 +144,7 @@ func TestSkills_Install_HonoursEnvVar(t *testing.T) {
 	url := startFixtureRegistry(t, "marunage-source-x", "0.1.0",
 		"<!-- version: 0.1.0 -->\n# x\n")
 	t.Setenv(EnvRegistryURL, url)
+	t.Setenv(EnvAllowInsecure, "1")
 
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"skills", "install", "marunage-source-x"}, &stdout, &stderr)
@@ -231,7 +232,7 @@ func TestSkills_Search_RendersIndexEntries(t *testing.T) {
 		"<!-- version: 0.1.0 -->\n# jira\n")
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"skills", "search", "jira", "--registry", url}, &stdout, &stderr)
+	code := Execute([]string{"skills", "search", "jira", "--registry", url, "--allow-insecure-registry"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
@@ -267,7 +268,7 @@ func TestSkills_Update_UpgradesOutdatedSkill(t *testing.T) {
 		"<!-- version: 0.2.0 -->\n# x\n")
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"skills", "update", "--registry", url}, &stdout, &stderr)
+	code := Execute([]string{"skills", "update", "--registry", url, "--allow-insecure-registry"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
@@ -307,7 +308,7 @@ func TestSkills_Update_AllUpToDate(t *testing.T) {
 		"<!-- version: 0.1.0 -->\n# x\n")
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"skills", "update", "--registry", url}, &stdout, &stderr)
+	code := Execute([]string{"skills", "update", "--registry", url, "--allow-insecure-registry"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}

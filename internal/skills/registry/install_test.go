@@ -163,6 +163,25 @@ func TestExtractTarball_ReplacesExistingTree(t *testing.T) {
 	}
 }
 
+// TestExtractTarball_RejectsTooManyFiles pins the inode-exhaustion
+// guard: a publisher cannot ship millions of zero-byte files even if
+// the cumulative byte count stays under MaxBytes.
+func TestExtractTarball_RejectsTooManyFiles(t *testing.T) {
+	files := map[string]string{}
+	for i := 0; i < 5; i++ {
+		files["marunage-x/" + string(rune('a'+i)) + ".txt"] = "x"
+	}
+	tarball := makeTarball(t, files)
+	dest := filepath.Join(t.TempDir(), "marunage-x")
+	err := ExtractTarball(tarball, ExtractOptions{Dest: dest, SkillName: "marunage-x", MaxFiles: 2})
+	if !errors.Is(err, ErrTarTooManyFiles) {
+		t.Errorf("err = %v; want errors.Is(_, ErrTarTooManyFiles)", err)
+	}
+	if _, err := os.Stat(dest); err == nil {
+		t.Errorf("file-count overrun should leave no destination behind")
+	}
+}
+
 // TestExtractTarball_RejectsOversize pins that a publisher cannot
 // force the CLI to write more than MaxBytes uncompressed bytes.
 func TestExtractTarball_RejectsOversize(t *testing.T) {

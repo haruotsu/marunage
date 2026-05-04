@@ -1,12 +1,19 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/haruotsu/marunage/internal/skills/registry"
 )
+
+// upstreamFetchTimeout caps how long the Web UI waits on the
+// registry catalog fetch before giving up. Keeps a hung publisher
+// from stalling browser dashboards indefinitely.
+const upstreamFetchTimeout = 10 * time.Second
 
 // SkillsConfig wires the read-side skill registry surface into the
 // Web UI. Both fields are optional: a zero SkillsConfig disables the
@@ -26,6 +33,10 @@ type SkillsConfig struct {
 	// fetcher. Production code leaves it nil and relies on the
 	// default *http.Client built inside registry.Client.
 	Client registry.Doer
+
+	// AllowInsecure mirrors registry.Client.AllowInsecure: production
+	// keeps it false (https-only), tests with httptest set true.
+	AllowInsecure bool
 }
 
 // installedSkillsResponse is the JSON shape the `/api/skills/installed`
@@ -95,11 +106,14 @@ func newRegistrySearchAPIHandler(cfg SkillsConfig) http.Handler {
 			return
 		}
 		client := &registry.Client{
-			BaseURL:    cfg.RegistryURL,
-			HTTPClient: cfg.Client,
-			UserAgent:  "marunage-web",
+			BaseURL:       cfg.RegistryURL,
+			HTTPClient:    cfg.Client,
+			UserAgent:     "marunage-web",
+			AllowInsecure: cfg.AllowInsecure,
 		}
-		idx, err := client.FetchIndex(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), upstreamFetchTimeout)
+		defer cancel()
+		idx, err := client.FetchIndex(ctx)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("skills: registry: %v", err), http.StatusBadGateway)
 			return
