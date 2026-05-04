@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,19 +39,16 @@ type TaskOpsStore interface {
 	Delete(ctx context.Context, id int64) error
 }
 
-// parseIDFromPath extracts the numeric {id} segment from a URL path like
-// /api/tasks/42/dispatch. It splits on "/" and looks for the segment
-// immediately following "tasks".
-func parseIDFromPath(path string) (int64, error) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	// Expected path shapes: api/tasks/{id} or api/tasks/{id}/action
-	// Find the "tasks" segment index.
-	for i, p := range parts {
-		if p == "tasks" && i+1 < len(parts) {
-			return strconv.ParseInt(parts[i+1], 10, 64)
-		}
+// parseIDFromRequest extracts the {id} path wildcard from the request using
+// r.PathValue("id"), which is populated by Go 1.22's net/http ServeMux when
+// the route pattern contains {id}. Returns errTaskOpsNotFound-compatible 400
+// if the value is absent or not a valid int64.
+func parseIDFromRequest(r *http.Request) (int64, error) {
+	raw := r.PathValue("id")
+	if raw == "" {
+		return 0, errors.New("task ops: missing id path value")
 	}
-	return 0, fmt.Errorf("task ops: no id in path %q", path)
+	return strconv.ParseInt(raw, 10, 64)
 }
 
 // writeJSONError writes a JSON error response with the given status and message.
@@ -82,7 +78,7 @@ func mapOpsError(w http.ResponseWriter, err error) bool {
 // Transitions pending -> running and stamps started_at.
 func newDispatchTaskHandler(store TaskOpsStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := parseIDFromPath(r.URL.Path)
+		id, err := parseIDFromRequest(r)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid task id")
 			return
@@ -98,7 +94,7 @@ func newDispatchTaskHandler(store TaskOpsStore) http.Handler {
 // Transitions skipped -> pending.
 func newPromoteTaskHandler(store TaskOpsStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := parseIDFromPath(r.URL.Path)
+		id, err := parseIDFromRequest(r)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid task id")
 			return
@@ -114,7 +110,7 @@ func newPromoteTaskHandler(store TaskOpsStore) http.Handler {
 // Transitions done or failed -> pending.
 func newReopenTaskHandler(store TaskOpsStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := parseIDFromPath(r.URL.Path)
+		id, err := parseIDFromRequest(r)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid task id")
 			return
@@ -163,7 +159,7 @@ type updatePriorityRequest struct {
 // Updates the priority of an existing task.
 func newUpdatePriorityHandler(store TaskOpsStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := parseIDFromPath(r.URL.Path)
+		id, err := parseIDFromRequest(r)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid task id")
 			return
@@ -184,7 +180,7 @@ func newUpdatePriorityHandler(store TaskOpsStore) http.Handler {
 // Removes a task regardless of its current status.
 func newDeleteTaskHandler(store TaskOpsStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := parseIDFromPath(r.URL.Path)
+		id, err := parseIDFromRequest(r)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid task id")
 			return
