@@ -1034,6 +1034,29 @@ func (r *TaskRepo) TransitionStatus(ctx context.Context, id int64, newStatus str
 	return r.UpdateStatus(ctx, id, newStatus)
 }
 
+// CorrectDeadlines shifts updated_at forward by delta for every waiting_human
+// task. Called after a system wake-from-sleep event so tasks that were
+// waiting for human input do not expire prematurely due to the time the
+// system spent suspended. A negative delta is a no-op (we only extend,
+// never shrink, the effective deadline window).
+func (r *TaskRepo) CorrectDeadlines(ctx context.Context, delta time.Duration) error {
+	if delta <= 0 {
+		return nil
+	}
+	secs := int64(delta.Seconds())
+	mod := fmt.Sprintf("+%d seconds", secs)
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE tasks
+		    SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, ?)
+		  WHERE status = ?`,
+		mod, StatusWaitingHuman,
+	)
+	if err != nil {
+		return fmt.Errorf("correct deadlines: %w", err)
+	}
+	return nil
+}
+
 // Delete removes the row with the given id regardless of status. Callers
 // (the `marunage rm` CLI, the reaper) get ErrNotFound when the id does
 // not exist so a stale id in a script does not silently no-op.

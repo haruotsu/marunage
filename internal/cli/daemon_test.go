@@ -19,16 +19,17 @@ import (
 // method err / status fields let cases inject errors or specific state
 // without redefining the type per test.
 type fakeDaemon struct {
-	mu          sync.Mutex
-	startCalls  [][]string
-	stopCalls   []time.Duration
-	statusCalls int
-	startResult int
-	startErr    error
-	stopResult  int
-	stopErr     error
-	statusResp  daemonStatus
-	statusErr   error
+	mu            sync.Mutex
+	startCalls    [][]string
+	stopCalls     []time.Duration
+	statusCalls   int
+	startResult   int
+	startErr      error
+	stopResult    int
+	stopErr       error
+	statusResp    daemonStatus
+	statusErr     error
+	logPathResult string
 }
 
 func (f *fakeDaemon) Start(args []string) (int, error) {
@@ -51,6 +52,12 @@ func (f *fakeDaemon) Status() (daemonStatus, error) {
 	defer f.mu.Unlock()
 	f.statusCalls++
 	return f.statusResp, f.statusErr
+}
+
+func (f *fakeDaemon) LogPath() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logPathResult
 }
 
 func installFakeDaemon(t *testing.T) *fakeDaemon {
