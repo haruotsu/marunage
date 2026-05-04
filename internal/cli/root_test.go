@@ -27,7 +27,7 @@ var requiredTopLevelSubcommands = []string{
 // this list.
 var leafStubSubcommands = []string{
 	"run-all", "open", "notify",
-	"loop", "review",
+	"review",
 }
 
 func TestExecute_Help_ListsAllRequiredSubcommands(t *testing.T) {
@@ -111,21 +111,6 @@ func TestExecute_DaemonGroup(t *testing.T) {
 			}
 		}
 	})
-
-	for _, s := range subs {
-		t.Run("daemon "+s, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-
-			code := Execute([]string{"daemon", s}, &stdout, &stderr)
-
-			if code == 0 {
-				t.Fatalf("daemon %s exit=0; want non-zero stub", s)
-			}
-			if !strings.Contains(stderr.String(), "not yet implemented") {
-				t.Errorf("daemon %s stderr=%q; want substring %q", s, stderr.String(), "not yet implemented")
-			}
-		})
-	}
 }
 
 func TestExecute_ConfigGroup(t *testing.T) {
