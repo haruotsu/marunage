@@ -47,6 +47,15 @@ type Options struct {
 	// disables access logging entirely (the default for unit tests).
 	AccessLogger AccessLogger
 
+	// Dashboard supplies the read-side aggregation the index +
+	// /partials/dashboard handlers render.  Nil falls back to a
+	// noop provider that emits an empty snapshot — handler tests
+	// from PR-62 (TestRoutes_IndexHTML, etc.) keep passing without
+	// having to wire a fake store, while the production CLI plugs
+	// in a real sqlDashboardStore-backed provider via the
+	// dashboard factory.
+	Dashboard DashboardProvider
+
 	// Skills wires the read-only PR-203 skill registry surface.
 	// The zero value disables /skills and /api/skills/* so PR-62's
 	// minimal index page keeps working.
@@ -57,10 +66,11 @@ type Options struct {
 // Routes() returns the http.Handler the lifecycle methods (Serve, the
 // CLI command) wrap with a *http.Server.
 type Server struct {
-	csrf     *CSRF
-	hub      *Hub
-	renderer Renderer
-	opts     Options
+	csrf      *CSRF
+	hub       *Hub
+	renderer  Renderer
+	dashboard DashboardProvider
+	opts      Options
 }
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
@@ -79,11 +89,16 @@ func NewServer(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	dashboard := opts.Dashboard
+	if dashboard == nil {
+		dashboard = noopDashboardProvider{now: time.Now}
+	}
 	return &Server{
-		csrf:     csrf,
-		hub:      NewHub(),
-		renderer: renderer,
-		opts:     opts,
+		csrf:      csrf,
+		hub:       NewHub(),
+		renderer:  renderer,
+		dashboard: dashboard,
+		opts:      opts,
 	}, nil
 }
 
@@ -99,7 +114,8 @@ func (s *Server) Hub() *Hub { return s.hub }
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", newHealthzHandler())
-	mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf))
+	mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf, s.dashboard))
+	mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
 	mux.Handle("GET /events", NewSSEHandler(s.hub, SSEOptions{HeartbeatInterval: s.opts.HeartbeatInterval}))
 	mux.Handle("GET /static/", newStaticHandler())
 	mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))

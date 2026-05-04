@@ -3,15 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>marunage</title>
+  <title>marunage dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main>
+  <header class="topbar">
     <h1>marunage</h1>
-    <p>Hello marunage — the local Web UI is alive.</p>
-    <p class="hint">PR-63 will replace this placeholder with the real dashboard.</p>
-    <noscript>JavaScript is optional; HTMX-driven panels will degrade to plain HTML.</noscript>
+    <p class="hint">Local task queue dashboard.</p>
+  </header>
+  <main>
+    {{if .LoadError}}
+      <section class="banner banner-error" role="alert">
+        <strong>Dashboard data unavailable:</strong> {{.LoadError}}
+      </section>
+    {{end}}
+    <section id="dashboard-container">
+      {{template "dashboard.html" .Dashboard}}
+    </section>
   </main>
+  <noscript>
+    <p class="hint">JavaScript is optional; the dashboard above is rendered server-side. Enable scripts to auto-refresh.</p>
+  </noscript>
+  <script src="/static/dashboard.js" defer></script>
 </body>
 </html>
