@@ -69,6 +69,15 @@ func (d *CmuxDriver) Scrape(ctx context.Context, target ScrapeTarget) ([]Scraped
 	if _, _, err := d.runner.Run(ctx, "cmux", "browser", "goto", target.URL); err != nil {
 		return nil, fmt.Errorf("cmux browser goto %s: %w", target.URL, err)
 	}
+	// Re-check ctx between the two steps so a slow goto + concurrent
+	// shutdown does not leak a stray eval after the discovery loop has
+	// signalled cancellation. The Runner itself honours ctx for the
+	// per-call deadline, but only checking inside the runner would
+	// still let us issue the second exec call after the parent already
+	// gave up.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	js := buildExtractionJS(target)
 	stdout, _, err := d.runner.Run(ctx, "cmux", "browser", "eval", js)
