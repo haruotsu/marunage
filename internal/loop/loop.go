@@ -57,7 +57,6 @@ var ErrLockBusy = errors.New("loop: lock busy")
 // CLI can hand the concrete type in.
 type TaskRepo interface {
 	Insert(ctx context.Context, t store.Task) (int64, error)
-	Get(ctx context.Context, id int64) (store.Task, error)
 	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
 }
 
