@@ -159,6 +159,35 @@ func TestJournalAPIHandler_ReturnsJSON(t *testing.T) {
 	}
 }
 
+// /api/journal?date=invalid-format returns 400.
+func TestJournalAPIHandler_InvalidDateReturns400(t *testing.T) {
+	srv := newJournalServer(t, staticJournalProvider{snap: sampleJournalSnapshot()})
+
+	for _, bad := range []string{"notadate", "2026-99-99", "2026/05/04", "yesterday"} {
+		t.Run(bad, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/journal?date="+bad, nil)
+			w := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("date=%q: status=%d; want 400", bad, w.Code)
+			}
+		})
+	}
+}
+
+// /api/journal?date= (empty) is OK — means today.
+func TestJournalAPIHandler_EmptyDateIsOK(t *testing.T) {
+	srv := newJournalServer(t, staticJournalProvider{snap: sampleJournalSnapshot()})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/journal", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("empty date: status=%d; want 200", w.Code)
+	}
+}
+
 var errJournalTestFailed = journalTestSentinel("journal provider test failure")
 
 type journalTestSentinel string

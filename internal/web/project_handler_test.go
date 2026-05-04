@@ -166,6 +166,53 @@ func TestProjectAPIHandler_ReturnsJSON(t *testing.T) {
 	}
 }
 
+// /api/project?board_url=javascript:... returns 400 (SSRF / XSS prevention).
+func TestProjectAPIHandler_InvalidBoardURLReturns400(t *testing.T) {
+	srv := newProjectServer(t, staticProjectProvider{snap: sampleProjectSnapshot()})
+
+	for _, bad := range []string{
+		"javascript:alert(1)",
+		"data:text/html,<script>",
+		"ftp://example.com/board",
+		"file:///etc/passwd",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/project?board_url="+bad, nil)
+			w := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("board_url=%q: status=%d; want 400", bad, w.Code)
+			}
+		})
+	}
+}
+
+// /api/project?board_url= (empty) is OK — means default board.
+func TestProjectAPIHandler_EmptyBoardURLIsOK(t *testing.T) {
+	srv := newProjectServer(t, staticProjectProvider{snap: sampleProjectSnapshot()})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/project", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("empty board_url: status=%d; want 200", w.Code)
+	}
+}
+
+// /api/project?board_url=https://... is OK.
+func TestProjectAPIHandler_ValidBoardURLIsOK(t *testing.T) {
+	srv := newProjectServer(t, staticProjectProvider{snap: sampleProjectSnapshot()})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/project?board_url=https://github.com/orgs/test/projects/1", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("valid https board_url: status=%d; want 200", w.Code)
+	}
+}
+
 // 7. CSRF: POST to new API endpoints without token returns 403.
 func TestNewEndpoints_CSRFBlocksUnauthenticatedPOST(t *testing.T) {
 	srv := newProjectServer(t, staticProjectProvider{snap: sampleProjectSnapshot()})

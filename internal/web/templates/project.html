@@ -24,16 +24,16 @@
 
     {{if .Phases}}
       <div class="board">
-        {{range .Phases}}
-          <section class="panel board-column" aria-labelledby="phase-{{.Name}}">
+        {{range $i, $phase := .Phases}}
+          <section class="panel board-column" aria-labelledby="phase-{{$i}}">
             <header class="panel-head">
-              <h2 id="phase-{{.Name}}">{{.Name}}</h2>
-              <span class="badge badge-{{.Status}}">{{.Status}}</span>
-              <span class="count">{{len .Items}} items</span>
+              <h2 id="phase-{{$i}}">{{$phase.Name}}</h2>
+              <span class="badge badge-{{$phase.Status}}">{{$phase.Status}}</span>
+              <span class="count">{{len $phase.Items}} items</span>
             </header>
-            {{if .Items}}
+            {{if $phase.Items}}
               <ul class="task-list">
-                {{range .Items}}
+                {{range $phase.Items}}
                   <li class="task-row">
                     <div class="task-line">
                       <span class="task-title">{{.Title}}</span>

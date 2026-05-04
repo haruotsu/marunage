@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 // JournalEntry is one activity entry in the work journal.
@@ -48,6 +49,12 @@ func newJournalAPIHandler(provider JournalProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		date := r.URL.Query().Get("date")
+		if date != "" {
+			if _, err := time.Parse("2006-01-02", date); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid date: use YYYY-MM-DD format")
+				return
+			}
+		}
 		snap, err := provider.JournalSnapshot(r.Context(), date)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "journal data unavailable")
@@ -66,6 +73,12 @@ func newJournalHandler(renderer Renderer, provider JournalProvider) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		date := r.URL.Query().Get("date")
+		if date != "" {
+			if _, err := time.Parse("2006-01-02", date); err != nil {
+				http.Error(w, "invalid date: use YYYY-MM-DD format", http.StatusBadRequest)
+				return
+			}
+		}
 		snap, err := provider.JournalSnapshot(r.Context(), date)
 		if err != nil {
 			page := journalPageData{LoadError: journalLoadFailedMessage}
