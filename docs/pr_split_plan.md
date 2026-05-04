@@ -697,11 +697,11 @@ https://github.com/harakeishi/slackhog
 
 **できるようになること：** 日報・週報が自動生成される。
 
-### [機能] PR-104 Auto-Reply スキル ✅ DONE (PR #49)
+### [機能] PR-104 Auto-Reply スキル
 
-- [x] `marunage-autoreply` SKILL.md（必須4セクション + Non-Goals）
-- [x] 権限境界の設定ファイル（OK/NG カテゴリ）— `internal/autoreply/config.go` + `boundary.go`
-- [x] `--draft-only` モード — `DraftMode.Enabled` フラグ実装済み（CLI・Executor は follow-up）
+- [ ] `marunage-autoreply` SKILL.md
+- [ ] 権限境界の設定ファイル（OK/NG カテゴリ）
+- [ ] `--draft-only` モード
 
 **できるようになること：** 既知の依頼への返信が自動化される（境界の中で）。
 
