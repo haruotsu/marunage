@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -162,6 +163,7 @@ func parseGitHubPRs(stdout []byte, since time.Time) ([]Item, error) {
 		}
 		mergedAt, err := time.Parse(time.RFC3339, pr.MergedAt)
 		if err != nil {
+			slog.Warn("journal: could not parse PR mergedAt", "number", pr.Number, "mergedAt", pr.MergedAt, "err", err)
 			continue
 		}
 		if !mergedAt.After(since) {

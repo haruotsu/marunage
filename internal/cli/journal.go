@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -144,7 +145,7 @@ func newJournalExportCmd(configPath *string) *cobra.Command {
 			path := filepath.Join(journalDir, date+".md")
 			data, readErr := os.ReadFile(path)
 			if readErr != nil {
-				if os.IsNotExist(readErr) {
+				if errors.Is(readErr, os.ErrNotExist) {
 					fmt.Fprintf(cmd.OutOrStdout(), "no journal for %s\n", date)
 					return nil
 				}
