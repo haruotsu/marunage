@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os/signal"
@@ -60,17 +61,14 @@ type webRunner interface {
 	Run(ctx context.Context) error
 }
 
-// WebFactoryOptions is the resolved input the CLI hands to the web
-// factory: the effective addr (after flag/config/--remote
-// precedence) and the path to the active config.toml so the factory
-// can locate sibling state — daemon.log lives at
-// <configDir>/logs/daemon.log per docs/requirement.md ファイルレイア
-// ウト.  --remote awareness lives in the CLI layer (it rewrites Addr
-// to 0.0.0.0 + emits the warning banner) so the factory does not
-// need to know about it.
+// WebFactoryOptions is the resolved input the CLI hands to the web factory.
+// TLSCert/TLSKey are non-empty only when --tls-cert/--tls-key are provided;
+// the factory wraps the TCP listener with tls.NewListener when both are set.
 type WebFactoryOptions struct {
 	Addr       string
 	ConfigPath string
+	TLSCert    string
+	TLSKey     string
 }
 
 // webFactory builds a webRunner from the resolved options and hands
@@ -130,10 +128,20 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 		return nil, nil, fmt.Errorf("web: open %s: %w", dbPath, err)
 	}
 
-	listener, err := net.Listen("tcp", opts.Addr)
+	tcpListener, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("web: listen %s: %w", opts.Addr, err)
+	}
+	listener := net.Listener(tcpListener)
+	if opts.TLSCert != "" && opts.TLSKey != "" {
+		cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
+		if err != nil {
+			_ = tcpListener.Close()
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("web: load TLS cert/key: %w", err)
+		}
+		listener = tls.NewListener(tcpListener, &tls.Config{Certificates: []tls.Certificate{cert}})
 	}
 
 	logPath := daemonLogPathFor(opts.ConfigPath)
@@ -277,16 +285,19 @@ func (r *serverRunner) Run(ctx context.Context) error {
 }
 
 // newWebCmd builds `marunage web [--bind <host>] [--port <port>]
-// [--remote]` per docs/requirement.md "Web UI" + the PR-62 brief.
+// [--remote] [--tls-cert <path>] [--tls-key <path>]`.
 //
 // Flag precedence: CLI flags override [web] from --config; --remote
-// further overrides --bind to 0.0.0.0 because the brief makes the
-// opt-in semantics non-negotiable ("明示しないと外部公開しない").
+// further overrides --bind to 0.0.0.0.  --remote requires --tls-cert
+// and --tls-key so the dashboard is never exposed over plain HTTP
+// (PR-204 HTTPS-only requirement).
 func newWebCmd(configPath *string) *cobra.Command {
 	var (
-		bind   string
-		port   int
-		remote bool
+		bind    string
+		port    int
+		remote  bool
+		tlsCert string
+		tlsKey  string
 	)
 
 	cmd := &cobra.Command{
@@ -307,27 +318,33 @@ func newWebCmd(configPath *string) *cobra.Command {
 			if cmd.Flags().Changed("port") {
 				effectivePort = port
 			}
-			// CLI flag wins over [web].remote in either direction
-			// (just like --bind / --port) so an operator can flip
-			// behaviour without editing config.toml.  Without the
-			// Changed() check the boolean OR would forever stick
-			// remote=true after the config sets it once.
 			effectiveRemote := cfg.Web.Remote
 			if cmd.Flags().Changed("remote") {
 				effectiveRemote = remote
 			}
+
+			// --remote requires TLS cert+key — the dashboard must never be
+			// exposed to the network over plain HTTP (PR-204 §2).
 			if effectiveRemote {
-				// Brief: --remote opts into 0.0.0.0 binding; auth
-				// itself is a separate PR.  Override the bind
-				// regardless of what --bind / [web] said so the
-				// behaviour matches the user's intent.
+				if tlsCert == "" || tlsKey == "" {
+					return fmt.Errorf("--remote requires --tls-cert and --tls-key: refusing to serve plain HTTP on a public interface")
+				}
 				effectiveBind = "0.0.0.0"
 			}
+
+			// Non-localhost bind without --remote is an accidental external
+			// exposure — the flag is the explicit opt-in gate.
+			if !effectiveRemote && !isLoopback(effectiveBind) {
+				return fmt.Errorf("--bind %q binds a non-loopback address; add --remote to confirm external exposure", effectiveBind)
+			}
+
 			addr := net.JoinHostPort(effectiveBind, strconv.Itoa(effectivePort))
 
 			runner, closer, err := activeWebFactory()(cmd.Context(), WebFactoryOptions{
 				Addr:       addr,
 				ConfigPath: *configPath,
+				TLSCert:    tlsCert,
+				TLSKey:     tlsKey,
 			})
 			if err != nil {
 				return err
@@ -342,24 +359,39 @@ func newWebCmd(configPath *string) *cobra.Command {
 			defer stop()
 
 			if effectiveRemote {
-				// Loud, multi-line stderr banner: --remote opens
-				// the dashboard to the network without auth (auth
-				// itself ships in a later PR).  Emitted after the
-				// factory has already bound 0.0.0.0 but before
-				// Serve starts processing requests, so the operator
-				// has a clear signal to ^C if they meant loopback.
 				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: --remote binds 0.0.0.0 with no authentication.")
 				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: anyone reachable on this network can read the dashboard and SSE stream.")
 				fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: front this with a TLS-terminating reverse proxy + auth before exposing publicly.")
+				if cfg.Execution.PermissionMode == "bypass" {
+					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: permission_mode=bypass is active — Claude runs without sandboxing on a public network interface.")
+				}
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "marunage web listening on http://%s\n", addr)
+			scheme := "http"
+			if tlsCert != "" && tlsKey != "" {
+				scheme = "https"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "marunage web listening on %s://%s\n", scheme, addr)
 			return runner.Run(ctx)
 		},
 	}
 
 	cmd.Flags().StringVar(&bind, "bind", "", "Host or IP to bind (overrides web.bind from --config; defaults to 127.0.0.1).")
 	cmd.Flags().IntVar(&port, "port", 0, "TCP port to listen on (overrides web.port from --config; defaults to 7777).")
-	cmd.Flags().BoolVar(&remote, "remote", false, "Bind to 0.0.0.0 to publish externally (auth lands in a later PR).")
+	cmd.Flags().BoolVar(&remote, "remote", false, "Bind to 0.0.0.0 to publish externally; requires --tls-cert and --tls-key.")
+	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "Path to TLS certificate file (required with --remote).")
+	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "Path to TLS private key file (required with --remote).")
 
 	return cmd
+}
+
+// isLoopback reports whether host is a loopback address (127.x.x.x or ::1).
+// "localhost" is also treated as loopback because it always resolves there
+// in practice; 0.0.0.0 is explicitly not loopback.
+func isLoopback(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

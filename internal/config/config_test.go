@@ -57,6 +57,12 @@ func TestDefaultConfig(t *testing.T) {
 	if c.Web.Remote {
 		t.Errorf("Web.Remote = true; want false (external publish must be opt-in)")
 	}
+	if c.Web.Token != "" {
+		t.Errorf("Web.Token = %q; want empty (no auth by default)", c.Web.Token)
+	}
+	if c.Web.OIDC.Issuer != "" {
+		t.Errorf("Web.OIDC.Issuer = %q; want empty", c.Web.OIDC.Issuer)
+	}
 
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Default().Validate() = %v; want nil", err)

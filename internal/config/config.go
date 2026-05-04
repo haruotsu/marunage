@@ -115,17 +115,30 @@ type NotifyConfig struct {
 	OnFailure  bool `toml:"on_failure"`
 }
 
-// WebConfig drives the `marunage web` server (PR-62).
+// WebConfig drives the `marunage web` server (PR-62, PR-204).
 //
 // Bind/Port pin where the listener attaches; defaults bind to loopback so a
 // fresh install never publishes the dashboard externally without an explicit
 // opt-in (docs/requirement.md 320: "localhost bind デフォルト、外部公開は
 // オプトイン"). Remote = true is the explicit opt-in CLI surface that lets
-// the binary swap to 0.0.0.0 — authentication itself lands in a later PR.
+// the binary swap to 0.0.0.0.
+// Token enables Bearer token auth when non-empty; OIDC enables OIDC auth
+// when Issuer is set (PR-204).
 type WebConfig struct {
-	Bind   string `toml:"bind"`
-	Port   int    `toml:"port"`
-	Remote bool   `toml:"remote"`
+	Bind   string     `toml:"bind"`
+	Port   int        `toml:"port"`
+	Remote bool       `toml:"remote"`
+	Token  string     `toml:"token"`
+	OIDC   OIDCConfig `toml:"oidc"`
+}
+
+// OIDCConfig holds OIDC provider settings for the web UI (PR-204).
+// All fields are optional; leave Issuer empty to disable OIDC.
+type OIDCConfig struct {
+	Issuer       string `toml:"issuer"`
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	RedirectURL  string `toml:"redirect_url"`
 }
 
 // Allowed values per the documented schema. Centralised so Validate and the
