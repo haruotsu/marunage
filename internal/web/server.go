@@ -207,6 +207,7 @@ func (s *Server) Routes() http.Handler {
 	// page would be misleading without a real store.
 	mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
 	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
+	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
 	mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
 	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
 	mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
