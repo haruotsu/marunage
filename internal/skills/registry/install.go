@@ -116,7 +116,7 @@ func ExtractTarball(body []byte, opts ExtractOptions) error {
 				cleanup()
 				return fmt.Errorf("registry: mkdir %s: %w", rel, err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			full := filepath.Join(tmpRoot, rel)
 			if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
 				cleanup()

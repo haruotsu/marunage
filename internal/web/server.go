@@ -46,6 +46,11 @@ type Options struct {
 	// AccessLogger receives one AccessRecord per request.  Nil
 	// disables access logging entirely (the default for unit tests).
 	AccessLogger AccessLogger
+
+	// Skills wires the read-only PR-203 skill registry surface.
+	// The zero value disables /skills and /api/skills/* so PR-62's
+	// minimal index page keeps working.
+	Skills SkillsConfig
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -97,6 +102,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf))
 	mux.Handle("GET /events", NewSSEHandler(s.hub, SSEOptions{HeartbeatInterval: s.opts.HeartbeatInterval}))
 	mux.Handle("GET /static/", newStaticHandler())
+	mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
+	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
+	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
 
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
