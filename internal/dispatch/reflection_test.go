@@ -97,6 +97,9 @@ func (c *reflectCmux) WaitReady(_ context.Context, _ cmux.Workspace) error {
 func (c *reflectCmux) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
 	return nil, nil
 }
+func (c *reflectCmux) ReadOutput(_ context.Context, _ cmux.Workspace) (string, error) {
+	return "", nil
+}
 func (c *reflectCmux) Send(ctx context.Context, ws cmux.Workspace, text string) error {
 	// Production cmux.Client honours ctx; the fake should too so tests
 	// cannot accidentally pass when production would not (review-fix-loop
