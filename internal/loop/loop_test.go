@@ -58,13 +58,13 @@ func (f *fakePlugin) AuthStatus(context.Context) (source.AuthStatus, error) {
 type sincerPlugin struct{ *fakePlugin }
 
 func (s sincerPlugin) Since(ctx context.Context, checkpoint string) ([]source.Task, error) {
-	s.fakePlugin.mu.Lock()
-	s.fakePlugin.sinceArgs = append(s.fakePlugin.sinceArgs, checkpoint)
-	s.fakePlugin.mu.Unlock()
-	if s.fakePlugin.sinceFn == nil {
+	s.mu.Lock()
+	s.sinceArgs = append(s.sinceArgs, checkpoint)
+	s.mu.Unlock()
+	if s.sinceFn == nil {
 		return nil, nil
 	}
-	return s.fakePlugin.sinceFn(ctx, checkpoint)
+	return s.sinceFn(ctx, checkpoint)
 }
 
 // fakeDispatcher is the loop.Dispatcher double. Captures every Run call
@@ -522,10 +522,7 @@ func TestRun_LoopsUntilCancelled(t *testing.T) {
 
 	// Wait until at least 3 dispatches have happened, then cancel.
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if len(f.disp.snapshot()) >= 3 {
-			break
-		}
+	for len(f.disp.snapshot()) < 3 {
 		if time.Now().After(deadline) {
 			cancel()
 			<-done
