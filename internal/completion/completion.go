@@ -122,6 +122,15 @@ const defaultPollInterval = 5 * time.Second
 // at startup with a typed sentinel callers can errors.Is against.
 var ErrInvalidConfig = errors.New("completion: missing required option")
 
+// DoneHook fires once per row that the watcher transitions to done. The
+// PR-102 reflection hook (internal/dispatch.Reflector.OnDone) is the
+// production consumer: after the row commits to done it asks Claude to
+// reflect on the work in the same cmux workspace. Hook implementations
+// MUST be non-blocking (the watcher invokes them inline on the tick
+// goroutine) — long-running work belongs in a goroutine the hook spawns
+// and the daemon shutdown path drains.
+type DoneHook func(ctx context.Context, task store.Task)
+
 // Watcher polls running tasks for sentinel completion files and drives
 // status transitions. Safe for one Run goroutine per process; the
 // underlying Store + Auditor must themselves be concurrency-safe (the
@@ -132,6 +141,7 @@ type Watcher struct {
 	auditor      config.Auditor
 	pollInterval time.Duration
 	now          func() time.Time
+	doneHook     DoneHook
 }
 
 // Option mutates Watcher construction. The functional-option shape
@@ -162,6 +172,14 @@ func WithAuditor(a config.Auditor) Option {
 // few milliseconds so Run-loop tests finish in well under a second.
 func WithPollInterval(d time.Duration) Option {
 	return func(w *Watcher) { w.pollInterval = d }
+}
+
+// WithDoneHook installs a callback invoked once per row the watcher
+// successfully transitions to done. Optional; when nil (the default),
+// the watcher behaves exactly as before. Wired by the daemon to a
+// dispatch.Reflector for the PR-102 reflection-on-done feature.
+func WithDoneHook(h DoneHook) Option {
+	return func(w *Watcher) { w.doneHook = h }
 }
 
 // WithClock injects a deterministic clock used to stamp completed_at.
@@ -320,7 +338,8 @@ func (w *Watcher) checkOne(ctx context.Context, task store.Task) {
 	}
 
 	summary := w.readResultSummary(dir)
-	if err := w.store.MarkDoneWithSummary(ctx, task.ID, summary, w.now()); err != nil {
+	completedAt := w.now()
+	if err := w.store.MarkDoneWithSummary(ctx, task.ID, summary, completedAt); err != nil {
 		// MarkDoneWithSummary failed mid-transition — leave the row running
 		// so the next tick can retry. Record under
 		// completion.transition_failed (NOT completion.fail) so the audit
@@ -330,6 +349,17 @@ func (w *Watcher) checkOne(ctx context.Context, task store.Task) {
 		return
 	}
 	w.recordAudit(auditDetect, task.ID, strconv.Itoa(exitCode))
+	if w.doneHook != nil {
+		// Synthesize the post-done snapshot from the in-memory task plus
+		// the values we just wrote so the hook does not have to round-trip
+		// through the store. Refetching would race with a parallel reaper /
+		// CLI write and could surface a row already mutated past done.
+		done := task
+		done.Status = store.StatusDone
+		done.ResultSummary = summary
+		done.CompletedAt = completedAt
+		w.doneHook(ctx, done)
+	}
 }
 
 // markFailed flips the row to failed, stamps completed_at, and records
