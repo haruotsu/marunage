@@ -88,7 +88,7 @@ func (c *WebAPIClient) PostDM(ctx context.Context, channelID, text string) error
 	if err != nil {
 		return fmt.Errorf("slack webclient: PostDM HTTP: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error,omitempty"`
