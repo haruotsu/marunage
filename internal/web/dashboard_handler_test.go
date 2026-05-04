@@ -111,6 +111,40 @@ func TestRoutes_PartialDashboardPropagatesProviderError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d; want 500 when provider errors", rec.Code)
 	}
+	// The body must not echo internal error detail (SQL column
+	// names, file paths, etc.). Pin the generic-message contract
+	// so a future regression that goes back to plumbing err.Error()
+	// straight to the client surfaces here.
+	if strings.Contains(rec.Body.String(), errProviderTest.Error()) {
+		t.Errorf("partial 500 body leaks raw error %q\nbody:\n%s", errProviderTest.Error(), rec.Body.String())
+	}
+}
+
+func TestRoutes_IndexBannerHidesRawProviderError(t *testing.T) {
+	srv := newDashboardServer(t, staticDashboardProvider{err: errProviderTest})
+
+	rec := doGet(t, srv, "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 even when provider degrades", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), errProviderTest.Error()) {
+		t.Errorf("index banner leaks raw provider error %q", errProviderTest.Error())
+	}
+}
+
+func TestRoutes_IndexEscapesUserSuppliedTitle(t *testing.T) {
+	xss := `<script>window.__xss="pwn"</script>`
+	snap := sampleSnapshot()
+	snap.Running[0].Title = xss
+	srv := newDashboardServer(t, staticDashboardProvider{snap: snap})
+
+	rec := doGet(t, srv, "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), xss) {
+		t.Errorf("dashboard rendered raw <script> tag from task title; html/template escape regression\nbody:\n%s", rec.Body.String())
+	}
 }
 
 // errProviderTest is a sentinel kept package-private so the

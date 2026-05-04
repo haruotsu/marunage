@@ -38,6 +38,15 @@ func (r *htmlTemplateRenderer) Render(w http.ResponseWriter, name string, data a
 	return nil
 }
 
+// dashboardLoadFailedMessage is the user-facing banner / fragment
+// error string. The full err.Error() detail (which can include SQL
+// column names, file paths, or whatever the underlying driver
+// embedded) goes to the access log only — surfacing it on the page
+// would leak server state to anyone reachable on the bind address,
+// which the security review explicitly flagged as a regression risk
+// once `--remote` mode lands.
+const dashboardLoadFailedMessage = "Dashboard data unavailable. See daemon.log for details."
+
 // newIndexHandler returns the GET / handler.  The handler primes the
 // CSRF cookie via TokenFor so a brand-new visitor always leaves with
 // a token in their cookie jar, snapshots the dashboard data, and
@@ -56,12 +65,16 @@ func newIndexHandler(renderer Renderer, csrf *CSRF, provider DashboardProvider) 
 		page := indexPageData{}
 		snap, err := provider.Snapshot(r.Context())
 		if err != nil {
-			page.LoadError = err.Error()
+			page.LoadError = dashboardLoadFailedMessage
 		} else {
 			page.Dashboard = newDashboardView(snap)
 		}
-		if err := renderer.Render(w, "index.html", page); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if renderErr := renderer.Render(w, "index.html", page); renderErr != nil {
+			// Preserve the historical 500 contract (template
+			// failure is unrecoverable); avoid echoing the
+			// renderer message for the same reason as the
+			// snapshot path above.
+			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 	})
 }
@@ -75,13 +88,13 @@ func newDashboardPartialHandler(renderer Renderer, provider DashboardProvider) h
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		snap, err := provider.Snapshot(r.Context())
 		if err != nil {
-			http.Error(w, "dashboard snapshot failed: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, dashboardLoadFailedMessage, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		view := newDashboardView(snap)
-		if err := renderer.Render(w, "dashboard.html", view); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if renderErr := renderer.Render(w, "dashboard.html", view); renderErr != nil {
+			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 	})
 }
