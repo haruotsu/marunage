@@ -11,6 +11,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/source/markdown"
+	"github.com/haruotsu/marunage/internal/source/slack"
 )
 
 // newDiscoverCmd builds the `marunage discover` command. PR-70 ships only
@@ -77,6 +78,19 @@ var builtins = map[string]builtinRegistrar{
 		}
 		if err := markdown.RegisterBuiltin(r, markdown.WithFiles(files...)); err != nil {
 			return fmt.Errorf("register markdown: %w", err)
+		}
+		return nil
+	},
+	// PR-82: register the Slack source with no Client wired. Discover-once
+	// then surfaces ErrClientNotConfigured at List time, which is the
+	// documented "user has not run `marunage setup slack` yet" signal.
+	// The runtime daemon (PR-71+) supplies the real Client via dependency
+	// injection at startup; until then `--source slack` is reachable but
+	// inert, so the unknown-source error message stays correct as soon as
+	// PR-82 lands.
+	"slack": func(r *source.Registry, _ []string) error {
+		if err := slack.RegisterBuiltin(r); err != nil {
+			return fmt.Errorf("register slack: %w", err)
 		}
 		return nil
 	},
