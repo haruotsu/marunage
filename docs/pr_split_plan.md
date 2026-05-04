@@ -629,10 +629,10 @@ flowchart LR
 
 **できるようになること：** triage 精度の継続改善ループが回る。
 
-### [UI] PR-91 Web UI ライブストリーム
+### [UI] PR-91 Web UI ライブストリーム ✅ DONE (PR #53)
 
-- [ ] cmux ターミナル出力を WebSocket で配信
-- [ ] ブラウザからの `cmux send` 相当
+- [x] cmux ターミナル出力を WebSocket で配信
+- [x] ブラウザからの `cmux send` 相当
 
 **できるようになること：** 物理的に手元にいなくても介入できる。
 
@@ -660,22 +660,22 @@ flowchart LR
     WEB -.read-only.-> ALL[全データ]
 ```
 
-### [機能] PR-100 Slack Reaction Trigger
+### [機能] PR-100 Slack Reaction Trigger ✅ DONE (PR #47)
 
-- [ ] `reactions.added` イベント購読 or ポーリング
-- [ ] 設定 reaction（例：`:todo:`）でタスク化
-- [ ] permalink 保存・DM 完了報告
+- [x] `reactions.added` イベント購読 or ポーリング
+- [x] 設定 reaction（例：`:todo:`）でタスク化
+- [x] permalink 保存・DM 完了報告
 
 https://github.com/harakeishi/slackhog
 検証やテストはこれを使って
 **できるようになること：** ワンタップでタスク化される UX が完成。
 
-### [機能] PR-101 Project Mode
+### [機能] PR-101 Project Mode ✅ DONE (PR #51)
 
-- [ ] `marunage project run <board-url>`
-- [ ] GitHub Projects ボード読み取り
-- [ ] Markdown 計画書のフェーズ × 日付順実行
-- [ ] 人間タスクで待機 → ボード更新で自動再開
+- [x] `marunage project run <board-url>`
+- [x] GitHub Projects ボード読み取り
+- [x] Markdown 計画書のフェーズ × 日付順実行
+- [x] 人間タスクで待機 → ボード更新で自動再開
 
 **できるようになること：** 段階実行プロジェクトを丸投げできる。
 
@@ -688,28 +688,28 @@ https://github.com/harakeishi/slackhog
 
 **できるようになること：** 完了タスクの品質が継続改善される。
 
-### [機能] PR-103 Work Journal
+### [機能] PR-103 Work Journal ✅ DONE (PR #50)
 
-- [ ] `marunage journal start`
-- [ ] 30 分ごとに Slack/Calendar/Git/GitHub/marunage を集約
-- [ ] `~/.marunage/journal/YYYY-MM-DD.md`
-- [ ] `journal-export` フォーマット
+- [x] `marunage journal start`
+- [x] 30 分ごとに Slack/Calendar/Git/GitHub/marunage を集約
+- [x] `~/.marunage/journal/YYYY-MM-DD.md`
+- [x] `journal-export` フォーマット
 
 **できるようになること：** 日報・週報が自動生成される。
 
-### [機能] PR-104 Auto-Reply スキル
+### [機能] PR-104 Auto-Reply スキル ✅ DONE (PR #49)
 
-- [ ] `marunage-autoreply` SKILL.md
-- [ ] 権限境界の設定ファイル（OK/NG カテゴリ）
-- [ ] `--draft-only` モード
+- [x] `marunage-autoreply` SKILL.md
+- [x] 権限境界の設定ファイル（OK/NG カテゴリ）
+- [x] `--draft-only` モード
 
 **できるようになること：** 既知の依頼への返信が自動化される（境界の中で）。
 
-### [UI] PR-105 Web UI 拡張
+### [UI] PR-105 Web UI 拡張 ✅ DONE (PR #48)
 
-- [ ] Project mode ボード表示
-- [ ] Work Journal タイムライン
-- [ ] メトリクスダッシュボード（タスク数推移・成功率・平均時間・ソース別）
+- [x] Project mode ボード表示
+- [x] Work Journal タイムライン
+- [x] メトリクスダッシュボード（タスク数推移・成功率・平均時間・ソース別）
 
 **できるようになること：** Phase 3 の機能群が全部 GUI で見える。
 
@@ -732,10 +732,10 @@ MCPやCLIがあるならそれを使う。それがないならmarunageのソー
 
 **できるようになること：** 標準ソースのカバー率が広がる。
 
-### [機能] PR-202 Prometheus メトリクスエクスポート
+### [機能] PR-202 Prometheus メトリクスエクスポート ✅ DONE (PR #52)
 
-- [ ] `/metrics` エンドポイント
-- [ ] タスク数 / 成功率 / 平均実行時間
+- [x] `/metrics` エンドポイント
+- [x] タスク数 / 成功率 / 平均実行時間
 
 **できるようになること：** 既存監視基盤に統合できる。
 
