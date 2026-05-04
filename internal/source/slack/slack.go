@@ -261,6 +261,11 @@ func (p *Plugin) Since(ctx context.Context, checkpoint string) ([]source.Task, e
 	if len(tasks) == 0 || p.checkpointer == nil {
 		return tasks, nil
 	}
+	// Compute the maximum ts across the fetched tasks. RawMetadata["ts"]
+	// is populated by messageToTask as a string; the type assert falls
+	// back to "" on the impossible "missing key" case, which compareTS
+	// treats as the minimum and therefore cannot promote a malformed row
+	// over a real one.
 	maxTS := ""
 	for _, t := range tasks {
 		ts, _ := t.RawMetadata["ts"].(string)
@@ -268,7 +273,13 @@ func (p *Plugin) Since(ctx context.Context, checkpoint string) ([]source.Task, e
 			maxTS = ts
 		}
 	}
-	if maxTS == "" {
+	// Defense-in-depth against an upstream that ignores the `oldest`
+	// argument: the persisted checkpoint must be monotonic, never
+	// regress. If every fetched ts is older than the cursor we asked
+	// from, keep the existing checkpoint (i.e. write nothing) so a
+	// misbehaving Client cannot trick the Sincer into re-feeding stale
+	// items on the next call.
+	if compareTS(maxTS, effective) <= 0 {
 		return tasks, nil
 	}
 	if err := p.checkpointer.Set(ctx, CheckpointKey, maxTS); err != nil {
