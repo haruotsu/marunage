@@ -19,9 +19,9 @@ package triage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -37,20 +37,31 @@ const (
 // outside {task, skip}. Either the user edited SKILL.md and produced
 // a typo, or the discovery plugin parsed the JSON wrong; either way
 // failing loud beats silently choosing one branch.
-var ErrInvalidDecision = errors.New("triage: decision must be \"task\" or \"skip\"")
+var ErrInvalidDecision = fmt.Errorf("triage: decision must be %q or %q", DecisionTask, DecisionSkip)
 
 // Decision is the per-row verdict the skill emits. The field shape
 // mirrors the documented JSON-Lines schema in
 // internal/skills/embedded/marunage-triage/SKILL.md so the discovery
 // layer can json.Unmarshal directly into this struct.
 type Decision struct {
+	// ExternalID echoes the source-side identifier (Slack ts, GitHub
+	// issue number, etc.). Apply does not consume it directly — the
+	// row id is passed in separately — but the field is present so a
+	// json.Unmarshal of one SKILL.md output line round-trips without
+	// loss, leaving the discovery layer free to map ExternalID -> row
+	// id at its own seam.
+	ExternalID string `json:"external_id"`
 	// Decision must be one of DecisionTask / DecisionSkip.
 	Decision string `json:"decision"`
 	// Reason is the 1-sentence rationale recorded into judgment_reason
 	// for the audit trail in `marunage review`. Required.
 	Reason string `json:"reason"`
 	// Priority carries the skill's optional priority hint; only
-	// meaningful for task verdicts and ignored on skip.
+	// meaningful for task verdicts. Phase 1 of marunage does not
+	// surface priority into the dispatcher's queue ordering yet, so
+	// Apply currently records the verdict without acting on this
+	// field — keep it on the struct so the JSON contract round-trips
+	// and a later PR can wire it into tasks.priority.
 	Priority int `json:"priority,omitempty"`
 }
 
@@ -73,18 +84,26 @@ type Store interface {
 // invariant "judgment_reason carries an explanation whenever the
 // triage hook touches a row" stays enforceable. An unknown decision
 // string returns ErrInvalidDecision without touching the store.
+//
+// Reason is run through logging.Redact before either store call so a
+// triage rule that quoted a message body containing a Bearer header /
+// GitHub PAT / Slack token cannot pin the secret into the persistent
+// judgment_reason column. This mirrors dispatch.markFailed's defence
+// in depth — both sinks the operator can read post-mortem must scrub
+// secrets at the boundary, never trust the upstream caller.
 func Apply(ctx context.Context, s Store, id int64, d Decision) error {
 	if d.Reason == "" {
 		return store.ErrReasonRequired
 	}
+	reason := logging.Redact(d.Reason)
 	switch d.Decision {
 	case DecisionSkip:
-		if err := s.MarkSkippedWithReason(ctx, id, d.Reason); err != nil {
+		if err := s.MarkSkippedWithReason(ctx, id, reason); err != nil {
 			return fmt.Errorf("triage apply skip: %w", err)
 		}
 		return nil
 	case DecisionTask:
-		if err := s.AppendJudgmentReason(ctx, id, d.Reason); err != nil {
+		if err := s.AppendJudgmentReason(ctx, id, reason); err != nil {
 			return fmt.Errorf("triage apply task: %w", err)
 		}
 		return nil
