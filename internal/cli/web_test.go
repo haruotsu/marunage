@@ -264,6 +264,115 @@ func TestWeb_StubRemoved(t *testing.T) {
 	}
 }
 
+// TestWeb_ProductionFactory_TaskDetailWired pins the requirement that
+// productionWebFactory wires TaskDetail into web.Options so that
+// GET /tasks/{id} resolves against the real SQLite store rather than
+// falling through to noopTaskDetailProvider (which returns 404 for
+// every id). We insert a task directly into the DB the factory opened,
+// then verify the running server returns 200 for that id.
+func TestWeb_ProductionFactory_TaskDetailWired(t *testing.T) {
+	// Use a tmpdir as the config dir so db_path is self-contained under
+	// t.TempDir() — avoids touching ~/.marunage/tasks.db on the dev machine.
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, ".marunage", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	dbPath := filepath.Join(tmpDir, "tasks.db")
+	cfgBody := fmt.Sprintf(`[core]
+db_path = %q
+max_parallel = 1
+log_level = "info"
+
+[execution]
+permission_mode = "bypass"
+claude_command = "claude"
+startup_timeout = 60
+on_unknown_permission = "escalate"
+human_wait_timeout = "30m"
+reaper_stuck_threshold = "24h"
+
+[discovery]
+interval = "10m"
+
+[web]
+bind = "127.0.0.1"
+port = 7777
+`, dbPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	addr := freeLoopbackAddr(t)
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
+		Addr:       addr,
+		ConfigPath: cfgPath,
+	})
+	if err != nil {
+		t.Fatalf("productionWebFactory: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runErr := make(chan error, 1)
+	go func() { runErr <- runner.Run(ctx) }()
+
+	if err := pollHealthz(t, "http://"+addr+"/healthz", 3*time.Second); err != nil {
+		cancel()
+		<-runErr
+		t.Fatalf("server never became ready: %v", err)
+	}
+
+	// Insert a task directly into the DB so we have a known id.
+	taskID := insertTaskIntoDBForTest(t, dbPath)
+
+	// If TaskDetail is wired, this returns 200. If noopTaskDetailProvider
+	// is used instead, it returns 404 for every id including real ones.
+	url := fmt.Sprintf("http://%s/tasks/%d", addr, taskID)
+	resp, getErr := http.Get(url)
+	if getErr != nil {
+		cancel()
+		<-runErr
+		t.Fatalf("GET %s: %v", url, getErr)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET %s = %d; want 200 — TaskDetail must be wired in productionWebFactory", url, resp.StatusCode)
+	}
+
+	cancel()
+	if err := <-runErr; err != nil {
+		t.Fatalf("runner: %v", err)
+	}
+}
+
+// TestWeb_ProductionFactory_AuditLogPathDerived verifies that
+// auditLogPathFor produces a path adjacent to config.toml so the
+// productionWebFactory can wire FileAuditReader to the correct location.
+func TestWeb_ProductionFactory_AuditLogPathDerived(t *testing.T) {
+	cfgPath := "/tmp/testdir/.marunage/config.toml"
+	want := "/tmp/testdir/.marunage/logs/audit.log"
+	got := auditLogPathFor(cfgPath)
+	if got != want {
+		t.Errorf("auditLogPathFor(%q) = %q; want %q", cfgPath, got, want)
+	}
+}
+
+// insertTaskIntoDBForTest opens the SQLite DB that the production factory
+// already migrated and inserts a minimal pending task, returning its id.
+// This lets TaskDetail integration tests assert against a known row without
+// going through the CLI task-add path.
+func insertTaskIntoDBForTest(t *testing.T, dbPath string) int64 {
+	t.Helper()
+	db, err := openTestDB(t, dbPath)
+	if err != nil {
+		t.Fatalf("insertTaskIntoDBForTest: open %s: %v", dbPath, err)
+	}
+	defer func() { _ = db.Close() }()
+	return insertMinimalTask(t, db)
+}
+
 // TestWeb_DaemonLogReceivesAccessRecord pins the brief's "各リクエ
 // ストのログを daemon.log に JSON Lines" requirement: production
 // wiring must open daemon.log next to config.toml and append one

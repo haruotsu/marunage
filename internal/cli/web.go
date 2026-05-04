@@ -114,15 +114,34 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	logger := logging.NewLogger(rot, logging.LevelInfo)
 
 	registry := buildWebSourceRegistry(cfg.Discovery.SourcesEnabled)
+	// NewSQLDashboardStore returns the *sqlDashboardStore concrete type
+	// wrapped in a DashboardStore interface.  The same concrete value also
+	// implements TaskDetailStore (it has a TaskDetail method), so we
+	// unwrap it via type assertion to avoid opening a second *sql.DB
+	// connection just for task detail reads.
+	dashboardStore := web.NewSQLDashboardStore(db)
 	dashboardProvider := web.NewDashboardProvider(
-		web.NewSQLDashboardStore(db),
+		dashboardStore,
 		web.RegistrySourceLister{Registry: registry},
 		web.DashboardOptions{},
 	)
+	taskDetailStore, ok := dashboardStore.(web.TaskDetailStore)
+	if !ok {
+		// This is a programming error: sqlDashboardStore must implement
+		// TaskDetailStore.  A compile-time check would be cleaner but
+		// NewSQLDashboardStore returns the narrower DashboardStore
+		// interface.  Fail loudly at startup rather than silently
+		// serving 404 for every task detail request.
+		return nil, nil, fmt.Errorf("web: sqlDashboardStore does not implement TaskDetailStore — wiring is broken")
+	}
+	auditReader := web.NewFileAuditReader(auditLogPathFor(opts.ConfigPath))
+	taskDetailProvider := web.NewTaskDetailProvider(taskDetailStore, auditReader)
 
 	srv, err := web.NewServer(web.Options{
 		AccessLogger: slogAccessLogger{logger: logger},
 		Dashboard:    dashboardProvider,
+		TaskDetail:   taskDetailProvider,
+		AuditLog:     auditReader,
 		// Production CSRF entropy + 30s SSE heartbeat are the
 		// zero-value defaults inside web.NewServer; explicitly
 		// listing them here would just add noise.
