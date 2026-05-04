@@ -69,6 +69,12 @@ type Options struct {
 	// AuditLog wires the audit log reader for the task detail page.
 	// Nil falls back to a noop reader that returns empty entries.
 	AuditLog AuditReader
+
+	// TaskOps wires the write-side store for task operation endpoints
+	// (dispatch / promote / reopen / add / update-priority / delete).
+	// Nil disables all /api/tasks/* mutating routes so existing tests
+	// that do not care about task ops keep passing without wiring a store.
+	TaskOps TaskOpsStore
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -81,6 +87,7 @@ type Server struct {
 	dashboard  DashboardProvider
 	taskDetail TaskDetailProvider
 	auditLog   AuditReader
+	taskOps    TaskOpsStore
 	opts       Options
 }
 
@@ -119,6 +126,7 @@ func NewServer(opts Options) (*Server, error) {
 		dashboard:  dashboard,
 		taskDetail: taskDetail,
 		auditLog:   auditLog,
+		taskOps:    opts.TaskOps,
 		opts:       opts,
 	}, nil
 }
@@ -146,6 +154,17 @@ func (s *Server) Routes() http.Handler {
 
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
+	}
+
+	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
+	// has been wired so servers without a store never expose /api/tasks/*.
+	if s.taskOps != nil {
+		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(s.taskOps))
+		mux.Handle("POST /api/tasks/{id}/promote", newPromoteTaskHandler(s.taskOps))
+		mux.Handle("POST /api/tasks/{id}/reopen", newReopenTaskHandler(s.taskOps))
+		mux.Handle("POST /api/tasks", newAddTaskHandler(s.taskOps))
+		mux.Handle("PATCH /api/tasks/{id}/priority", newUpdatePriorityHandler(s.taskOps))
+		mux.Handle("DELETE /api/tasks/{id}", newDeleteTaskHandler(s.taskOps))
 	}
 
 	var h http.Handler = mux
