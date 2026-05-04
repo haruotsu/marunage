@@ -269,3 +269,56 @@ table.breakdown td:not(:first-child),
 table.sources td:not(:first-child) {
   font-variant-numeric: tabular-nums;
 }
+
+/* -------------------------------------------------------------------------
+   Buttons (used by dashboard.html action columns and review.html promote)
+   ------------------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-sm {
+  min-height: 1.6rem;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.8rem;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-dispatch {
+  background: var(--badge-warn-bg);
+  color: var(--badge-warn-fg);
+  border-color: var(--badge-warn-fg);
+}
+.btn-promote {
+  background: var(--badge-ok-bg);
+  color: var(--badge-ok-fg);
+  border-color: var(--badge-ok-fg);
+}
+.btn-danger {
+  background: var(--badge-bad-bg);
+  color: var(--badge-bad-fg);
+  border-color: var(--badge-bad-fg);
+}
+
+/* Reason cell in the review table: cap width and allow wrapping */
+.reason-cell {
+  max-width: 28rem;
+  word-break: break-word;
+}

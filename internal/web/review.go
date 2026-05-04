@@ -2,8 +2,10 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/haruotsu/marunage/internal/store"
@@ -117,12 +119,53 @@ func newReviewPageData(snap ReviewSnapshot) reviewPageData {
 
 const reviewLoadFailedMessage = "Review data unavailable. See daemon.log for details."
 
+// parseSinceDays parses a "?since=" query parameter value (e.g. "7d", "30d",
+// "24h") and returns the earliest time that falls within the window relative
+// to now. Returns zero time when s is empty (no filter). Supports "Nd" (days)
+// and any value accepted by time.ParseDuration.
+func parseSinceDays(s string, now time.Time) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if strings.HasSuffix(s, "d") {
+		n := 0
+		if _, err := fmt.Sscanf(strings.TrimSuffix(s, "d"), "%d", &n); err != nil {
+			return time.Time{}, fmt.Errorf("invalid day count %q", s)
+		}
+		if n <= 0 {
+			return time.Time{}, fmt.Errorf("day count must be positive, got %q", s)
+		}
+		return now.Add(-time.Duration(n) * 24 * time.Hour), nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if d <= 0 {
+		return time.Time{}, fmt.Errorf("duration must be positive, got %q", s)
+	}
+	return now.Add(-d), nil
+}
+
+// buildReviewFilter builds a ListFilter from request query parameters.
+// Supported: ?since=7d (period), no other params yet.
+func buildReviewFilter(r *http.Request) store.ListFilter {
+	f := store.ListFilter{Statuses: []string{store.StatusSkipped}}
+	if since := r.URL.Query().Get("since"); since != "" {
+		t, err := parseSinceDays(since, time.Now())
+		if err == nil && !t.IsZero() {
+			f.CreatedAfter = t
+		}
+	}
+	return f
+}
+
 // newReviewHandler returns the GET /review handler.
 func newReviewHandler(renderer Renderer, provider ReviewProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		snap, err := provider.ReviewSnapshot(r.Context(), store.ListFilter{
-			Statuses: []string{store.StatusSkipped},
-		})
+		w.Header().Set("Cache-Control", "no-store")
+		snap, err := provider.ReviewSnapshot(r.Context(), buildReviewFilter(r))
 		page := reviewPageData{}
 		if err != nil {
 			http.Error(w, reviewLoadFailedMessage, http.StatusInternalServerError)
@@ -137,12 +180,11 @@ func newReviewHandler(renderer Renderer, provider ReviewProvider) http.Handler {
 }
 
 // newReviewAPIHandler returns GET /api/review/skipped: a JSON array of
-// skipped tasks, suitable for scripting or HTMX partial updates.
+// skipped tasks. Supports the same ?since= query parameter as GET /review.
 func newReviewAPIHandler(provider ReviewProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		snap, err := provider.ReviewSnapshot(r.Context(), store.ListFilter{
-			Statuses: []string{store.StatusSkipped},
-		})
+		w.Header().Set("Cache-Control", "no-store")
+		snap, err := provider.ReviewSnapshot(r.Context(), buildReviewFilter(r))
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "review data unavailable")
 			return

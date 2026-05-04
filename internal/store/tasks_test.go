@@ -1819,9 +1819,13 @@ func TestTaskRepoMarkSkippedWithReasonOverwritesExistingReason(t *testing.T) {
 	}
 }
 
-// PR-90: List with CreatedAfter filter returns only rows created on or after
-// the given time. This is the backbone of `marunage review --since Xd` and
-// the Web UI /review page.
+// PR-90: List with CreatedAfter filter returns only rows created strictly
+// after the given time. This is the backbone of `marunage review --since Xd`
+// and the Web UI /review page.
+//
+// The operator is `>` (strictly greater), so a row whose created_at equals
+// CreatedAfter is excluded. Tests below verify both the strict behaviour and
+// the zero-value no-op.
 func TestTaskRepoListCreatedAfterFiltersRows(t *testing.T) {
 	db := openTempDB(t)
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -1845,7 +1849,7 @@ func TestTaskRepoListCreatedAfterFiltersRows(t *testing.T) {
 		t.Fatalf("Insert new: %v", err)
 	}
 
-	// CreatedAfter == base+12h should return mid and new (created >= threshold).
+	// CreatedAfter == base+12h should return mid and new (strictly after threshold).
 	threshold := base.Add(12 * time.Hour)
 	got, err := repo.List(ctx, store.ListFilter{
 		Statuses:     []string{store.StatusSkipped},
@@ -1856,6 +1860,40 @@ func TestTaskRepoListCreatedAfterFiltersRows(t *testing.T) {
 	}
 	if got := titles(got); !equalStrings(got, []string{"mid", "new"}) {
 		t.Errorf("CreatedAfter: got %v; want [mid new]", got)
+	}
+}
+
+// PR-90: CreatedAfter uses strict greater-than (>), so a row whose created_at
+// equals the threshold is excluded. This prevents off-by-one confusion with
+// callers that compute the boundary as `now - duration`.
+func TestTaskRepoListCreatedAfterExcludesExactBoundary(t *testing.T) {
+	db := openTempDB(t)
+	boundary := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	clock := boundary
+	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return clock }))
+	ctx := context.Background()
+
+	// Insert exactly at boundary.
+	_, err := repo.Insert(ctx, store.Task{Source: "manual", Title: "boundary", Status: store.StatusSkipped})
+	if err != nil {
+		t.Fatalf("Insert boundary: %v", err)
+	}
+	// Insert strictly after boundary.
+	clock = boundary.Add(time.Millisecond)
+	_, err = repo.Insert(ctx, store.Task{Source: "manual", Title: "after", Status: store.StatusSkipped})
+	if err != nil {
+		t.Fatalf("Insert after: %v", err)
+	}
+
+	got, err := repo.List(ctx, store.ListFilter{
+		Statuses:     []string{store.StatusSkipped},
+		CreatedAfter: boundary,
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got := titles(got); !equalStrings(got, []string{"after"}) {
+		t.Errorf("exact boundary must be excluded (>): got %v; want [after]", got)
 	}
 }
 
