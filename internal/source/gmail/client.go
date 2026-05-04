@@ -60,9 +60,11 @@ type Message struct {
 	// need a client surface change.
 	From string
 
-	// Date is the upstream "internalDate" timestamp. Optional, used
-	// for ordering hints when the plugin walks the result in newest-
-	// first order. Zero value is fine.
+	// Date is the upstream "internalDate" timestamp. Reserved for
+	// PR-71's ordering / staleness logic; the PR-80 plugin itself does
+	// not consume it (the Client's slice order is the authoritative
+	// "newest first" signal). Carrying the field on the Message struct
+	// today means PR-71 does not need a Client interface revision.
 	Date time.Time
 }
 

@@ -35,6 +35,18 @@
 //     it. The interface deliberately accepts only an externalID so a
 //     misuse (e.g. a daemon iterating "everything") is loud at the call
 //     site rather than buried in this package.
+//
+//   - PII surface (downstream storage / log redaction concern):
+//     Task.Body carries Gmail's per-message "snippet" (first ~200 char
+//     preview, plain text); Task.Title carries the Subject; and
+//     RawMetadata may carry "from" (sender address) and "labels" (the
+//     user's full label set, which can include sensitive routing tags
+//     like HR/Salary or Legal/Privileged). These flow into tasks.body
+//     / tasks.raw_metadata and through every consumer that reads them.
+//     The plugin does not redact — that is the storage and audit
+//     layer's responsibility — but enumerates the surfaces here so the
+//     downstream redaction policy review (and OpenClaw §11.1 PII
+//     check) has a single source of truth.
 package gmail
 
 import (
@@ -304,8 +316,12 @@ func (p *Plugin) Complete(ctx context.Context, externalID string) error {
 
 // AuthStatus reports the current credential health. A nil client is
 // reported as AuthNotConfigured so a fresh install can answer
-// `marunage auth-status` without panicking.
+// `marunage auth-status` without panicking. A cancelled ctx fails up-
+// front so the credential probe never reaches the network.
 func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if p.client == nil {
 		return source.AuthNotConfigured, nil
 	}
@@ -326,8 +342,12 @@ func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 
 // Setup runs the client's authentication flow. Returns ErrClientNotSet
 // when the plugin was constructed without WithClient; otherwise
-// forwards opts so the client can honour NonInteractive.
+// forwards opts so the client can honour NonInteractive. A cancelled
+// ctx fails up-front so the auth dance is never started.
 func (p *Plugin) Setup(ctx context.Context, opts source.SetupOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if p.client == nil {
 		return ErrClientNotSet
 	}
@@ -358,18 +378,26 @@ func toTask(m Message, completeLabel string) source.Task {
 	// rather than stored as zero values. Web UI / audit consumers
 	// otherwise have to filter "" everywhere, and the from key in
 	// particular is sender PII that should not be surfaced when there
-	// is nothing to surface.
-	meta := map[string]any{}
+	// is nothing to surface. When every optional field is empty the
+	// map stays nil so a downstream `len(RawMetadata) == 0` test gives
+	// the same answer as `RawMetadata == nil`.
+	var meta map[string]any
+	put := func(k string, v any) {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta[k] = v
+	}
 	if m.ThreadID != "" {
-		meta["thread_id"] = m.ThreadID
+		put("thread_id", m.ThreadID)
 	}
 	if len(m.Labels) > 0 {
 		// Defensive copy so a downstream mutation of RawMetadata cannot
 		// reach back into the caller's Message slice.
-		meta["labels"] = append([]string(nil), m.Labels...)
+		put("labels", append([]string(nil), m.Labels...))
 	}
 	if m.From != "" {
-		meta["from"] = m.From
+		put("from", m.From)
 	}
 	return source.Task{
 		Source:      pluginName,
