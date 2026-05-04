@@ -282,6 +282,15 @@ func (c Config) Validate() error {
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
 	}
+	if c.Journal.Enabled {
+		d, err := time.ParseDuration(c.Journal.Interval)
+		if err != nil {
+			return fmt.Errorf("journal.interval: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("journal.interval: must be > 0 (got %v)", d)
+		}
+	}
 	rt := c.Discovery.Slack.ReactionTrigger
 	if rt.Enabled && len(rt.Reactions) == 0 {
 		return fmt.Errorf("discovery.slack.reaction_trigger.reactions: must be non-empty when enabled = true")

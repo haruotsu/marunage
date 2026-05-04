@@ -170,6 +170,11 @@ func TestValidate(t *testing.T) {
 			wantErr: "web.port",
 		},
 		{
+			name:    "journal.interval must parse as duration",
+			mutate:  func(c *Config) { c.Journal.Interval = "never" },
+			wantErr: "journal.interval",
+		},
+		{
 			name: "reaction_trigger enabled with empty reactions",
 			mutate: func(c *Config) {
 				c.Discovery.Slack.ReactionTrigger.Enabled = true
