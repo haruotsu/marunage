@@ -54,8 +54,8 @@ func TestCmuxDriverScrapeIssuesGotoThenEval(t *testing.T) {
 	emptyJSON, _ := json.Marshal([]map[string]string{})
 	runner := &scriptedRunner{
 		steps: []scriptedStep{
-			{stdout: ""},                  // goto
-			{stdout: string(emptyJSON)},   // eval
+			{stdout: ""},                // goto
+			{stdout: string(emptyJSON)}, // eval
 		},
 	}
 	d := NewCmuxDriver(WithCmuxRunner(runner))
@@ -92,8 +92,8 @@ func TestCmuxDriverScrapeParsesEvalJSON(t *testing.T) {
 		{"id": "msg-2", "title": "World"},
 	})
 	runner := &scriptedRunner{steps: []scriptedStep{
-		{stdout: ""},                // goto
-		{stdout: string(payload)},   // eval
+		{stdout: ""},              // goto
+		{stdout: string(payload)}, // eval
 	}}
 	d := NewCmuxDriver(WithCmuxRunner(runner))
 	got, err := d.Scrape(context.Background(), ScrapeTarget{
@@ -146,8 +146,8 @@ func TestCmuxDriverScrapeEvalErrorPropagates(t *testing.T) {
 
 	wantErr := errors.New("eval threw")
 	runner := &scriptedRunner{steps: []scriptedStep{
-		{stdout: ""},                       // goto
-		{stderr: "x", err: wantErr},        // eval
+		{stdout: ""},                // goto
+		{stderr: "x", err: wantErr}, // eval
 	}}
 	d := NewCmuxDriver(WithCmuxRunner(runner))
 	_, err := d.Scrape(context.Background(), ScrapeTarget{
