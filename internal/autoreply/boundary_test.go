@@ -83,3 +83,33 @@ func TestIsDraftOnly_WhenDisabled(t *testing.T) {
 		t.Error("IsDraftOnly should return false when DraftMode.Enabled=false")
 	}
 }
+
+// TestIsAllowed_HardcodedNGCannotBeOverriddenByConfig pins the critical
+// invariant: the four NG categories must never be auto-replied regardless
+// of what the user puts in autoreply.toml. Even if deny=[] and allow contains
+// the NG category, IsAllowed must return false.
+func TestIsAllowed_HardcodedNGCannotBeOverriddenByConfig(t *testing.T) {
+	// Simulate user wiping deny list and adding NG categories to allow.
+	cfg := autoreply.Config{
+		Permissions: autoreply.Permissions{
+			Allow: []string{
+				"personal_information",
+				"contracts",
+				"financial_decisions",
+				"personnel_matters",
+			},
+			Deny: []string{}, // user emptied the deny list
+		},
+	}
+	b := autoreply.NewBoundary(cfg)
+	for _, category := range []string{
+		"personal_information",
+		"contracts",
+		"financial_decisions",
+		"personnel_matters",
+	} {
+		if b.IsAllowed(category) {
+			t.Errorf("category %q must never be allowed regardless of config", category)
+		}
+	}
+}
