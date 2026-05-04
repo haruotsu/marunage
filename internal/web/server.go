@@ -75,6 +75,11 @@ type Options struct {
 	// Nil disables all /api/tasks/* mutating routes so existing tests
 	// that do not care about task ops keep passing without wiring a store.
 	TaskOps TaskOpsStore
+
+	// Review wires the read-side provider for the /review page.
+	// Nil disables GET /review and GET /api/review/skipped so servers
+	// that do not care about review keep passing without wiring a store.
+	Review ReviewProvider
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -88,6 +93,7 @@ type Server struct {
 	taskDetail TaskDetailProvider
 	auditLog   AuditReader
 	taskOps    TaskOpsStore
+	review     ReviewProvider
 	opts       Options
 }
 
@@ -127,6 +133,7 @@ func NewServer(opts Options) (*Server, error) {
 		taskDetail: taskDetail,
 		auditLog:   auditLog,
 		taskOps:    opts.TaskOps,
+		review:     opts.Review,
 		opts:       opts,
 	}, nil
 }
@@ -154,6 +161,12 @@ func (s *Server) Routes() http.Handler {
 
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
+	}
+
+	// Review endpoints registered only when a ReviewProvider is wired.
+	if s.review != nil {
+		mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
+		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
 	}
 
 	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
