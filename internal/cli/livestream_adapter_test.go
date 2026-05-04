@@ -20,6 +20,7 @@ func (f *fakeTaskDetailStore) TaskDetail(_ context.Context, _ int64) (store.Task
 }
 
 var _ web.TaskDetailStore = (*fakeTaskDetailStore)(nil)
+var _ web.LiveStreamProvider = (*sqlLiveStreamProvider)(nil)
 
 // TestSQLLiveStreamProvider_WorkspaceIDForTask pins the three-path contract:
 // task with ws set → return ws, task with empty ws → ErrNotFound, store error → propagate.
@@ -47,13 +48,16 @@ func TestSQLLiveStreamProvider_WorkspaceIDForTask(t *testing.T) {
 		}
 	})
 
-	t.Run("store error propagates", func(t *testing.T) {
+	t.Run("store error propagates verbatim", func(t *testing.T) {
+		// Use a sentinel distinct from ErrNotFound to verify the error is not
+		// transformed by the empty-WS branch.
+		sentinel := errors.New("db connection lost")
 		p := &sqlLiveStreamProvider{
-			store: &fakeTaskDetailStore{err: store.ErrNotFound},
+			store: &fakeTaskDetailStore{err: sentinel},
 		}
 		_, err := p.WorkspaceIDForTask(context.Background(), 999)
-		if !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("err = %v; want store.ErrNotFound", err)
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("err = %v; want %v", err, sentinel)
 		}
 	})
 }
