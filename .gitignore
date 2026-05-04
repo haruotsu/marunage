@@ -42,10 +42,8 @@ Thumbs.db
 # review-fix-loop の作業ディレクトリ（中間レビュー / サマリー / 最終レポート）
 .marunage-review/
 
-# 設計ドキュメント (ローカル管理)
-docs/pr_split_plan.md
-docs/requirement.md
-docs/*.review.md
+# 設計ドキュメント (ローカル管理 - git管理外)
+docs/
 
 CLAUDE.local.md
 .marunage-review/
