@@ -4,6 +4,17 @@
 // (List / Since / Setup / AuthStatus, with optional Adder / Completer /
 // Deleter for the bidirectional path).
 //
+// Non-goals (per docs/requirement.md §3.7 and §5.12):
+//
+//   - Notion is a Source — never an interactive Channel. The plugin does
+//     NOT consume webhooks, post comments, or otherwise turn Notion into
+//     a two-way conversation surface.
+//   - Notion is NOT the SSOT (§3.8). Markdown remains the SSOT;
+//     Complete and Delete archive the Notion page so the user-visible
+//     state stays consistent, but the queue's authoritative state lives
+//     elsewhere. Adding a Notion-driven reconciliation that overrides
+//     queue state is explicitly out of scope.
+//
 // The package is split into:
 //
 //   - client.go  — Client interface + Page / QueryOptions value types and a
@@ -27,7 +38,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -91,22 +101,17 @@ type Page struct {
 	DatabaseID     string
 }
 
-// QueryOptions carries the filter / pagination knobs Plugin.List and
-// Plugin.Since pass into the Client. Today only OnOrAfter is honoured;
-// PageSize / StartCursor are reserved for a follow-up that paginates
-// large databases without holding the whole result in memory.
+// QueryOptions carries the filter knobs Plugin.List and Plugin.Since pass
+// into the Client. The HTTP client always asks for Notion's max page size
+// (100) and walks cursors internally, so callers do not need pagination
+// knobs here today; if a future PR needs streaming or partial reads, it
+// can extend this struct.
 type QueryOptions struct {
 	// OnOrAfter, when non-empty, restricts the query to pages whose
 	// last_edited_time is >= the supplied ISO-8601 timestamp. The Notion
 	// API filter is `{"timestamp":"last_edited_time","last_edited_time":
 	// {"on_or_after":"..."}}`. Empty means "no filter — return all pages".
 	OnOrAfter string
-
-	// PageSize / StartCursor are reserved for a follow-up that paginates;
-	// today the http client always asks for Notion's max (100) and walks
-	// cursors internally.
-	PageSize    int
-	StartCursor string
 }
 
 // Client is the seam between Plugin logic and the Notion HTTP API. The
@@ -136,72 +141,3 @@ type Client interface {
 	UpdatePage(ctx context.Context, pageID string, archived bool) error
 }
 
-// fakeClient is the in-memory Client every test in this package uses.
-// Lives in the production file (rather than a _test.go) so adapter / builtin
-// tests in sibling files can build it without re-declaring the type. The
-// behaviour mirrors the real Notion API closely enough that swapping
-// fakeClient for httpClient in an integration test is a one-line change.
-type fakeClient struct {
-	pages       []Page
-	queryErr    error
-	usersMeErr  error
-	createPage  Page // returned by CreatePage when no createErr set
-	createErr   error
-	updateErr   error
-	updateCalls []updateCall
-	createCalls []createCall
-}
-
-type updateCall struct {
-	pageID   string
-	archived bool
-}
-
-type createCall struct {
-	databaseID string
-	title      string
-}
-
-func (c *fakeClient) QueryDatabase(_ context.Context, _ string, opts QueryOptions) ([]Page, error) {
-	if c.queryErr != nil {
-		return nil, c.queryErr
-	}
-	if opts.OnOrAfter == "" {
-		out := make([]Page, len(c.pages))
-		copy(out, c.pages)
-		return out, nil
-	}
-	var out []Page
-	for _, p := range c.pages {
-		// Notion's filter is "on or after" — inclusive lower bound. Lex
-		// compare works because LastEditedTime is fixed-width ISO-8601
-		// with millisecond precision; this is the same property Plugin's
-		// checkpoint comparison relies on.
-		if strings.Compare(p.LastEditedTime, opts.OnOrAfter) >= 0 {
-			out = append(out, p)
-		}
-	}
-	return out, nil
-}
-
-func (c *fakeClient) UsersMe(_ context.Context) error {
-	return c.usersMeErr
-}
-
-func (c *fakeClient) CreatePage(_ context.Context, databaseID, title string) (Page, error) {
-	c.createCalls = append(c.createCalls, createCall{databaseID: databaseID, title: title})
-	if c.createErr != nil {
-		return Page{}, c.createErr
-	}
-	if c.createPage.ID != "" {
-		return c.createPage, nil
-	}
-	// Default response: synthesise a deterministic page so tests that do
-	// not pre-load createPage can still assert on a non-empty ExternalID.
-	return Page{ID: "fake-" + title, Title: title, DatabaseID: databaseID}, nil
-}
-
-func (c *fakeClient) UpdatePage(_ context.Context, pageID string, archived bool) error {
-	c.updateCalls = append(c.updateCalls, updateCall{pageID: pageID, archived: archived})
-	return c.updateErr
-}

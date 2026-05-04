@@ -212,6 +212,34 @@ func TestSetupDefaultProviderEmptyEnvIsTokenRequired(t *testing.T) {
 	}
 }
 
+// TestSetupRespectsWithSecretName — overriding the secret key must persist
+// the token under the new name (and AuthStatus must read from there too).
+// The default test elsewhere covers "notion:token"; this pins the override
+// path so a deployment using a custom secrets layout does not silently
+// fall back to the default key.
+func TestSetupRespectsWithSecretName(t *testing.T) {
+	t.Parallel()
+
+	s := newMemSecrets()
+	provider := func(_ context.Context, _ SetupOpts) (string, error) { return "tok", nil }
+	p := New(
+		WithClient(&fakeClient{}),
+		WithDatabaseID("db"),
+		WithSecrets(s),
+		WithSecretName("marunage/notion"),
+		WithTokenProvider(provider),
+	)
+	if err := p.Setup(context.Background(), SetupOpts{NonInteractive: true}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if v, _, _ := s.Get("marunage/notion"); v != "tok" {
+		t.Errorf("token at custom key = %q", v)
+	}
+	if _, ok, _ := s.Get(defaultSecretName); ok {
+		t.Errorf("token also written to default key — leak across keys")
+	}
+}
+
 // TestSetupPropagatesProviderError — a TokenProvider that errors (e.g. a
 // terminal prompt cancelled) must surface the error verbatim so the CLI
 // can distinguish "user aborted" from "wrote token successfully".

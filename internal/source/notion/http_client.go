@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -85,19 +86,17 @@ func NewHTTPClient(httpClient *http.Client, baseURL, token string) *HTTPClient {
 // is a convenience the source.Plugin contract pays for at construction
 // time (a future streaming variant could be added without breaking it).
 func (c *HTTPClient) QueryDatabase(ctx context.Context, databaseID string, opts QueryOptions) ([]Page, error) {
-	pageSize := opts.PageSize
-	if pageSize <= 0 {
-		pageSize = defaultPageSize
-	}
-	cursor := opts.StartCursor
-	var out []Page
+	var (
+		cursor string
+		out    []Page
+	)
 	for {
 		// Honour cancellation between cursor pages so a daemon stop does
 		// not have to wait for the current request's response timeout.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		body := map[string]any{"page_size": pageSize}
+		body := map[string]any{"page_size": defaultPageSize}
 		if cursor != "" {
 			body["start_cursor"] = cursor
 		}
@@ -110,7 +109,7 @@ func (c *HTTPClient) QueryDatabase(ctx context.Context, databaseID string, opts 
 			}
 		}
 		var resp queryDatabaseResponse
-		path := "/v1/databases/" + databaseID + "/query"
+		path := "/v1/databases/" + url.PathEscape(databaseID) + "/query"
 		if err := c.do(ctx, http.MethodPost, path, body, &resp); err != nil {
 			return nil, err
 		}
@@ -158,7 +157,7 @@ func (c *HTTPClient) CreatePage(ctx context.Context, databaseID, title string) (
 // see Plugin.Delete for the rationale.
 func (c *HTTPClient) UpdatePage(ctx context.Context, pageID string, archived bool) error {
 	body := map[string]any{"archived": archived}
-	return c.do(ctx, http.MethodPatch, "/v1/pages/"+pageID, body, nil)
+	return c.do(ctx, http.MethodPatch, "/v1/pages/"+url.PathEscape(pageID), body, nil)
 }
 
 // do issues one Notion-API request, decoding the response into `out` (when
