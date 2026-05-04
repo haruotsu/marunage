@@ -69,6 +69,8 @@ func (f *fakeTasks) Delete(ctx context.Context, id int64) error {
 // Declare them here for test access (they will be defined in task_ops.go).
 
 // doOpsRequest sends a request to the given handler with CSRF credentials.
+// It sets the "id" path value from the path so handlers that use r.PathValue("id")
+// receive the correct value without going through a real mux.
 func doOpsRequest(t *testing.T, h http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const token = "fixed-test-token"
@@ -81,9 +83,29 @@ func doOpsRequest(t *testing.T, h http.Handler, method, path string, body []byte
 	}
 	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: token})
 	req.Header.Set(CSRFHeaderName, token)
+	// Inject path value so handlers using r.PathValue("id") work without a mux.
+	// Extract the segment after "tasks/" and before the next "/" (if any).
+	if id := extractIDFromTestPath(path); id != "" {
+		req.SetPathValue("id", id)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// extractIDFromTestPath extracts the id segment from test paths like
+// /api/tasks/42/dispatch or /api/tasks/42.
+func extractIDFromTestPath(path string) string {
+	const prefix = "/api/tasks/"
+	rest := strings.TrimPrefix(path, prefix)
+	if rest == path {
+		return ""
+	}
+	// Take only the first segment (before any "/")
+	if i := strings.Index(rest, "/"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // doOpsRequestNoCSRF sends a request without CSRF credentials.
