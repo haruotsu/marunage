@@ -1,0 +1,10 @@
+[plugin]
+name = "browser"
+version = "0.1.0"
+description = "Browser DOM scrape source (PR-200). Reads configured sites via a pluggable BrowserDriver and exposes matched items through the Discovery plugin contract."
+sync_mode = "read-only"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+]
