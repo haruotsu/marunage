@@ -40,3 +40,10 @@ jobs:
         run: make test
       - name: build
         run: make build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: build slackhog image
+        run: docker compose build slackhog
