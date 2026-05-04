@@ -655,6 +655,43 @@ func (r *TaskRepo) SetReflection(ctx context.Context, id int64, text string) err
 	return fmt.Errorf("%w: cannot set reflection from %q", ErrInvalidTransition, current)
 }
 
+// MarkSkippedWithReason atomically flips a row to skipped and writes
+// the triage rationale into judgment_reason. PR-72's triage hook calls
+// this when the embedded marunage-triage skill judges that the row is
+// not addressed to us / is informational only — recording the reason
+// in one UPDATE keeps `marunage review` from observing a row in
+// skipped with an empty judgment_reason (which would defeat the audit
+// trail the OODA Orient phase is supposed to leave behind).
+//
+// reason is required (ErrReasonRequired on empty) for the same reason
+// MarkFailedWithReason / EscalateToHuman insist on it: the post-mortem
+// surface has nothing to display otherwise. Missing id surfaces
+// ErrNotFound rather than a silent no-op so a triage hook bug fails
+// loud at the call site. There is intentionally no source-state guard:
+// the realistic call site is "row is still pending and Discovery's
+// triage just rejected it", but TransitionStatus enforces the broader
+// matrix and this helper mirrors MarkFailedWithReason as the unguarded
+// escape hatch.
+func (r *TaskRepo) MarkSkippedWithReason(ctx context.Context, id int64, reason string) error {
+	if reason == "" {
+		return ErrReasonRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET status = ?, judgment_reason = ? WHERE id = ?",
+		StatusSkipped, reason, id)
+	if err != nil {
+		return fmt.Errorf("mark skipped with reason: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark skipped with reason rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // JudgmentReasonSeparator is the canonical join token between the prior
 // judgment_reason and any newly appended note.
 const JudgmentReasonSeparator = "; "

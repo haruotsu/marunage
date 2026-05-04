@@ -1677,3 +1677,91 @@ func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
 		})
 	}
 }
+
+// PR-72: WithTriageSkill plumbs the marunage-triage SKILL.md content
+// into BuildPrompt so the dispatched Send carries the OODA Orient
+// section the embedded skill defines.
+func TestRunIncludesTriageSkillInSendPayload(t *testing.T) {
+	const triageSkillBody = "TRIAGE-SKILL-OODA-ORIENT"
+	f := newDispatchFixture(t, dispatch.WithTriageSkill(triageSkillBody))
+
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "triage me", Body: "b", CWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	}
+	payload := f.cmux.sendCalls[0].Text
+	if !strings.Contains(payload, triageSkillBody) {
+		t.Errorf("Send payload missing triage skill body %q; got:\n%s", triageSkillBody, payload)
+	}
+	// Sanity check the row actually transitioned out of pending so we
+	// know the wiring did not break the rest of the dispatch path.
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q", row.Status, store.StatusRunning)
+	}
+}
+
+// PR-72 back-compat: omitting WithTriageSkill leaves the Send payload
+// identical to PR-42's wire format (no triage section, no doubled
+// separators). Two assertions back this up: (1) the same prompt is
+// produced when WithTriageSkill is configured with empty body, and
+// (2) the prompt produced when WithTriageSkill carries a unique
+// fixture is strictly LONGER than the no-triage prompt — pinning
+// "the section actually appears, and only when wired" without
+// relying on a generic substring like "TRIAGE" that an unrelated
+// future addition could trip.
+func TestRunOmitsTriageSectionWhenSkillNotConfigured(t *testing.T) {
+	const triageMarker = "OODA-ORIENT-FIXTURE-MARKER-PR72"
+
+	withoutF := newDispatchFixture(t)
+	if _, err := withoutF.repo.Insert(withoutF.ctx, store.Task{
+		Source: "slack", Title: "no triage", Body: "b", CWD: "/tmp",
+	}); err != nil {
+		t.Fatalf("Insert (without): %v", err)
+	}
+	if err := withoutF.disp.Run(withoutF.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run (without): %v", err)
+	}
+	if len(withoutF.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls (without) = %d; want 1", len(withoutF.cmux.sendCalls))
+	}
+	without := withoutF.cmux.sendCalls[0].Text
+	if strings.Contains(without, triageMarker) {
+		t.Errorf("Send payload unexpectedly contains triage marker without WithTriageSkill:\n%s", without)
+	}
+	if strings.Contains(without, "\n\n\n\n") {
+		t.Errorf("Send payload has doubled blank-line separator:\n%s", without)
+	}
+
+	withF := newDispatchFixture(t, dispatch.WithTriageSkill(triageMarker))
+	if _, err := withF.repo.Insert(withF.ctx, store.Task{
+		Source: "slack", Title: "no triage", Body: "b", CWD: "/tmp",
+	}); err != nil {
+		t.Fatalf("Insert (with): %v", err)
+	}
+	if err := withF.disp.Run(withF.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run (with): %v", err)
+	}
+	if len(withF.cmux.sendCalls) != 1 {
+		t.Fatalf("Send calls (with) = %d; want 1", len(withF.cmux.sendCalls))
+	}
+	with := withF.cmux.sendCalls[0].Text
+	if !strings.Contains(with, triageMarker) {
+		t.Errorf("Send payload should contain triage marker when WithTriageSkill is set:\n%s", with)
+	}
+	if len(with) <= len(without) {
+		t.Errorf("triage payload (len=%d) should be strictly longer than no-triage payload (len=%d)",
+			len(with), len(without))
+	}
+}
