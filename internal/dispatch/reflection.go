@@ -49,11 +49,11 @@ type Reflector struct {
 
 // ReflectionStore is the narrow read/write surface the Reflector needs
 // against the tasks table. Production wires *store.TaskRepo; tests inject
-// a fake. Get is here so the hook can fetch the latest WS reference (the
-// completion watcher passes the post-done row, but the Reflector defends
-// against re-fetching when the caller wires it through a different path).
+// a fake. The Reflector takes the post-done store.Task as input from the
+// completion watcher and never re-fetches, so SetReflection is the only
+// method here — adding a Get just for "future flexibility" is YAGNI and
+// only widens what fake implementations have to satisfy.
 type ReflectionStore interface {
-	Get(ctx context.Context, id int64) (store.Task, error)
 	SetReflection(ctx context.Context, id int64, text string) error
 }
 
