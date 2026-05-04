@@ -108,15 +108,6 @@ func extractIDFromTestPath(path string) string {
 	return rest
 }
 
-// doOpsRequestNoCSRF sends a request without CSRF credentials.
-func doOpsRequestNoCSRF(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(method, path, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
-}
-
 // TestTaskOpsHandler_Dispatch_OK: dispatch pending task -> 200 JSON {"status":"ok"}
 func TestTaskOpsHandler_Dispatch_OK(t *testing.T) {
 	store := &fakeTasks{}
