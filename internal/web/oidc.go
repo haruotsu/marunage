@@ -151,7 +151,7 @@ func oidcExchangeCode(cfg config.OIDCConfig, code string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var body map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {

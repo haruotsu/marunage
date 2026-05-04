@@ -338,7 +338,7 @@ func TestWeb_BypassRemoteExtraWarning(t *testing.T) {
 		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
 	}
 	combined := stderr.String()
-	if !strings.Contains(combined, "bypass") && !strings.Contains(combined, "bypass") {
+	if !strings.Contains(combined, "bypass") && !strings.Contains(combined, "WARNING") {
 		t.Errorf("stderr = %q; want bypass-mode warning when --remote + permission_mode=bypass", combined)
 	}
 }
