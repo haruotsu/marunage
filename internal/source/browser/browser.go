@@ -104,6 +104,13 @@ func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
 				RawMetadata: map[string]any{
 					"site":    site.Name,
 					"dom_key": key,
+					// origin tags every browser-sourced task as untrusted
+					// external input. Downstream LLM / Memory layers MUST
+					// branch on this so attacker-controlled DOM text
+					// (Title / Body) cannot be confused with user-authored
+					// task data — the time-delayed prompt-injection
+					// surface OpenClaw §11.1-8 calls out.
+					"origin": "external/browser/" + site.Name,
 				},
 			}
 			out = append(out, task)
