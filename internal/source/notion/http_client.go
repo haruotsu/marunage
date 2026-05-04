@@ -9,7 +9,22 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// defaultHTTPTimeout caps every Notion request so a hung upstream cannot
+// pin a daemon's goroutine forever. 30s is conservative for Notion's
+// documented latency (median sub-second, p95 < 5s) and matches the budget
+// the caller would otherwise have to wrap on their own. ctx still wins
+// when shorter — this is only the safety net for callers that pass
+// context.Background().
+const defaultHTTPTimeout = 30 * time.Second
+
+// maxResponseBytes caps every JSON body the client reads from upstream.
+// Notion's documented response size is far below this; the bound exists to
+// stop a hostile / corrupted upstream from forcing us to allocate
+// unbounded memory while parsing an error payload.
+const maxResponseBytes = 1 << 20 // 1 MiB
 
 // notionAPIVersion is the Notion-Version header value the HTTP client sends
 // on every request. The Notion API requires the header on every call; the
@@ -46,12 +61,14 @@ type HTTPClient struct {
 }
 
 // NewHTTPClient constructs an HTTPClient bound to baseURL with the supplied
-// bearer token. Production callers in CLI glue (a future PR) typically pass
-// http.DefaultClient and the production baseURL; tests inject an
-// httptest.Server and its Client / URL.
+// bearer token. When httpClient is nil we synthesise a fresh *http.Client
+// with defaultHTTPTimeout — never http.DefaultClient, because that has
+// Timeout=0 and a hung upstream would pin a daemon's goroutine forever.
+// Tests pass httptest.Server.Client() so the timeout is irrelevant for
+// fast in-process probes.
 func NewHTTPClient(httpClient *http.Client, baseURL, token string) *HTTPClient {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -75,6 +92,11 @@ func (c *HTTPClient) QueryDatabase(ctx context.Context, databaseID string, opts 
 	cursor := opts.StartCursor
 	var out []Page
 	for {
+		// Honour cancellation between cursor pages so a daemon stop does
+		// not have to wait for the current request's response timeout.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		body := map[string]any{"page_size": pageSize}
 		if cursor != "" {
 			body["start_cursor"] = cursor
@@ -165,16 +187,17 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body any, out 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// Cap every body read at maxResponseBytes so a hostile / corrupted
+	// upstream cannot force unbounded allocation while we parse JSON.
+	limited := io.LimitReader(resp.Body, maxResponseBytes)
 	if resp.StatusCode >= 400 {
-		return decodeErrorResponse(resp)
+		return decodeErrorResponse(resp.StatusCode, resp.Status, resp.Header, limited)
 	}
 	if out == nil {
-		// Drain the body so the connection can be reused even if the
-		// caller did not ask for the payload.
-		_, _ = io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, limited)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := json.NewDecoder(limited).Decode(out); err != nil {
 		return fmt.Errorf("notion: decode response: %w", err)
 	}
 	return nil
@@ -183,14 +206,19 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body any, out 
 // decodeErrorResponse maps a non-2xx Notion response into a typed error.
 // The Notion API documents an "error" object with fields {status, code,
 // message}; we read code first because it distinguishes
-// "expired_token" from generic "unauthorized" (both 401).
-func decodeErrorResponse(resp *http.Response) error {
+// "expired_token" from generic "unauthorized" (both 401), and
+// "rate_limited" so callers can honour Retry-After in a back-off loop.
+//
+// reader is a size-limited io.Reader (callers wrap resp.Body in
+// io.LimitReader); the limit guards against hostile / corrupted upstreams
+// that could otherwise force an unbounded allocation here.
+func decodeErrorResponse(statusCode int, statusText string, header http.Header, reader io.Reader) error {
 	var body struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 		Status  int    `json:"status"`
 	}
-	raw, _ := io.ReadAll(resp.Body)
+	raw, _ := io.ReadAll(reader)
 	_ = json.Unmarshal(raw, &body)
 
 	switch body.Code {
@@ -198,13 +226,41 @@ func decodeErrorResponse(resp *http.Response) error {
 		return fmt.Errorf("%w: %s", ErrTokenExpired, body.Message)
 	case "unauthorized", "restricted_resource":
 		return fmt.Errorf("%w: %s", ErrUnauthorized, body.Message)
+	case "rate_limited":
+		return &RateLimitedError{
+			RetryAfter: parseRetryAfter(header.Get("Retry-After")),
+			Message:    body.Message,
+		}
 	}
-	if resp.StatusCode == http.StatusUnauthorized {
+	if statusCode == http.StatusTooManyRequests {
+		return &RateLimitedError{
+			RetryAfter: parseRetryAfter(header.Get("Retry-After")),
+			Message:    body.Message,
+		}
+	}
+	if statusCode == http.StatusUnauthorized {
 		// Some Notion error payloads omit `code`; fall back to the
 		// HTTP status so AuthStatus still gets a typed error to act on.
 		return fmt.Errorf("%w: %s", ErrUnauthorized, body.Message)
 	}
-	return errors.New("notion: " + resp.Status + ": " + body.Message)
+	return errors.New("notion: " + statusText + ": " + body.Message)
+}
+
+// parseRetryAfter decodes the Retry-After header value Notion sends with a
+// 429 response. The header is documented as either a delay in seconds or
+// an HTTP-date; the latter is rare in practice for Notion, so we accept
+// the seconds form and fall back to a conservative default for anything
+// else (including a missing header) so callers always get a usable delay.
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 5 * time.Second
+	}
+	// Try the seconds form first — that is what Notion documents.
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 5 * time.Second
 }
 
 // queryDatabaseResponse is the wire-format envelope returned by

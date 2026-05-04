@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/source"
@@ -136,11 +137,26 @@ func WithTokenProvider(tp TokenProvider) Option { return func(p *Plugin) { p.tok
 // token lives. Centralised so Setup and AuthStatus cannot drift.
 const defaultSecretName = "notion:token"
 
+// defaultTokenEnv is the env var the default TokenProvider consults. The
+// CLI-glue layer (a future PR) is expected to override this with a
+// stdin-prompting provider when running interactively; the env var is the
+// documented headless / CI path.
+const defaultTokenEnv = "MARUNAGE_NOTION_TOKEN"
+
+// envTokenProvider is the headless default the package wires when the
+// caller does not pass WithTokenProvider. Returning the empty string is
+// not an error here: Setup will surface ErrTokenRequired so the caller
+// knows the env var was missing rather than silently writing "".
+func envTokenProvider(_ context.Context, _ SetupOpts) (string, error) {
+	return os.Getenv(defaultTokenEnv), nil
+}
+
 // New constructs a Plugin with the given options. Defaults are filled in
 // here so options can override them before any method runs.
 func New(opts ...Option) *Plugin {
 	p := &Plugin{
-		secretName: defaultSecretName,
+		secretName:    defaultSecretName,
+		tokenProvider: envTokenProvider,
 	}
 	for _, o := range opts {
 		o(p)
@@ -309,10 +325,10 @@ func (p *Plugin) Setup(ctx context.Context, opts SetupOpts) error {
 		return ErrNoSecretsConfigured
 	}
 	if p.tokenProvider == nil {
-		// Default provider would read MARUNAGE_NOTION_TOKEN; we keep the
-		// dependency on os.Getenv out of this package by making the user
-		// wire WithTokenProvider explicitly. CLI glue (a future PR) will
-		// supply the env-or-prompt provider.
+		// Should not happen — New defaults to envTokenProvider. The
+		// branch exists for the WithTokenProvider(nil) case so a
+		// hand-rolled override does not silently re-introduce the env
+		// dependency we wanted to make explicit.
 		return fmt.Errorf("notion: no token provider configured (wire WithTokenProvider)")
 	}
 	token, err := p.tokenProvider(ctx, opts)

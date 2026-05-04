@@ -182,6 +182,36 @@ func TestSetupWithoutSecretsReturnsTyped(t *testing.T) {
 	}
 }
 
+// TestSetupDefaultProviderReadsEnv — when the caller does not wire
+// WithTokenProvider, Setup must fall back to the documented headless
+// path (MARUNAGE_NOTION_TOKEN env var). t.Setenv restores the original
+// value automatically so the test does not leak across packages.
+func TestSetupDefaultProviderReadsEnv(t *testing.T) {
+	t.Setenv(defaultTokenEnv, "secret_from_env_var")
+	s := newMemSecrets()
+	p := New(WithClient(&fakeClient{}), WithDatabaseID("db"), WithSecrets(s))
+	if err := p.Setup(context.Background(), SetupOpts{NonInteractive: true}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	got, _, _ := s.Get(defaultSecretName)
+	if got != "secret_from_env_var" {
+		t.Errorf("token persisted = %q", got)
+	}
+}
+
+// TestSetupDefaultProviderEmptyEnvIsTokenRequired — the env var being unset
+// is the documented "user did not supply a token" signal; Setup must
+// surface it as ErrTokenRequired so the CLI can prompt precisely.
+func TestSetupDefaultProviderEmptyEnvIsTokenRequired(t *testing.T) {
+	t.Setenv(defaultTokenEnv, "")
+	s := newMemSecrets()
+	p := New(WithClient(&fakeClient{}), WithDatabaseID("db"), WithSecrets(s))
+	err := p.Setup(context.Background(), SetupOpts{NonInteractive: true})
+	if !errors.Is(err, ErrTokenRequired) {
+		t.Fatalf("err = %v, want ErrTokenRequired", err)
+	}
+}
+
 // TestSetupPropagatesProviderError — a TokenProvider that errors (e.g. a
 // terminal prompt cancelled) must surface the error verbatim so the CLI
 // can distinguish "user aborted" from "wrote token successfully".
