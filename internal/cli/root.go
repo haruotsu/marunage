@@ -88,6 +88,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newWebCmd(&configPath))
 	root.AddCommand(newSkillsCmd(&configPath))
 	root.AddCommand(newTaskReviewCmd(&configPath))
+	root.AddCommand(newJournalCmd(&configPath))
+	root.AddCommand(newProjectCmd(&configPath))
 
 	return root
 }
