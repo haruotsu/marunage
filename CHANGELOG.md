@@ -1,0 +1,62 @@
+# Changelog
+
+## [v0.0.1](https://github.com/haruotsu/marunage/commits/v0.0.1) - 2026-05-04
+- ci: tagpr でリリースを自動化 by @haruotsu in https://github.com/haruotsu/marunage/pull/1
+- ci: tagpr に issues: write 権限を追加 by @haruotsu in https://github.com/haruotsu/marunage/pull/2
+- ci: actions/checkout を v5 に更新 by @haruotsu in https://github.com/haruotsu/marunage/pull/4
+- feat(pr-01): repository bootstrap (go.mod / Makefile / CI / --version) by @haruotsu in https://github.com/haruotsu/marunage/pull/5
+- feat: PR-02 CLI スケルトン (cobra) by @haruotsu in https://github.com/haruotsu/marunage/pull/6
+- feat(config): PR-03 — config.toml loader with validation, atomic save, and rollback by @haruotsu in https://github.com/haruotsu/marunage/pull/7
+- feat(logging): PR-04 ロガー / audit.log 基盤 by @haruotsu in https://github.com/haruotsu/marunage/pull/8
+- feat(store): SQLite schema + WAL + embedded migrations (PR-10) by @haruotsu in https://github.com/haruotsu/marunage/pull/9
+- feat(store): PR-11 tasks repository layer by @haruotsu in https://github.com/haruotsu/marunage/pull/12
+- feat(cli): marunage doctor [--fix] [--json] by @haruotsu in https://github.com/haruotsu/marunage/pull/10
+- feat(secrets): keyring abstraction + backend auto-select (PR-30) by @haruotsu in https://github.com/haruotsu/marunage/pull/11
+- feat(cmux): PR-40 cmux ワークスペース起動・送信ラッパー by @haruotsu in https://github.com/haruotsu/marunage/pull/13
+- feat(store): PR-12 kv_state リポジトリ層 by @haruotsu in https://github.com/haruotsu/marunage/pull/14
+- feat(cli): PR-20 add / list / show サブコマンド実装 by @haruotsu in https://github.com/haruotsu/marunage/pull/15
+- feat(source/markdown): PR-50 Markdown TODO ソースプラグイン by @haruotsu in https://github.com/haruotsu/marunage/pull/16
+- feat(permission): PR-41 権限モード（matcher + waiting_human / failed 遷移） by @haruotsu in https://github.com/haruotsu/marunage/pull/17
+- feat(cli): PR-21 done/fail/rm/promote/reopen + 状態遷移バリデーション by @haruotsu in https://github.com/haruotsu/marunage/pull/18
+- feat(cli): PR-22 `marunage export` / `marunage clean` by @haruotsu in https://github.com/haruotsu/marunage/pull/19
+- feat(dispatch): PR-42 dispatch core (priority + lock_key + max_parallel + ws writeback + prompt build) by @haruotsu in https://github.com/haruotsu/marunage/pull/21
+- feat: PR-60 `marunage render` / view.md generator by @haruotsu in https://github.com/haruotsu/marunage/pull/20
+- feat(cli): PR-33 marunage init (~/.marunage/ + permission mode prompt) by @haruotsu in https://github.com/haruotsu/marunage/pull/22
+- feat(cli): PR-61 marunage status / --watch by @haruotsu in https://github.com/haruotsu/marunage/pull/26
+- feat(dispatch): PR-42b dispatch wiring (permission / escalate / redact / UTF-8 / race) by @haruotsu in https://github.com/haruotsu/marunage/pull/25
+- feat(completion): PR-43 atomic sentinel completion detection by @haruotsu in https://github.com/haruotsu/marunage/pull/23
+- feat(reaper): PR-44 reaper for orphan ws / 24h stuck running by @haruotsu in https://github.com/haruotsu/marunage/pull/24
+- feat(secrets): age backend with passphrase-protected vault (PR-31) by @haruotsu in https://github.com/haruotsu/marunage/pull/27
+- feat(source): discovery plugin interface, manifest, registry (PR-70) by @haruotsu in https://github.com/haruotsu/marunage/pull/30
+- feat(web): web UI foundation with chi/embed/CSRF/SSE (PR-62) by @haruotsu in https://github.com/haruotsu/marunage/pull/29
+- feat(cli): marunage setup --skills with embedded SKILLs and diff/force/merge (PR-34) by @haruotsu in https://github.com/haruotsu/marunage/pull/28
+- feat(dispatch): PR-72 triage skill integration (judgment_reason wiring) by @haruotsu in https://github.com/haruotsu/marunage/pull/32
+- feat(skills): PR-203 shared skill registry (install/list/update) by @haruotsu in https://github.com/haruotsu/marunage/pull/37
+- feat(source/gmail): PR-80 Gmail Discovery source plugin by @haruotsu in https://github.com/haruotsu/marunage/pull/34
+- feat(source/calendar): PR-81 Google Calendar Discovery source by @haruotsu in https://github.com/haruotsu/marunage/pull/35
+- feat(source/slack): PR-82 Slack Discovery source plugin by @haruotsu in https://github.com/haruotsu/marunage/pull/38
+- feat(source/github): PR-83 GitHub Discovery source plugin by @haruotsu in https://github.com/haruotsu/marunage/pull/31
+- feat(source/googletasks): PR-84 Google Tasks Discovery source plugin by @haruotsu in https://github.com/haruotsu/marunage/pull/36
+- feat(source/browser): PR-200 Browser adapter source plugin by @haruotsu in https://github.com/haruotsu/marunage/pull/33
+- feat(source/notion): PR-201 Notion Discovery source plugin by @haruotsu in https://github.com/haruotsu/marunage/pull/41
+- feat(loop): PR-71 marunage loop / daemon (discover→dispatch→render) by @haruotsu in https://github.com/haruotsu/marunage/pull/40
+- feat(dispatch): PR-102 reflection hook + marunage-reflect skill by @haruotsu in https://github.com/haruotsu/marunage/pull/39
+- feat(web): PR-63 Web UI dashboard (running/pending/24h summary/source status) by @haruotsu in https://github.com/haruotsu/marunage/pull/42
+- feat(web): task detail page — GET /tasks/{id} by @haruotsu in https://github.com/haruotsu/marunage/pull/44
+- feat(web): PR-65 task operation API endpoints and dashboard UI controls by @haruotsu in https://github.com/haruotsu/marunage/pull/43
+- feat(slack): introduce slackhog + WebAPIClient with httptest mock by @haruotsu in https://github.com/haruotsu/marunage/pull/45
+- feat(review): PR-90 review/promote 強化 — CLI + Web UI + 頻発スキップ検出 by @haruotsu in https://github.com/haruotsu/marunage/pull/46
+- feat(source): Slack Reaction Trigger Discovery source (PR-100) by @haruotsu in https://github.com/haruotsu/marunage/pull/47
+- feat(project): PR-101 Project Mode — marunage project run <board-url> by @haruotsu in https://github.com/haruotsu/marunage/pull/51
+- feat(journal): PR-103 Work Journal - marunage journal start/export by @haruotsu in https://github.com/haruotsu/marunage/pull/50
+- feat(autoreply): add marunage-autoreply skill with permission boundary (PR-104) by @haruotsu in https://github.com/haruotsu/marunage/pull/49
+- feat(web): PR-105 — metrics, journal, project board endpoints by @haruotsu in https://github.com/haruotsu/marunage/pull/48
+- feat(web): Prometheus metrics export endpoint (PR-202) by @haruotsu in https://github.com/haruotsu/marunage/pull/52
+- feat(web): live terminal stream for task workspaces (PR-91) by @haruotsu in https://github.com/haruotsu/marunage/pull/53
+- feat: PR-42b permission.Matcher dispatcher wiring + prompt injection defense by @haruotsu in https://github.com/haruotsu/marunage/pull/60
+- feat: PR-300 daemon full implementation (install/uninstall/restart/logs + singleton) by @haruotsu in https://github.com/haruotsu/marunage/pull/59
+- feat: PR-204 Web UI remote publish mode (HTTPS + Bearer auth) by @haruotsu in https://github.com/haruotsu/marunage/pull/58
+- feat: PR-303 config wizard / config edit implementation by @haruotsu in https://github.com/haruotsu/marunage/pull/57
+- feat: PR-205 marunage stop emergency kill switch by @haruotsu in https://github.com/haruotsu/marunage/pull/56
+- feat: PR-301 Discovery IF v2 (adapter_version + update verb) by @haruotsu in https://github.com/haruotsu/marunage/pull/54
+- feat: PR-302 HTTP adapter / connector.toml by @haruotsu in https://github.com/haruotsu/marunage/pull/55
