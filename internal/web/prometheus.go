@@ -64,13 +64,13 @@ func sortedKeys(m map[string]int) []string {
 func newPrometheusHandler(provider MetricsProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", prometheusContentType)
 		snap, err := provider.Snapshot(r.Context())
 		if err != nil {
 			http.Error(w, "metrics data unavailable", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", prometheusContentType)
-		fmt.Fprint(w, formatPrometheus(snap))
+		_, _ = fmt.Fprint(w, formatPrometheus(snap))
 	})
 }
 

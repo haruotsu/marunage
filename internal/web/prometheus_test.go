@@ -21,6 +21,9 @@ import (
 // 11. acceptsTextPlain returns false when Accept is */* (browser wildcard)
 // 12. GET /prometheus sets Cache-Control: no-store
 // 13. prometheusLabelEscape escapes only Prometheus-spec chars (\, ", \n)
+// 14. acceptsTextPlain returns true when Accept contains text/plain alongside */*
+// 15. formatPrometheus does not panic when ByStatus or BySource is nil
+// 16. formatPrometheus escapes label values containing double-quotes and backslashes
 
 // 1. formatPrometheus includes marunage_tasks (gauge, no _total suffix)
 func TestFormatPrometheus_TasksTotal(t *testing.T) {
