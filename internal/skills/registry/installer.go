@@ -196,4 +196,3 @@ func FindUpdates(state State, idx Index) []IndexEntry {
 	}
 	return outdated
 }
-
