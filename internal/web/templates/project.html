@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Board — marunage</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">marunage</a></h1>
+    <p class="hint">Project board</p>
+  </header>
+  <main>
+    {{if .LoadError}}
+      <section class="banner banner-error" role="alert">
+        <strong>Project data unavailable:</strong> {{.LoadError}}
+      </section>
+    {{end}}
+
+    {{if .BoardURL}}
+      <p class="hint">Board: <a href="{{.BoardURL}}" rel="noopener noreferrer">{{.BoardURL}}</a></p>
+    {{end}}
+
+    {{if .Phases}}
+      <div class="board">
+        {{range .Phases}}
+          <section class="panel board-column" aria-labelledby="phase-{{.Name}}">
+            <header class="panel-head">
+              <h2 id="phase-{{.Name}}">{{.Name}}</h2>
+              <span class="badge badge-{{.Status}}">{{.Status}}</span>
+              <span class="count">{{len .Items}} items</span>
+            </header>
+            {{if .Items}}
+              <ul class="task-list">
+                {{range .Items}}
+                  <li class="task-row">
+                    <div class="task-line">
+                      <span class="task-title">{{.Title}}</span>
+                      <span class="badge badge-{{.Status}}">{{.Status}}</span>
+                    </div>
+                  </li>
+                {{end}}
+              </ul>
+            {{else}}
+              <p class="hint">No items in this phase.</p>
+            {{end}}
+          </section>
+        {{end}}
+      </div>
+    {{else}}
+      <section class="panel">
+        <p class="hint">No project phases found. Configure a board URL via <code>?board_url=</code>.</p>
+      </section>
+    {{end}}
+  </main>
+</body>
+</html>
