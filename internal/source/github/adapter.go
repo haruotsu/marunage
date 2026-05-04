@@ -13,6 +13,16 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 )
 
+// Compile-time interface assertions. If a future PR removes a method from
+// Adapter the build fails here rather than at first dispatch from the
+// daemon, which keeps the manifest ↔ implementation contract honest at
+// `go build` time without relying on a runtime type-switch in tests.
+var (
+	_ source.Plugin    = (*Adapter)(nil)
+	_ source.Sincer    = (*Adapter)(nil)
+	_ source.Completer = (*Adapter)(nil)
+)
+
 // Adapter wraps a *Plugin and exposes it as a source.Plugin (plus
 // Sincer / Completer). The struct holds a pointer so the adapter and any
 // direct caller of the inner Plugin share state — though today Plugin has
@@ -30,8 +40,11 @@ func NewAdapter(p *Plugin) *Adapter {
 	return &Adapter{inner: p}
 }
 
-// Name reports the canonical plugin identifier.
-func (a *Adapter) Name() string { return a.inner.Name() }
+// Name reports the canonical plugin identifier. The constant is returned
+// directly (rather than forwarded to a.inner.Name()) to mirror the
+// markdown adapter's style and to keep the Adapter usable in places that
+// hold a nil inner pointer for compile-time interface checks.
+func (a *Adapter) Name() string { return pluginName }
 
 // List forwards to the inner Plugin. The conversion to source.Task already
 // happens inside Plugin.List, so the adapter is a pure passthrough.

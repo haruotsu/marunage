@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os/exec"
 	"strings"
@@ -279,16 +280,40 @@ func TestCompleteWithCommentRunsCommentThenClose(t *testing.T) {
 func TestCompleteRejectsMalformedExternalID(t *testing.T) {
 	t.Parallel()
 
-	fr := &fakeRunner{}
-	p := New(WithRunner(fr))
-	for _, bad := range []string{"", "owner/repo", "owner#42", "owner/repo#", "owner/repo#abc", "ownerrepo#1"} {
-		err := p.Complete(context.Background(), bad)
-		if !errors.Is(err, ErrInvalidExternalID) {
-			t.Errorf("Complete(%q) = %v, want ErrInvalidExternalID", bad, err)
-		}
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"empty", ""},
+		{"missing_hash", "owner/repo"},
+		{"missing_slash", "owner#42"},
+		{"empty_number", "owner/repo#"},
+		{"non_numeric_number", "owner/repo#abc"},
+		{"no_separator", "ownerrepo#1"},
+		{"zero_number", "owner/repo#0"},
+		{"negative_number", "owner/repo#-5"},
+		{"empty_owner", "/repo#1"},
+		{"empty_repo", "owner/#1"},
+		{"double_slash", "owner//repo#1"},
+		{"leading_dash_owner", "-flag/repo#1"},
+		{"leading_dash_repo", "owner/-flag#1"},
+		{"whitespace_owner", "own er/repo#1"},
+		{"whitespace_repo", "owner/re po#1"},
 	}
-	if len(fr.calls) != 0 {
-		t.Errorf("runner should not be invoked for invalid externalID; calls = %+v", fr.calls)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fr := &fakeRunner{}
+			p := New(WithRunner(fr))
+			err := p.Complete(context.Background(), tc.id)
+			if !errors.Is(err, ErrInvalidExternalID) {
+				t.Errorf("Complete(%q) = %v, want ErrInvalidExternalID", tc.id, err)
+			}
+			if len(fr.calls) != 0 {
+				t.Errorf("runner should not be invoked for invalid externalID; calls = %+v", fr.calls)
+			}
+		})
 	}
 }
 
@@ -387,6 +412,63 @@ func TestSetupInteractivePromptsManualLogin(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "gh auth login") {
 		t.Errorf("err should hint at `gh auth login`, got %v", err)
+	}
+}
+
+// TestSinceRejectsMalformedCheckpoint pins the iter1 review hardening:
+// callers must not be able to inject extra search qualifiers via the
+// checkpoint string. Anything that does not parse as RFC3339 is rejected
+// with ErrInvalidCheckpoint and the runner is never invoked.
+func TestSinceRejectsMalformedCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		checkpoint string
+	}{
+		{"injection_qualifier", "2026-01-02T03:04:05Z author:victim"},
+		{"freeform_text", "yesterday"},
+		{"date_only", "2026-01-02"},
+		{"trailing_space", "2026-01-02T03:04:05Z "},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fr := &fakeRunner{}
+			p := New(WithRunner(fr))
+			_, err := p.Since(context.Background(), tc.checkpoint)
+			if !errors.Is(err, ErrInvalidCheckpoint) {
+				t.Errorf("Since(%q) = %v, want ErrInvalidCheckpoint", tc.checkpoint, err)
+			}
+			if len(fr.calls) != 0 {
+				t.Errorf("runner should not be invoked for invalid checkpoint; calls = %+v", fr.calls)
+			}
+		})
+	}
+}
+
+// TestListMalformedJSONUnwrapsParserError ensures ErrInvalidResponse wraps
+// the underlying json error with %w (not %v) so a debugger can errors.As
+// down to *json.SyntaxError. The iter1 review flagged this as a quiet
+// regression risk in error-handling expressiveness.
+func TestListMalformedJSONUnwrapsParserError(t *testing.T) {
+	t.Parallel()
+
+	fr := &fakeRunner{responses: []runResponse{
+		{stdout: "{not json"},
+	}}
+	p := New(WithRunner(fr))
+	_, err := p.List(context.Background())
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("err = %v, want ErrInvalidResponse", err)
+	}
+	// Underlying parse error must remain reachable via errors.As so a future
+	// log-formatting layer can surface "expected ']' at byte 9" rather than
+	// a flat sentinel.
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("err = %v, expected *json.SyntaxError reachable via errors.As", err)
 	}
 }
 

@@ -3,7 +3,6 @@ package github
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os/exec"
 )
 
@@ -31,8 +30,9 @@ type ExecRunner struct{}
 
 // Run shells out to name with args, capturing stdout and stderr into
 // independent buffers. Errors from cmd.Run are returned verbatim; callers
-// map *exec.Error / exec.ErrNotFound into typed AuthStatus values so the
-// CLI layer never has to substring-match.
+// can `errors.Is(err, exec.ErrNotFound)` to detect a missing binary, but
+// AuthStatus deliberately treats every error path identically (see the
+// godoc on Plugin.AuthStatus) so PR-83 itself never branches on the type.
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var outBuf, errBuf bytes.Buffer
@@ -40,21 +40,4 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	cmd.Stderr = &errBuf
 	err := cmd.Run()
 	return outBuf.Bytes(), errBuf.Bytes(), err
-}
-
-// isBinaryNotFound reports whether err indicates the target binary is
-// missing from PATH. Centralised here so AuthStatus / Setup callers can
-// branch on "no gh installed" without leaking exec internals.
-func isBinaryNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, exec.ErrNotFound) {
-		return true
-	}
-	var execErr *exec.Error
-	if errors.As(err, &execErr) {
-		return errors.Is(execErr.Err, exec.ErrNotFound)
-	}
-	return false
 }
