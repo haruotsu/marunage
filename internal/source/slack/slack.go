@@ -396,7 +396,10 @@ func truncate(s string, n int) string {
 // compareTS compares two Slack ts strings numerically. Slack ts values
 // are decimal numbers like "1700000000.000100"; lexicographic ordering
 // is correct only when both sides have the same width, so we split on
-// the dot and compare the integer / fractional halves separately.
+// the dot, compare the integer half by length-then-lex (integer halves
+// never carry leading zeros from Slack), and compare the fractional
+// half after right-padding the shorter side with '0' so 0.1 and 0.10
+// compare equal and 0.0001 sorts above 0.00009.
 //
 // Returns -1 / 0 / 1 like strings.Compare. An empty string is treated
 // as "before everything else", which is the documented Sincer "no
@@ -413,10 +416,10 @@ func compareTS(a, b string) int {
 	}
 	aInt, aFrac := splitTS(a)
 	bInt, bFrac := splitTS(b)
-	if c := compareNumeric(aInt, bInt); c != 0 {
+	if c := compareIntegerPart(aInt, bInt); c != 0 {
 		return c
 	}
-	return compareNumeric(aFrac, bFrac)
+	return compareFractionalPart(aFrac, bFrac)
 }
 
 // splitTS returns (integer, fractional) halves of a Slack ts string.
@@ -429,11 +432,11 @@ func splitTS(s string) (string, string) {
 	return s[:idx], s[idx+1:]
 }
 
-// compareNumeric compares two non-negative decimal-digit strings by
-// value: shorter strings are smaller (no leading-zero ambiguity here
-// because Slack always emits canonical widths), with lexicographic
-// fallback when widths agree.
-func compareNumeric(a, b string) int {
+// compareIntegerPart compares two non-negative decimal-digit strings by
+// value: shorter strings are smaller (assumes no leading zeros — Slack
+// ts integer halves never carry them), with lexicographic fallback when
+// widths agree.
+func compareIntegerPart(a, b string) int {
 	if len(a) != len(b) {
 		if len(a) < len(b) {
 			return -1
@@ -447,4 +450,41 @@ func compareNumeric(a, b string) int {
 		return 1
 	}
 	return 0
+}
+
+// compareFractionalPart compares two fractional halves (the part after
+// the dot, no leading "0."). Right-pad the shorter side with '0' so
+// "1" and "100" compare equal as fractions, and "0001" sorts above
+// "00009" (0.0001 > 0.00009). Lex compare after padding works because
+// every byte is a decimal digit.
+func compareFractionalPart(a, b string) int {
+	if a == b {
+		return 0
+	}
+	maxLen := len(a)
+	if len(b) > maxLen {
+		maxLen = len(b)
+	}
+	a = padRightZeros(a, maxLen)
+	b = padRightZeros(b, maxLen)
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+// padRightZeros returns s padded on the right with '0' until it is at
+// least n bytes long. s longer than n is returned unchanged.
+func padRightZeros(s string, n int) string {
+	if len(s) >= n {
+		return s
+	}
+	pad := make([]byte, n-len(s))
+	for i := range pad {
+		pad[i] = '0'
+	}
+	return s + string(pad)
 }
