@@ -99,9 +99,10 @@ func newMetricsHandler(renderer Renderer, provider MetricsProvider) http.Handler
 		snap, err := provider.Snapshot(r.Context())
 		if err != nil {
 			page := metricsPageData{
-				LoadError: metricsLoadFailedMessage,
-				ByStatus:  map[string]int{},
-				BySource:  map[string]int{},
+				LoadError:   metricsLoadFailedMessage,
+				ByStatus:    map[string]int{},
+				BySource:    map[string]int{},
+				DailyCounts: []MetricsDailyCount{},
 			}
 			if renderErr := renderer.Render(w, "metrics.html", page); renderErr != nil {
 				http.Error(w, "render failed", http.StatusInternalServerError)

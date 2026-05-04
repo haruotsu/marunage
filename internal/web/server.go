@@ -199,8 +199,12 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
 	}
 
-	// Metrics, Journal, Project endpoints (PR-105). Always registered
-	// since providers default to noop rather than nil.
+	// Metrics, Journal, Project endpoints (PR-105). Always registered: unlike
+	// Review (which has no meaningful empty state), these three pages provide
+	// useful UI even when no real provider is wired — the noop fallback renders
+	// an empty-but-valid dashboard so a fresh install looks functional rather
+	// than missing pages. Review stays nil-gated because an empty skipped-tasks
+	// page would be misleading without a real store.
 	mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
 	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
 	mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))

@@ -9,15 +9,29 @@ import (
 	"github.com/haruotsu/marunage/internal/store"
 )
 
+// MetricsOptions configures NewSQLMetricsProvider. Zero values fall back to
+// production defaults so callers only need to set the knobs they care about.
+type MetricsOptions struct {
+	// Now is the clock the 30-day cutoff in queryDailyCounts derives from.
+	// Zero defaults to time.Now. Tests inject a fixed time to avoid flaky
+	// failures when real time drifts past the cutoff window.
+	Now func() time.Time
+}
+
 // sqlMetricsProvider is the production MetricsProvider backed by SQLite.
 // It reads from the same tasks table as the dashboard store.
 type sqlMetricsProvider struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 // NewSQLMetricsProvider returns a MetricsProvider backed by db.
-func NewSQLMetricsProvider(db *sql.DB) MetricsProvider {
-	return &sqlMetricsProvider{db: db}
+func NewSQLMetricsProvider(db *sql.DB, opts ...MetricsOptions) MetricsProvider {
+	now := time.Now
+	if len(opts) > 0 && opts[0].Now != nil {
+		now = opts[0].Now
+	}
+	return &sqlMetricsProvider{db: db, now: now}
 }
 
 func (p *sqlMetricsProvider) Snapshot(ctx context.Context) (MetricsSnapshot, error) {
@@ -118,7 +132,7 @@ func (p *sqlMetricsProvider) queryAvgDuration(ctx context.Context) (float64, err
 }
 
 func (p *sqlMetricsProvider) queryDailyCounts(ctx context.Context) ([]MetricsDailyCount, error) {
-	cutoff := time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02")
+	cutoff := p.now().UTC().AddDate(0, 0, -30).Format("2006-01-02")
 	const q = `
 		SELECT
 		  date(completed_at) AS day,
