@@ -235,9 +235,14 @@ func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
 
 // Since returns mentions/DMs newer than checkpoint. When checkpoint is
 // empty, the plugin reads the stored value from its Checkpointer (or
-// uses "" when no checkpointer is wired). After a successful fetch with
-// at least one result, the maximum ts across both feeds is persisted as
-// the new checkpoint.
+// uses "" when no checkpointer is wired). After a successful fetch the
+// stored checkpoint is advanced to the maximum ts across both feeds —
+// but only when that maximum is strictly greater than the effective
+// checkpoint (the explicit argument or the value just read from the
+// store). The cursor is therefore monotonically non-decreasing: an
+// upstream that ignores `oldest` and replays stale items cannot drag
+// the persisted value backwards (regression-pinned by
+// TestSinceDoesNotRegressCheckpointWhenFetchReturnsOlderItems).
 //
 // Why "maximum ts" rather than "newest per-feed": Slack ts values are
 // monotonically increasing event ids, and a single global cursor
