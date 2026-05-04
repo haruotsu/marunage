@@ -44,7 +44,7 @@ internal/source/slack/
 
 ### Discovery 契約への接続
 
-- `source.Sincer.Since(ctx, checkpoint)` は **明示 checkpoint 引数優先**。空文字なら `Checkpointer.Get("slack:last_ts")` から復元。Fetch 後、結果が 1 件以上あれば最大 `ts` で `Set` 更新。0 件 or error 時は checkpoint 不変。
+- `source.Sincer.Since(ctx, checkpoint)` は **明示 checkpoint 引数優先**。空文字なら `Checkpointer.Get("slack:last_ts")` から復元。Fetch 後、結果が 1 件以上あり、かつ **fetched の最大 ts が effective checkpoint より厳密に大きい** ときのみ最大 `ts` で `Set` 更新。0 件 / error / fetched 全てが effective 以下なら checkpoint 不変 (単調増加)。これは upstream が `oldest` を尊重しない場合でも stale な再取り込みを防ぐ defense-in-depth。
 - `source.Completer.Complete(ctx, externalID)` は configured DM channel に `タスク #<id> done` を `Client.PostDM` で投稿。`WithNotifyChannelID` 未指定時は `ErrNotifyChannelRequired` 即返却。
 - `RawMetadata` は `channel_id` / `channel_type` / `ts` / `thread_ts` / `user_id`。`channel_type=="im"` 時のみ `dm_id` を追加 (downstream UI のため)。
 
