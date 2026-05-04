@@ -21,13 +21,13 @@ func formatPrometheus(snap MetricsSnapshot) string {
 	fmt.Fprintf(&b, "# HELP marunage_tasks_by_status Number of tasks by status\n")
 	fmt.Fprintf(&b, "# TYPE marunage_tasks_by_status gauge\n")
 	for _, status := range sortedKeys(snap.ByStatus) {
-		fmt.Fprintf(&b, "marunage_tasks_by_status{status=%q} %d\n", status, snap.ByStatus[status])
+		fmt.Fprintf(&b, "marunage_tasks_by_status{status=\"%s\"} %d\n", prometheusLabelEscape(status), snap.ByStatus[status])
 	}
 
 	fmt.Fprintf(&b, "# HELP marunage_tasks_by_source Number of tasks by source\n")
 	fmt.Fprintf(&b, "# TYPE marunage_tasks_by_source gauge\n")
 	for _, src := range sortedKeys(snap.BySource) {
-		fmt.Fprintf(&b, "marunage_tasks_by_source{source=%q} %d\n", src, snap.BySource[src])
+		fmt.Fprintf(&b, "marunage_tasks_by_source{source=\"%s\"} %d\n", prometheusLabelEscape(src), snap.BySource[src])
 	}
 
 	fmt.Fprintf(&b, "# HELP marunage_task_success_ratio Ratio of tasks completed successfully (0–1)\n")
@@ -39,6 +39,15 @@ func formatPrometheus(snap MetricsSnapshot) string {
 	fmt.Fprintf(&b, "marunage_task_avg_duration_seconds %g\n", snap.AvgDuration)
 
 	return b.String()
+}
+
+// prometheusLabelEscape escapes a label value per Prometheus exposition format 0.0.4.
+// Only \, " and newline are escaped; all other bytes pass through unchanged.
+func prometheusLabelEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return s
 }
 
 // sortedKeys returns the keys of m in sorted order.
