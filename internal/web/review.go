@@ -23,13 +23,6 @@ type ReviewProvider interface {
 	ReviewSnapshot(ctx context.Context, f store.ListFilter) (ReviewSnapshot, error)
 }
 
-// noopReviewProvider returns an empty snapshot; used when Review is not wired.
-type noopReviewProvider struct{}
-
-func (noopReviewProvider) ReviewSnapshot(_ context.Context, _ store.ListFilter) (ReviewSnapshot, error) {
-	return ReviewSnapshot{GeneratedAt: time.Now().UTC().Format(time.RFC3339)}, nil
-}
-
 // ReviewStore is the narrow store surface ReviewProvider reads.
 type ReviewStore interface {
 	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
@@ -119,11 +112,18 @@ func newReviewPageData(snap ReviewSnapshot) reviewPageData {
 
 const reviewLoadFailedMessage = "Review data unavailable. See daemon.log for details."
 
-// parseSinceDays parses a "?since=" query parameter value (e.g. "7d", "30d",
+// maxSinceDays caps the ?since= / --since parameter to prevent time.Duration
+// overflow (int64 wraps around at ~292 years) and to reject unreasonable inputs.
+const maxSinceDays = 36500 // 100 years
+
+// ParseSinceWindow parses a human-friendly duration string (e.g. "7d", "30d",
 // "24h") and returns the earliest time that falls within the window relative
-// to now. Returns zero time when s is empty (no filter). Supports "Nd" (days)
-// and any value accepted by time.ParseDuration.
-func parseSinceDays(s string, now time.Time) (time.Time, error) {
+// to now. Returns zero time when s is empty (no lower-bound filter). Supports
+// "Nd" (days, up to maxSinceDays) and anything time.ParseDuration accepts.
+//
+// Used by both the CLI (task_review.go) and the Web handler (review.go) to
+// avoid duplicated parsing logic.
+func ParseSinceWindow(s string, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}, nil
@@ -135,6 +135,9 @@ func parseSinceDays(s string, now time.Time) (time.Time, error) {
 		}
 		if n <= 0 {
 			return time.Time{}, fmt.Errorf("day count must be positive, got %q", s)
+		}
+		if n > maxSinceDays {
+			return time.Time{}, fmt.Errorf("day count %d exceeds maximum %d", n, maxSinceDays)
 		}
 		return now.Add(-time.Duration(n) * 24 * time.Hour), nil
 	}
@@ -153,7 +156,7 @@ func parseSinceDays(s string, now time.Time) (time.Time, error) {
 func buildReviewFilter(r *http.Request) store.ListFilter {
 	f := store.ListFilter{Statuses: []string{store.StatusSkipped}}
 	if since := r.URL.Query().Get("since"); since != "" {
-		t, err := parseSinceDays(since, time.Now())
+		t, err := ParseSinceWindow(since, time.Now())
 		if err == nil && !t.IsZero() {
 			f.CreatedAfter = t
 		}
@@ -166,12 +169,11 @@ func newReviewHandler(renderer Renderer, provider ReviewProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		snap, err := provider.ReviewSnapshot(r.Context(), buildReviewFilter(r))
-		page := reviewPageData{}
 		if err != nil {
 			http.Error(w, reviewLoadFailedMessage, http.StatusInternalServerError)
 			return
 		}
-		page = newReviewPageData(snap)
+		page := newReviewPageData(snap)
 
 		if renderErr := renderer.Render(w, "review.html", page); renderErr != nil {
 			http.Error(w, "render failed", http.StatusInternalServerError)
