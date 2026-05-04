@@ -114,7 +114,6 @@ func TestExecute_DaemonGroup(t *testing.T) {
 
 func TestExecute_ConfigGroup(t *testing.T) {
 	allSubs := []string{"get", "set", "edit", "wizard"}
-	stillStubbed := []string{"edit", "wizard"}
 
 	t.Run("config --help lists subcommands", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -130,21 +129,6 @@ func TestExecute_ConfigGroup(t *testing.T) {
 			}
 		}
 	})
-
-	for _, s := range stillStubbed {
-		t.Run("config "+s, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-
-			code := Execute([]string{"config", s}, &stdout, &stderr)
-
-			if code == 0 {
-				t.Fatalf("config %s exit=0; want non-zero stub", s)
-			}
-			if !strings.Contains(stderr.String(), "not yet implemented") {
-				t.Errorf("config %s stderr=%q; want substring %q", s, stderr.String(), "not yet implemented")
-			}
-		})
-	}
 }
 
 func TestExecute_UnknownCommand_NonZero(t *testing.T) {
