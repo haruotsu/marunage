@@ -19,6 +19,7 @@ package googletasks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/haruotsu/marunage/internal/source"
@@ -52,13 +53,28 @@ var (
 
 	// ErrTaskNotFound is returned by Complete / Delete when the
 	// externalID does not match any task in any tasklist visible to the
-	// configured account.
+	// configured account, OR when a TOCTOU race deletes the task between
+	// findTaskList and the upstream Patch / Delete call.
 	ErrTaskNotFound = errors.New("googletasks: task not found")
+
+	// ErrAmbiguousTaskID is returned by Complete / Delete when the same
+	// task id is observed in more than one tasklist. Google's API does
+	// not document task ids as globally unique across lists, so we
+	// refuse to silently pick the first hit and risk completing or
+	// deleting the wrong row.
+	ErrAmbiguousTaskID = errors.New("googletasks: ambiguous task id (present in multiple lists)")
 
 	// ErrUnauthorized is returned by Client implementations to signal
 	// the upstream rejected the credential (401 / 403). The plugin
 	// translates this into source.AuthRevoked at the AuthStatus level.
 	ErrUnauthorized = errors.New("googletasks: unauthorized")
+
+	// ErrUpstreamTaskMissing is the sentinel a Client implementation
+	// returns from PatchTask / DeleteTask when the upstream answers 404
+	// for the (tasklist, task) pair. Plugin's Complete / Delete catch
+	// it and translate to ErrTaskNotFound, so callers branch on a
+	// stable, package-level type rather than an SDK-specific shape.
+	ErrUpstreamTaskMissing = errors.New("googletasks: upstream task missing")
 )
 
 // Plugin is the Google Tasks source. Construct one with New and reuse it;
@@ -155,7 +171,7 @@ func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
 	}
 	lists, err := c.ListTaskLists(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("googletasks: list tasklists: %w", err)
 	}
 	var out []source.Task
 	for _, l := range lists {
@@ -164,20 +180,34 @@ func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
 		}
 		tasks, err := c.ListTasks(ctx, l.ID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("googletasks: list tasks in %q: %w", l.ID, err)
 		}
 		for _, t := range tasks {
-			out = append(out, source.Task{
-				Source:     pluginName,
-				ExternalID: t.ID,
-				Title:      t.Title,
-				Body:       t.Notes,
-				Done:       t.Status == statusCompleted,
-				SourcePath: "tasklists/" + l.ID,
-			})
+			out = append(out, makeSourceTask(l, t))
 		}
 	}
 	return out, nil
+}
+
+// makeSourceTask is the (GTaskList, GTask) -> source.Task lift shared by
+// List and Add. RawMetadata carries the tasklist id+title so the queue
+// layer can disambiguate rows whose upstream task ids happen to collide
+// across lists (Google's API does not document global uniqueness, and
+// the queue's (source, external_id) UNIQUE constraint would otherwise
+// silently fold the duplicates into a single row).
+func makeSourceTask(l GTaskList, t GTask) source.Task {
+	return source.Task{
+		Source:     pluginName,
+		ExternalID: t.ID,
+		Title:      t.Title,
+		Body:       t.Notes,
+		Done:       t.Status == statusCompleted,
+		SourcePath: "tasklists/" + l.ID,
+		RawMetadata: map[string]any{
+			"tasklist_id":    l.ID,
+			"tasklist_title": l.Title,
+		},
+	}
 }
 
 // Setup is the OAuth / smoke-test entry point for the source. PR-84
@@ -215,11 +245,14 @@ func (p *Plugin) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 	if c == nil {
 		return source.AuthNotConfigured, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := c.Ping(ctx); err != nil {
 		if errors.Is(err, ErrUnauthorized) {
 			return source.AuthRevoked, nil
 		}
-		return "", err
+		return "", fmt.Errorf("googletasks: ping: %w", err)
 	}
 	return source.AuthAuthenticated, nil
 }
@@ -231,6 +264,9 @@ func (p *Plugin) Add(ctx context.Context, title, notes string) (source.Task, err
 	if c == nil {
 		return source.Task{}, ErrNotConfigured
 	}
+	if err := ctx.Err(); err != nil {
+		return source.Task{}, err
+	}
 	if title == "" {
 		return source.Task{}, ErrInvalidTitle
 	}
@@ -241,16 +277,13 @@ func (p *Plugin) Add(ctx context.Context, title, notes string) (source.Task, err
 		Status: statusNeedsAction,
 	})
 	if err != nil {
-		return source.Task{}, err
+		return source.Task{}, fmt.Errorf("googletasks: insert into %q: %w", listID, err)
 	}
-	return source.Task{
-		Source:     pluginName,
-		ExternalID: got.ID,
-		Title:      got.Title,
-		Body:       got.Notes,
-		Done:       got.Status == statusCompleted,
-		SourcePath: "tasklists/" + listID,
-	}, nil
+	// We do not have the GTaskList Title in hand here (Add is addressed
+	// by id only), so we synthesize a minimal one. The queue layer cares
+	// about tasklist_id for dedup; tasklist_title is a UX hint only and
+	// can be filled in on the next List sweep.
+	return makeSourceTask(GTaskList{ID: listID}, got), nil
 }
 
 // Complete patches the upstream task to status="completed". The brief
@@ -269,6 +302,9 @@ func (p *Plugin) Complete(ctx context.Context, externalID string) error {
 	if c == nil {
 		return ErrNotConfigured
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if externalID == "" {
 		return ErrInvalidTaskID
 	}
@@ -277,7 +313,13 @@ func (p *Plugin) Complete(ctx context.Context, externalID string) error {
 		return err
 	}
 	if _, err := c.PatchTask(ctx, listID, externalID, GTask{Status: statusCompleted}); err != nil {
-		return err
+		// TOCTOU race: the row existed at findTaskList but vanished
+		// before the patch landed. Translate to the typed sentinel so
+		// callers branch on errors.Is rather than parsing strings.
+		if errors.Is(err, ErrUpstreamTaskMissing) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("googletasks: patch %q in %q: %w", externalID, listID, err)
 	}
 	return nil
 }
@@ -288,6 +330,9 @@ func (p *Plugin) Delete(ctx context.Context, externalID string) error {
 	if c == nil {
 		return ErrNotConfigured
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if externalID == "" {
 		return ErrInvalidTaskID
 	}
@@ -295,31 +340,52 @@ func (p *Plugin) Delete(ctx context.Context, externalID string) error {
 	if err != nil {
 		return err
 	}
-	return c.DeleteTask(ctx, listID, externalID)
+	if err := c.DeleteTask(ctx, listID, externalID); err != nil {
+		// Same TOCTOU race shape as Complete — translate to the typed
+		// sentinel so the caller's branch is identical for both ops.
+		if errors.Is(err, ErrUpstreamTaskMissing) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("googletasks: delete %q in %q: %w", externalID, listID, err)
+	}
+	return nil
 }
 
 // findTaskList walks every tasklist the upstream knows about and returns
-// the id of the list that contains taskID. Returns ErrTaskNotFound when
-// no list claims the id (the typed error lets callers branch on
-// errors.Is rather than parsing strings).
+// the id of the list that contains taskID.
+//
+// Returns ErrTaskNotFound when no list claims the id, and
+// ErrAmbiguousTaskID when more than one does. We deliberately keep
+// scanning every list (rather than short-circuiting on the first hit)
+// so the ambiguity surfaces loudly: Google's API does not document
+// task ids as globally unique, and silently picking the first match
+// would silently flip the wrong row.
 func (p *Plugin) findTaskList(ctx context.Context, c Client, taskID string) (string, error) {
 	lists, err := c.ListTaskLists(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("googletasks: list tasklists: %w", err)
 	}
+	var found string
 	for _, l := range lists {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 		tasks, err := c.ListTasks(ctx, l.ID)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("googletasks: list tasks in %q: %w", l.ID, err)
 		}
 		for _, t := range tasks {
-			if t.ID == taskID {
-				return l.ID, nil
+			if t.ID != taskID {
+				continue
 			}
+			if found != "" {
+				return "", fmt.Errorf("%w: %q in %q and %q", ErrAmbiguousTaskID, taskID, found, l.ID)
+			}
+			found = l.ID
 		}
 	}
-	return "", ErrTaskNotFound
+	if found == "" {
+		return "", ErrTaskNotFound
+	}
+	return found, nil
 }

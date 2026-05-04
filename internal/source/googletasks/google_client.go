@@ -179,20 +179,52 @@ func (c *GoogleClient) Ping(ctx context.Context) error {
 }
 
 // translateError lifts the SDK's typed *googleapi.Error into the
-// package-level ErrUnauthorized sentinel for 401 / 403 responses, so
-// AuthStatus can branch on errors.Is without duplicating Google's
-// error-shape into the Plugin. Other errors travel up unchanged
-// (wrapped only with package context) so the caller still sees the
-// original payload for debugging.
+// package-level sentinels callers branch on:
+//
+//   - 401 / 403 -> ErrUnauthorized (AuthStatus -> AuthRevoked)
+//   - 404       -> ErrUpstreamTaskMissing (Complete / Delete TOCTOU
+//     translation -> ErrTaskNotFound)
+//
+// Other errors travel up unchanged.
+//
+// We deliberately truncate the upstream `Message` payload before letting
+// it flow into the error chain. Google's API has been observed to
+// reflect URL-encoded query parameters and a handful of identifying
+// fields back into the message body; a verbatim wrap would let those
+// segments leak into logs that the caller did not expect to redact.
+// Truncation keeps the diagnostic value (response category) without
+// the long tail. Defence-in-depth — `internal/logging.Redact` (PR-42b)
+// is the primary line; this function is the "do not put it in the
+// chain in the first place" complement.
 func translateError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var apiErr *googleapi.Error
 	if errors.As(err, &apiErr) {
-		if apiErr.Code == http.StatusUnauthorized || apiErr.Code == http.StatusForbidden {
-			return fmt.Errorf("%w: %s", ErrUnauthorized, apiErr.Message)
+		msg := truncateMessage(apiErr.Message)
+		switch apiErr.Code {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return fmt.Errorf("%w: status=%d %s", ErrUnauthorized, apiErr.Code, msg)
+		case http.StatusNotFound:
+			return fmt.Errorf("%w: status=%d %s", ErrUpstreamTaskMissing, apiErr.Code, msg)
 		}
 	}
 	return err
+}
+
+// truncateMessage keeps an upstream error string from leaking unbounded
+// reflected content into the error chain. 120 bytes is enough to retain
+// the upstream category ("Required field is missing", "Quota exceeded",
+// ...) while bounding the worst-case payload size that a misconfigured
+// log sink could capture. The caller is still free to read the full
+// `*googleapi.Error` via `errors.As` if it wants to inspect the
+// untruncated payload — the truncation only applies to what we put
+// into the wrapped error string.
+func truncateMessage(s string) string {
+	const limit = 120
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "...(truncated)"
 }
