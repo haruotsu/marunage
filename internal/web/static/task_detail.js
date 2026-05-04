@@ -1,4 +1,4 @@
-// task_detail.js — live terminal stream + workspace send for /tasks/{id}.
+// task_detail.js — live terminal stream + workspace send + force-stop.
 // Compatible with script-src 'self' CSP (no inline handlers).
 
 (function () {
@@ -9,6 +9,32 @@
     return match ? decodeURIComponent(match[1]) : "";
   }
 
+  // Force Stop button — wired via data-stop-task-id, no inline handlers.
+  var stopBtn = document.querySelector("[data-stop-task-id]");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", function () {
+      var id = stopBtn.dataset.stopTaskId;
+      if (!confirm("Force stop task #" + id + "?")) { return; }
+      stopBtn.disabled = true;
+      fetch("/api/tasks/" + id + "/stop", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "X-CSRF-Token": csrfToken() }
+      })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            if (!resp.ok) { throw new Error(data.error || "HTTP " + resp.status); }
+          });
+        })
+        .then(function () { window.location.reload(); })
+        .catch(function (err) {
+          alert("Force stop failed: " + err.message);
+          stopBtn.disabled = false;
+        });
+    });
+  }
+
+  // Live terminal stream + workspace send (only when terminal pane is present).
   var outputEl = document.getElementById("terminal-output");
   var sendForm = document.getElementById("terminal-send-form");
   var sendInput = document.getElementById("terminal-input");
@@ -19,7 +45,6 @@
   var taskId = outputEl.dataset.taskId;
   if (!taskId) { return; }
 
-  // Connect SSE stream.
   var es = new EventSource("/api/tasks/" + taskId + "/stream");
 
   es.addEventListener("output", function (e) {
@@ -38,7 +63,6 @@
     if (statusEl) { statusEl.textContent = "Disconnected — retrying…"; }
   };
 
-  // Send form.
   if (!sendForm) { return; }
 
   sendForm.addEventListener("submit", function (e) {

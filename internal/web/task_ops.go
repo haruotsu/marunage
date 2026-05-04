@@ -37,6 +37,9 @@ type TaskOpsStore interface {
 	UpdatePriority(ctx context.Context, id int64, priority int) error
 	// Delete removes a task row entirely.
 	Delete(ctx context.Context, id int64) error
+	// StopTask force-stops a running task (running -> failed).
+	// Returns errTaskOpsNotFound or errTaskOpsInvalidTransition on failure.
+	StopTask(ctx context.Context, id int64) error
 }
 
 // parseIDFromRequest extracts the {id} path wildcard from the request using
@@ -186,6 +189,22 @@ func newDeleteTaskHandler(store TaskOpsStore) http.Handler {
 			return
 		}
 		if mapOpsError(w, store.Delete(r.Context(), id)) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
+	})
+}
+
+// newStopTaskHandler returns POST /api/tasks/{id}/stop.
+// Force-stops a running task (running -> failed).
+func newStopTaskHandler(store TaskOpsStore) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := parseIDFromRequest(r)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid task id")
+			return
+		}
+		if mapOpsError(w, store.StopTask(r.Context(), id)) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})

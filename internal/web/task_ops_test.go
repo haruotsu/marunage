@@ -20,6 +20,7 @@ type fakeTasks struct {
 	addFn            func(ctx context.Context, title, body string, priority int) (int64, error)
 	updatePriorityFn func(ctx context.Context, id int64, priority int) error
 	deleteFn         func(ctx context.Context, id int64) error
+	stopFn           func(ctx context.Context, id int64) error
 }
 
 func (f *fakeTasks) Dispatch(ctx context.Context, id int64) error {
@@ -60,6 +61,13 @@ func (f *fakeTasks) UpdatePriority(ctx context.Context, id int64, priority int) 
 func (f *fakeTasks) Delete(ctx context.Context, id int64) error {
 	if f.deleteFn != nil {
 		return f.deleteFn(ctx, id)
+	}
+	return nil
+}
+
+func (f *fakeTasks) StopTask(ctx context.Context, id int64) error {
+	if f.stopFn != nil {
+		return f.stopFn(ctx, id)
 	}
 	return nil
 }
@@ -371,6 +379,59 @@ func TestTaskOpsHandler_UpdatePriority_NotFound(t *testing.T) {
 	}
 }
 
+// TestTaskOpsHandler_Stop_OK: running task -> 200 OK
+func TestTaskOpsHandler_Stop_OK(t *testing.T) {
+	var calledID int64
+	store := &fakeTasks{
+		stopFn: func(_ context.Context, id int64) error {
+			calledID = id
+			return nil
+		},
+	}
+	h := newStopTaskHandler(store)
+
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks/11/stop", nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	if calledID != 11 {
+		t.Errorf("called with id=%d; want 11", calledID)
+	}
+}
+
+// TestTaskOpsHandler_Stop_NotFound: non-existent task -> 404
+func TestTaskOpsHandler_Stop_NotFound(t *testing.T) {
+	store := &fakeTasks{
+		stopFn: func(_ context.Context, _ int64) error {
+			return errTaskOpsNotFound
+		},
+	}
+	h := newStopTaskHandler(store)
+
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks/999/stop", nil)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Stop_NotRunning: task not in running state -> 409
+func TestTaskOpsHandler_Stop_NotRunning(t *testing.T) {
+	store := &fakeTasks{
+		stopFn: func(_ context.Context, _ int64) error {
+			return errTaskOpsInvalidTransition
+		},
+	}
+	h := newStopTaskHandler(store)
+
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks/3/stop", nil)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d; want 409", rec.Code)
+	}
+}
+
 // TestTaskOpsRoutes_Wired: confirm all task ops routes are registered in server Routes
 func TestTaskOpsRoutes_Wired(t *testing.T) {
 	store := &fakeTasks{}
@@ -399,6 +460,7 @@ func TestTaskOpsRoutes_Wired(t *testing.T) {
 		{http.MethodPost, "/api/tasks/1/dispatch", nil},
 		{http.MethodPost, "/api/tasks/1/promote", nil},
 		{http.MethodPost, "/api/tasks/1/reopen", nil},
+		{http.MethodPost, "/api/tasks/1/stop", nil},
 		{http.MethodPost, "/api/tasks", mustMarshal(t, map[string]any{"title": "x"})},
 		{http.MethodPatch, "/api/tasks/1/priority", mustMarshal(t, map[string]any{"priority": 1})},
 		{http.MethodDelete, "/api/tasks/1", nil},
