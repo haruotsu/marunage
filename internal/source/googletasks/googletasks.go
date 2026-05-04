@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/haruotsu/marunage/internal/source"
 )
@@ -88,6 +87,13 @@ var (
 // the struct is concurrency-safe because all upstream mutations go through
 // the underlying Client (which the real implementation backs with a
 // goroutine-safe *tasks.Service).
+//
+// Error-string contract: every error this Plugin returns may carry an
+// upstream-derived prefix (Google task / list ids) and is intended to
+// reach a logger only AFTER the dispatcher's Redact pipeline (PR-42b)
+// has scrubbed it. Direct callers — tests, CLI surface — should treat
+// these errors as opaque and never println them straight to a log
+// sink.
 type Plugin struct {
 	upstream Client
 
@@ -96,8 +102,6 @@ type Plugin struct {
 	// account's primary list. Configurable via WithDefaultTaskList so a
 	// user with a marunage-specific list can pin it without renaming.
 	defaultListID string
-
-	mu sync.RWMutex
 }
 
 // Option mutates Plugin construction. Mirrors the functional-option style
@@ -133,12 +137,14 @@ func New(opts ...Option) *Plugin {
 // Name reports the canonical plugin identifier.
 func (p *Plugin) Name() string { return pluginName }
 
-// client returns the configured upstream Client under read lock so a
-// concurrent setup-driven swap (a future PR-71 Setup will refresh the
-// Client when re-auth completes) cannot tear with an in-flight List.
+// client returns the configured upstream Client. WithClient runs only
+// at construction time, so once a Plugin is in use the field is
+// effectively immutable from the goroutine's perspective; the helper
+// exists so the call sites read top-to-bottom and a future PR that
+// adds a hot-swap path (Setup re-priming Client after OAuth refresh)
+// has one place to switch in a sync primitive without touching every
+// method.
 func (p *Plugin) client() Client {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	return p.upstream
 }
 
@@ -197,23 +203,25 @@ func (p *Plugin) List(ctx context.Context) ([]source.Task, error) {
 }
 
 // makeSourceTask is the (GTaskList, GTask) -> source.Task lift shared by
-// List and Add. RawMetadata carries the tasklist id+title so the queue
-// layer can disambiguate rows whose upstream task ids happen to collide
-// across lists (Google's API does not document global uniqueness, and
-// the queue's (source, external_id) UNIQUE constraint would otherwise
-// silently fold the duplicates into a single row).
+// List and Add. RawMetadata always carries the tasklist id (the queue
+// layer needs it to disambiguate rows when Google's task ids happen to
+// collide across lists) and conditionally carries the tasklist title
+// when it is known: List has it from the upstream listing, while Add
+// only has the id in hand and lets a subsequent List sweep fill the
+// title.
 func makeSourceTask(l GTaskList, t GTask) source.Task {
+	meta := map[string]any{"tasklist_id": l.ID}
+	if l.Title != "" {
+		meta["tasklist_title"] = l.Title
+	}
 	return source.Task{
-		Source:     pluginName,
-		ExternalID: t.ID,
-		Title:      t.Title,
-		Body:       t.Notes,
-		Done:       t.Status == statusCompleted,
-		SourcePath: "tasklists/" + l.ID,
-		RawMetadata: map[string]any{
-			"tasklist_id":    l.ID,
-			"tasklist_title": l.Title,
-		},
+		Source:      pluginName,
+		ExternalID:  t.ID,
+		Title:       t.Title,
+		Body:        t.Notes,
+		Done:        t.Status == statusCompleted,
+		SourcePath:  "tasklists/" + l.ID,
+		RawMetadata: meta,
 	}
 }
 

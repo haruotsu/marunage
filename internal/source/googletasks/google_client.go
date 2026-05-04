@@ -50,6 +50,18 @@ type GoogleClient struct {
 // `go.mod` entry comes from the wrapper, not from here) and therefore
 // cannot accidentally hard-code an OAuth flow that ignores the user's
 // chosen secret backend.
+//
+// Token storage contract for callers (the future Setup PR will live up
+// to this, and any direct user of NewGoogleClient inherits it):
+//
+//   - The OAuth token MUST come from the secrets backend
+//     (internal/secrets, e.g. OS Keychain / DPAPI / libsecret / pass).
+//   - Plain-text persistence under ~/.marunage/ is forbidden by
+//     requirement §9.1 (OpenClaw §11.1 lessons).
+//   - The httpClient passed in here should already have a refresh
+//     transport that writes the rotated refresh-token back through the
+//     same secrets backend on rotation, so a long-running daemon never
+//     drops back to the file system.
 func NewGoogleClient(ctx context.Context, httpClient *http.Client) (*GoogleClient, error) {
 	if httpClient == nil {
 		return nil, fmt.Errorf("googletasks: NewGoogleClient requires a non-nil *http.Client")
