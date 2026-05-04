@@ -58,9 +58,12 @@
 
 ### Phases (per `RunOnce`)
 
-1. **Lock acquire (optional).** When `WithLockKey` is set, attempt a
-   kv_state `CompareAndSwap` from absent → "held". Lose the race → return
-   `ErrLockBusy` so the caller (CLI / next tick) skips this iteration.
+1. **Lock acquire (optional).** When `WithLockKey` is set, attempt the
+   atomic `KVStateRepo.InsertIfAbsent(key, ownerToken)` primitive
+   (single SQL `INSERT ... ON CONFLICT DO NOTHING`). The owner token is
+   a per-`*Loop` random hex sentinel generated at `New` time. Lose the
+   race (`inserted == false`) → return `ErrLockBusy` so the caller
+   (CLI / next tick) skips this iteration.
 2. **Audit `loop.start`.**
 3. **Discover.** For each registered plugin name:
    - Resolve plugin from registry.
@@ -82,9 +85,13 @@
    tmpfile + rename.
 6. **Audit `loop.end`.** Released defer, value carries the error string
    (or "") so a forensic reader sees pass/fail per tick.
-7. **Lock release.** Deferred at top of `RunOnce` so even a panic returns
-   the kv_state row to "absent". Best-effort; failure is audited as
-   `loop.lock.release.fail`.
+7. **Lock release.** Deferred immediately after a successful acquire so
+   even a panic returns the kv_state row to "absent". The release uses
+   `KVStateRepo.DeleteIfValue(key, ownerToken)` — owner-tagged so a
+   stale defer from an evicted holder cannot stomp a fresh holder
+   (value mismatch returns `deleted=false`, audited as
+   `loop.lock.release.skipped`). Store-level failure is audited as
+   `loop.lock.release.fail` and does not bubble.
 
 ### Run (interval ticker)
 
