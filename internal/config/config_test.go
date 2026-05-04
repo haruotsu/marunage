@@ -169,6 +169,11 @@ func TestValidate(t *testing.T) {
 			mutate:  func(c *Config) { c.Web.Port = 70000 },
 			wantErr: "web.port",
 		},
+		{
+			name:    "journal.interval must parse as duration",
+			mutate:  func(c *Config) { c.Journal.Interval = "never" },
+			wantErr: "journal.interval",
+		},
 	}
 
 	for _, tc := range cases {
