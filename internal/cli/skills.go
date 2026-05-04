@@ -345,4 +345,3 @@ func printSearchHits(w io.Writer, hits []registry.IndexEntry) {
 		fmt.Fprintf(w, "%s\tlatest=%s\t%s\n", e.Name, e.Latest, desc)
 	}
 }
-
