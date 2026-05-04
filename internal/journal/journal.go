@@ -34,8 +34,11 @@ func WithClock(now func() time.Time) Option { return func(j *Journal) { j.now = 
 // "since" window when no checkpoint exists).
 func WithInterval(d time.Duration) Option { return func(j *Journal) { j.interval = d } }
 
-// New constructs a Journal backed by w.
+// New constructs a Journal backed by w. Panics when w is nil.
 func New(w *Writer, opts ...Option) *Journal {
+	if w == nil {
+		panic("journal.New: writer must not be nil")
+	}
 	j := &Journal{
 		writer:   w,
 		now:      time.Now,
@@ -53,13 +56,15 @@ func (j *Journal) Tick(ctx context.Context) error {
 	now := j.now()
 
 	since, err := j.writer.LastCheckpoint()
-	if err == nil {
+	switch {
+	case err == nil:
 		if !now.After(since) {
 			return nil // dedup: checkpoint is current or future
 		}
-	} else {
-		// No checkpoint: look back one interval.
+	case errors.Is(err, ErrNoCheckpoint):
 		since = now.Add(-j.interval)
+	default:
+		return fmt.Errorf("read checkpoint: %w", err)
 	}
 
 	var sections []Section
@@ -110,7 +115,8 @@ func (j *Journal) Run(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-// sectionTitle maps a collector name to a human-readable Markdown heading.
+// sectionTitle maps a known collector name to a human-readable Markdown heading.
+// Unknown names are returned as-is so third-party collectors work out of the box.
 func sectionTitle(name string) string {
 	switch name {
 	case "git":
@@ -119,10 +125,6 @@ func sectionTitle(name string) string {
 		return "GitHub Activity"
 	case "marunage":
 		return "Completed Tasks"
-	case "slack":
-		return "Slack Activity"
-	case "calendar":
-		return "Calendar Events"
 	default:
 		return name
 	}

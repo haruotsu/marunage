@@ -12,10 +12,11 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 }
 
-// execRunner is the production Runner that delegates to os/exec.
-type execRunner struct{}
+// ExecRunner is the production Runner that delegates to os/exec.
+// Exported to match the naming convention in internal/source/github/runner.go.
+type ExecRunner struct{}
 
-func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out

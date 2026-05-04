@@ -258,6 +258,11 @@ func (c Config) Validate() error {
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
 	}
+	if c.Journal.Enabled {
+		if _, err := time.ParseDuration(c.Journal.Interval); err != nil {
+			return fmt.Errorf("journal.interval: %w", err)
+		}
+	}
 	if c.Reflection.SampleRate < 0 || c.Reflection.SampleRate > 1 {
 		return fmt.Errorf("reflection.sample_rate: must be in [0,1] (got %v)", c.Reflection.SampleRate)
 	}
