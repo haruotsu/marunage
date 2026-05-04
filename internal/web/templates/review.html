@@ -69,7 +69,8 @@
                 <td>{{.CreatedRel}}</td>
                 <td>
                   <button class="btn btn-sm btn-promote"
-                          onclick="reviewOps.promote({{.ID}}, this)"
+                          data-task-id="{{.ID}}"
+                          aria-label="Promote task #{{.ID}} back to pending"
                           title="Promote this task back to pending">
                     Promote
                   </button>
