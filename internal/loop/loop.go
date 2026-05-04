@@ -394,19 +394,40 @@ func (l *Loop) advanceCheckpoint(ctx context.Context, name string) {
 }
 
 // taskFromSource maps a source.Task into the store.Task shape with the
-// loop's invariants applied: status defaults to pending (Insert sets it
-// when zero), Source is forced to plugin.Name() so a misbehaving plugin
-// cannot smuggle rows under another source's name, and RawMetadata is
-// dropped — the queue schema does not have a column for it and the
-// markdown adapter only uses it for line-number debugging.
+// loop's invariants applied:
+//
+//   - Source is forced to plugin.Name() so a misbehaving plugin cannot
+//     smuggle rows under another source's name.
+//   - SourcePath maps to ExternalURL — the queue schema's "where did
+//     this come from" column. A `marunage show` row links back through
+//     it, and the dispatcher's reversibility audit reads it. Plugins
+//     with no notion of a path leave SourcePath empty and the column
+//     stays NULL.
+//   - Done = true is honoured by inserting with status = done, so an
+//     already-finished upstream item is not silently re-dispatched on
+//     every tick. Done = false leaves status zero so Insert defaults
+//     to pending.
+//   - source.Task.Priority (a plugin's free-form hint string) is
+//     intentionally NOT mapped onto store.Task.Priority (an integer the
+//     triage layer owns). Triage (PR-72) reads the hint via Notes /
+//     Body and decides the numeric weight; honouring the hint here
+//     would let plugins write directly into the queue's priority lane,
+//     defeating the triage hand-off requirement.md describes.
+//   - RawMetadata is dropped — the queue schema has no column for it
+//     and the markdown adapter only uses it for line-number debugging.
 func taskFromSource(t source.Task, sourceName string) store.Task {
-	return store.Task{
-		Source:     sourceName,
-		ExternalID: t.ExternalID,
-		Title:      strings.TrimSpace(t.Title),
-		Body:       t.Body,
-		Notes:      t.Notes,
+	row := store.Task{
+		Source:      sourceName,
+		ExternalID:  t.ExternalID,
+		ExternalURL: t.SourcePath,
+		Title:       strings.TrimSpace(t.Title),
+		Body:        t.Body,
+		Notes:       t.Notes,
 	}
+	if t.Done {
+		row.Status = store.StatusDone
+	}
+	return row
 }
 
 // acquireLock claims the configured lock via the atomic InsertIfAbsent

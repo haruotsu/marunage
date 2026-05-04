@@ -389,12 +389,13 @@ func TestInsertIfAbsent_ConcurrentCallsExactlyOneWins(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 	results := make(chan bool, goroutines)
+	errs := make(chan error, goroutines)
 	for g := 0; g < goroutines; g++ {
 		go func() {
 			defer wg.Done()
 			ok, err := f.repo.InsertIfAbsent(f.ctx, "lock", "owner")
 			if err != nil {
-				results <- false
+				errs <- err
 				return
 			}
 			results <- ok
@@ -402,6 +403,14 @@ func TestInsertIfAbsent_ConcurrentCallsExactlyOneWins(t *testing.T) {
 	}
 	wg.Wait()
 	close(results)
+	close(errs)
+	// Surface goroutine errors explicitly: without this, a SQLite
+	// "database is locked" stray under contention would silently land
+	// in the false bucket and the "exactly one winner" assertion could
+	// pass with zero actual InsertIfAbsent wins.
+	for err := range errs {
+		t.Errorf("InsertIfAbsent under contention: %v", err)
+	}
 	wins := 0
 	for ok := range results {
 		if ok {

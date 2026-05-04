@@ -315,6 +315,87 @@ func TestRunOnce_DiscoversAndInsertsTasks(t *testing.T) {
 	}
 }
 
+// O2b: source.Task.Done = true must NOT be silently demoted to pending.
+// Per the source.Plugin contract, Done flags upstream completion at
+// observation time; if the loop materialises every task as pending, an
+// already-finished upstream item would be re-dispatched on every tick
+// until a triage step intervened. Insert with status = done so the
+// queue and view.md reflect the upstream truth and the dispatcher's
+// "pending" filter naturally skips it.
+func TestRunOnce_DonePreservesUpstreamStatus(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name: "manual",
+		listFn: func(context.Context) ([]source.Task, error) {
+			return []source.Task{
+				{Source: "manual", ExternalID: "ext-open", Title: "Still open"},
+				{Source: "manual", ExternalID: "ext-done", Title: "Already done", Done: true},
+			}, nil
+		},
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t)
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows, err := f.repo.List(f.ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := map[string]store.Task{}
+	for _, r := range rows {
+		got[r.ExternalID] = r
+	}
+	if got["ext-open"].Status != store.StatusPending {
+		t.Errorf("ext-open status = %q; want pending", got["ext-open"].Status)
+	}
+	if got["ext-done"].Status != store.StatusDone {
+		t.Errorf("ext-done status = %q; want done (upstream Done=true must propagate)", got["ext-done"].Status)
+	}
+}
+
+// O2c: source.Task.SourcePath rides into store.Task.ExternalURL so a
+// `marunage show` row can link back to the file / URL the task came
+// from. Plugins that have no notion of a path leave SourcePath empty
+// and the column stays NULL.
+func TestRunOnce_SourcePathBecomesExternalURL(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name: "manual",
+		listFn: func(context.Context) ([]source.Task, error) {
+			return []source.Task{
+				{Source: "manual", ExternalID: "ext-1", Title: "First", SourcePath: "/tmp/todo.md"},
+				{Source: "manual", ExternalID: "ext-2", Title: "Second"},
+			}, nil
+		},
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t)
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows, err := f.repo.List(f.ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := map[string]store.Task{}
+	for _, r := range rows {
+		got[r.ExternalID] = r
+	}
+	if got["ext-1"].ExternalURL != "/tmp/todo.md" {
+		t.Errorf("ext-1 ExternalURL = %q; want /tmp/todo.md (SourcePath should map)", got["ext-1"].ExternalURL)
+	}
+	if got["ext-2"].ExternalURL != "" {
+		t.Errorf("ext-2 ExternalURL = %q; want empty (no SourcePath)", got["ext-2"].ExternalURL)
+	}
+}
+
 // O3: a duplicate external_id is silently skipped (idempotent re-discovery).
 func TestRunOnce_SkipsDuplicateExternalID(t *testing.T) {
 	t.Parallel()
