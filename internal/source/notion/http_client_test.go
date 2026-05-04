@@ -269,6 +269,63 @@ func TestHTTPClientCreatePagePostsToPagesEndpoint(t *testing.T) {
 	}
 }
 
+// TestHTTPClientExtractTitleMalformed exercises the title-extraction path
+// the fakeClient bypasses. We cover four real-world failure modes that
+// would have shipped silently otherwise:
+//
+//   - no property has type=="title" — page returns Title=""
+//   - title array is empty           — page returns Title=""
+//   - rich-text segment uses "text"  — concat content (not plain_text)
+//   - properties is null             — no panic, Title=""
+func TestHTTPClientExtractTitleMalformed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		respBody string
+		want     string
+	}{
+		{
+			name:     "no title property",
+			respBody: `{"results":[{"id":"a","object":"page","properties":{"Status":{"type":"select"}}}],"has_more":false}`,
+			want:     "",
+		},
+		{
+			name:     "empty title array",
+			respBody: `{"results":[{"id":"b","object":"page","properties":{"Name":{"type":"title","title":[]}}}],"has_more":false}`,
+			want:     "",
+		},
+		{
+			name:     "text content fallback",
+			respBody: `{"results":[{"id":"c","object":"page","properties":{"Name":{"type":"title","title":[{"text":{"content":"hi"}}]}}}],"has_more":false}`,
+			want:     "hi",
+		},
+		{
+			name:     "null properties",
+			respBody: `{"results":[{"id":"d","object":"page","properties":null}],"has_more":false}`,
+			want:     "",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.respBody))
+			}))
+			t.Cleanup(srv.Close)
+			c := NewHTTPClient(srv.Client(), srv.URL, "tok")
+			got, err := c.QueryDatabase(context.Background(), "db", QueryOptions{})
+			if err != nil {
+				t.Fatalf("QueryDatabase: %v", err)
+			}
+			if len(got) != 1 || got[0].Title != tc.want {
+				t.Fatalf("Title = %q, want %q (page=%+v)", got[0].Title, tc.want, got)
+			}
+		})
+	}
+}
+
 // TestHTTPClientMaps429ToRateLimitedError — Notion's documented 429 body
 // carries code="rate_limited"; the client must surface a typed
 // RateLimitedError (also wrapping ErrRateLimited) and decode the
@@ -317,6 +374,43 @@ func TestHTTPClientHonoursCtxCancellationBetweenPages(t *testing.T) {
 	_, err := c.QueryDatabase(ctx, "db", QueryOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestHTTPClientEscapesPathSegments asserts that databaseID / pageID values
+// containing path-disrupting bytes ("..", "/", "?", " ") cannot escape
+// the intended endpoint. Notion ids are normally UUIDs, but the value is
+// configuration-supplied — a typo or hostile config must not redirect the
+// request to /v1/users or another endpoint.
+func TestHTTPClientEscapesPathSegments(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		_, _ = w.Write([]byte(`{"results":[],"has_more":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewHTTPClient(srv.Client(), srv.URL, "tok")
+	if _, err := c.QueryDatabase(context.Background(), "../users", QueryOptions{}); err != nil {
+		t.Fatalf("QueryDatabase: %v", err)
+	}
+	if !strings.Contains(gotPath, "%2F") {
+		t.Errorf("databaseID slash not path-escaped: %q", gotPath)
+	}
+
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv2.Close)
+	c2 := NewHTTPClient(srv2.Client(), srv2.URL, "tok")
+	if err := c2.UpdatePage(context.Background(), "../delete-me", false); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+	if !strings.Contains(gotPath, "%2F") {
+		t.Errorf("pageID slash not path-escaped: %q", gotPath)
 	}
 }
 

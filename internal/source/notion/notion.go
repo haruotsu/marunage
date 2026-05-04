@@ -228,21 +228,29 @@ func (p *Plugin) Since(ctx context.Context) ([]Task, error) {
 }
 
 // toTasks lifts a slice of Page (the Client's view) into the package's
-// Task type. Pulled out so List and Since share one definition; otherwise
-// a future field addition would need two identical edits.
+// Task type. Pulled out so List / Since / Add all share one definition;
+// otherwise a future field addition would need three identical edits.
 func (p *Plugin) toTasks(pages []Page) []Task {
 	out := make([]Task, len(pages))
 	for i, pg := range pages {
-		out[i] = Task{
-			ExternalID:     pg.ID,
-			Title:          pg.Title,
-			Done:           pg.Archived,
-			SourcePath:     pg.URL,
-			LastEditedTime: pg.LastEditedTime,
-			DatabaseID:     p.databaseID,
-		}
+		out[i] = pageToTask(pg, p.databaseID)
 	}
 	return out
+}
+
+// pageToTask is the single Page -> Task mapping all callers go through.
+// databaseID is supplied here (rather than read off pg.DatabaseID) because
+// Notion's CreatePage / QueryDatabase responses do not always echo it,
+// and the Plugin already knows which database it asked about.
+func pageToTask(pg Page, databaseID string) Task {
+	return Task{
+		ExternalID:     pg.ID,
+		Title:          pg.Title,
+		Done:           pg.Archived,
+		SourcePath:     pg.URL,
+		LastEditedTime: pg.LastEditedTime,
+		DatabaseID:     databaseID,
+	}
 }
 
 // checkpointKey returns the kv_state key used to remember a database's
@@ -269,17 +277,7 @@ func (p *Plugin) Add(ctx context.Context, title, _ string) (Task, error) {
 	if err != nil {
 		return Task{}, fmt.Errorf("notion: create page: %w", err)
 	}
-	// Page returned by the API is the source of truth: id / url / etc.
-	// come back from Notion. Do not synthesise locally — a future Notion
-	// schema bump would silently drift if we did.
-	return Task{
-		ExternalID:     pg.ID,
-		Title:          pg.Title,
-		Done:           pg.Archived,
-		SourcePath:     pg.URL,
-		LastEditedTime: pg.LastEditedTime,
-		DatabaseID:     p.databaseID,
-	}, nil
+	return pageToTask(pg, p.databaseID), nil
 }
 
 // Complete archives the page referenced by externalID. Notion has no
