@@ -413,6 +413,40 @@ func TestSinceWithZeroResultsLeavesCheckpointAlone(t *testing.T) {
 	}
 }
 
+// D8. Defense-in-depth: if the upstream returns items whose ts is older
+// than the cursor we asked from (effective checkpoint), the persisted
+// checkpoint must NOT regress. Slack's API ought to honour `oldest`, but
+// a misbehaving upstream (mock, future MCP variant, replay log) should
+// not be able to trick the Sincer into re-feeding the same items on the
+// next call.
+func TestSinceDoesNotRegressCheckpointWhenFetchReturnsOlderItems(t *testing.T) {
+	t.Parallel()
+	c := &fakeClient{
+		mentions: []Message{
+			// Both ts values are strictly older than the explicit
+			// checkpoint we pass below.
+			{ChannelID: "C", TS: "1700000000.000100", Text: "stale a"},
+			{ChannelID: "C", TS: "1700000000.000050", Text: "stale b"},
+		},
+	}
+	cp := newMemoryCheckpointer()
+	p := New(WithClient(c), WithCheckpointer(cp), WithIncludeMentions(true))
+	cursor := "1700000000.999999"
+	if _, err := p.Since(context.Background(), cursor); err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	stored, ok := cp.sets["slack:last_ts"]
+	if !ok {
+		// No write at all is also acceptable — the checkpoint stays at
+		// whatever Get would have returned, which is the cursor we
+		// supplied (or the prior stored value). Nothing to assert.
+		return
+	}
+	if compareTS(stored, cursor) < 0 {
+		t.Fatalf("checkpoint regressed: stored %q < cursor %q", stored, cursor)
+	}
+}
+
 // D7.
 func TestSinceErrorDoesNotAdvanceCheckpoint(t *testing.T) {
 	t.Parallel()
