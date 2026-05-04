@@ -2,11 +2,6 @@ module github.com/haruotsu/marunage
 
 go 1.25.5
 
-// slackhog is a MailHog-style Slack API mock server used for Slack source
-// integration tests. Run with `go tool slackhog` during development to
-// verify PostDM and other Slack Web API interactions locally.
-tool github.com/harakeishi/slackhog
-
 require (
 	filippo.io/age v1.3.1
 	github.com/pelletier/go-toml/v2 v2.3.1
@@ -33,8 +28,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/harakeishi/slackhog v0.2.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -53,7 +46,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
