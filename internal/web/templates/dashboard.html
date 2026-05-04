@@ -37,10 +37,31 @@
       <h2 id="pending-heading">Pending queue</h2>
       <span class="count">{{.PendingCount}} total</span>
     </header>
+
+    <form class="task-add-form" id="task-add-form" onsubmit="taskOps.addTask(event)">
+      <h3>Add task</h3>
+      <div class="form-row">
+        <label for="add-title">Title <span aria-hidden="true">*</span></label>
+        <input id="add-title" name="title" type="text" required placeholder="Task title" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <label for="add-body">Body</label>
+        <textarea id="add-body" name="body" rows="2" placeholder="Optional details"></textarea>
+      </div>
+      <div class="form-row">
+        <label for="add-priority">Priority</label>
+        <input id="add-priority" name="priority" type="number" value="0" min="-999" max="999">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Add task</button>
+        <span class="form-feedback" id="add-form-feedback" aria-live="polite"></span>
+      </div>
+    </form>
+
     {{if .Pending}}
       <ol class="task-list ordered">
         {{range .Pending}}
-          <li class="task-row">
+          <li class="task-row" data-task-id="{{.ID}}">
             <div class="task-line">
               <span class="badge badge-source">{{.Source}}</span>
               <a class="task-id" href="/tasks/{{.ID}}">#{{.ID}}</a>
@@ -49,6 +70,27 @@
             </div>
             <div class="task-meta">
               <span>created {{.CreatedRel}}</span>
+            </div>
+            <div class="task-actions">
+              <button class="btn btn-sm btn-dispatch"
+                      onclick="taskOps.dispatch({{.ID}}, this)"
+                      title="Dispatch this task (pending → running)">
+                Dispatch
+              </button>
+              <label class="priority-edit" title="Edit priority">
+                <span class="sr-only">Priority</span>
+                <input type="number"
+                       class="priority-input"
+                       value="{{.Priority}}"
+                       min="-999" max="999"
+                       onchange="taskOps.updatePriority({{.ID}}, this.value, this)"
+                       aria-label="Priority for task #{{.ID}}">
+              </label>
+              <button class="btn btn-sm btn-danger"
+                      onclick="taskOps.deleteTask({{.ID}}, this)"
+                      title="Delete this task">
+                Delete
+              </button>
             </div>
           </li>
         {{end}}
