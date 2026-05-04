@@ -29,7 +29,6 @@ type fakeClient struct {
 	listQueries []string
 	modifyCalls []modifyCall
 	authCalls   []source.SetupOptions
-	statusCalls int
 }
 
 type modifyCall struct {
@@ -79,7 +78,6 @@ func (f *fakeClient) Authenticate(ctx context.Context, opts source.SetupOptions)
 func (f *fakeClient) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.statusCalls++
 	if f.authStatusFn != nil {
 		return f.authStatusFn(ctx)
 	}
@@ -259,6 +257,28 @@ func TestListConvertsMessagesToTasks(t *testing.T) {
 	gotLabels, _ := got[0].RawMetadata["labels"].([]string)
 	if len(gotLabels) != 2 || gotLabels[0] != "INBOX" || gotLabels[1] != "UNREAD" {
 		t.Errorf("task[0].RawMetadata[labels] = %v", gotLabels)
+	}
+}
+
+// TestListOmitsEmptyRawMetadataFrom keeps the Task.RawMetadata bag tidy
+// for downstream consumers (web UI, audit log): a sender-less message
+// should not produce a `"from": ""` entry that has to be filtered out
+// by every reader. The brief equates "no sender" with "key not present"
+// and other Phase 1 sources (markdown) follow the same omit-on-empty
+// rule for optional fields.
+func TestListOmitsEmptyRawMetadataFrom(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{messages: []Message{
+		{ID: "m1", Subject: "no-sender"},
+	}}
+	p := New(WithClient(fc))
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, present := got[0].RawMetadata["from"]; present {
+		t.Errorf("RawMetadata[\"from\"] should be omitted when empty; got %#v", got[0].RawMetadata)
 	}
 }
 
@@ -464,6 +484,68 @@ func TestSinceWithoutClientReturnsErrClientNotSet(t *testing.T) {
 	}
 }
 
+// TestSinceHonoursContextCancellation closes a coverage hole the first
+// review pass spotted: List has a cancellation test but Since's
+// equivalent guard (after the Checkpointer fallback branch) was
+// untested. A future refactor that drops the ctx.Err() check would now
+// flip this red.
+func TestSinceHonoursContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeClient{messages: []Message{{ID: "m1"}}}
+	cp := newFakeCheckpointer()
+	p := New(WithClient(fc), WithCheckpointer(cp))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Since(ctx, ""); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v; want context.Canceled", err)
+	}
+	if len(fc.listQueries) != 0 {
+		t.Errorf("client.List should not have been invoked on cancelled ctx")
+	}
+}
+
+// TestSinceWrapsCheckpointerGetError pins the documented contract:
+// Checkpointer.Get errors must surface to the caller (wrapped) rather
+// than be silently treated as "no checkpoint yet". Without this, a KV
+// outage would look like a fresh run and re-process every upstream
+// message.
+func TestSinceWrapsCheckpointerGetError(t *testing.T) {
+	t.Parallel()
+
+	getErr := errors.New("kv unavailable")
+	fc := &fakeClient{messages: []Message{{ID: "m1"}}}
+	cp := newFakeCheckpointer()
+	cp.getErr = getErr
+	p := New(WithClient(fc), WithCheckpointer(cp))
+
+	if _, err := p.Since(context.Background(), ""); !errors.Is(err, getErr) {
+		t.Errorf("err = %v; want wrap of getErr", err)
+	}
+	if len(fc.listQueries) != 0 {
+		t.Errorf("client.List should not have run after a checkpoint Get error")
+	}
+}
+
+// TestSinceWrapsCheckpointerSetError covers the symmetric write path:
+// after a successful upstream fetch, a Set failure must surface to the
+// caller. The plugin already returned the new tasks before persisting
+// the checkpoint, so the caller sees both the result AND the error and
+// can choose to retry.
+func TestSinceWrapsCheckpointerSetError(t *testing.T) {
+	t.Parallel()
+
+	setErr := errors.New("kv write failed")
+	fc := &fakeClient{messages: []Message{{ID: "m1"}}}
+	cp := newFakeCheckpointer()
+	cp.setErr = setErr
+	p := New(WithClient(fc), WithCheckpointer(cp))
+
+	if _, err := p.Since(context.Background(), ""); !errors.Is(err, setErr) {
+		t.Errorf("err = %v; want wrap of setErr", err)
+	}
+}
+
 // ----- D. Complete (Completer) ------------------------------------------------
 
 func TestCompleteAddsArchiveAndRemovesUnreadInOneCall(t *testing.T) {
@@ -507,7 +589,14 @@ func TestCompleteUsesConfiguredLabel(t *testing.T) {
 func TestCompleteUnknownIDReturnsErrTaskNotFound(t *testing.T) {
 	t.Parallel()
 
-	fc := &fakeClient{} // no messages -> any id is unknown.
+	// Explicitly programme the fake to return ErrClientMessageNotFound for
+	// the id we will probe. Relying on the fake's "any unknown id ->
+	// not-found" convenience is honest behaviour for adapter tests but
+	// hides the exact mapping the plugin promises (client-not-found ->
+	// ErrTaskNotFound), so this test pins the contract directly.
+	fc := &fakeClient{
+		modifyErr: map[string]error{"ghost": ErrClientMessageNotFound},
+	}
 	p := New(WithClient(fc))
 
 	err := p.Complete(context.Background(), "ghost")

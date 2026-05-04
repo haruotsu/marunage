@@ -54,14 +54,16 @@ func (a *Adapter) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 	return a.inner.AuthStatus(ctx)
 }
 
-// Since forwards. The checkpoint argument from source.Sincer is unused —
-// gmail.Plugin keeps its checkpoint state in the injected Checkpointer
-// (KVStateRepo at runtime) under p.checkpointKey. PR-71's scheduler
-// only ever supplies a single global "last_run" checkpoint and lets
-// individual plugins manage finer-grained state internally, exactly
-// like the markdown adapter.
-func (a *Adapter) Since(ctx context.Context, checkpoint string) ([]source.Task, error) {
-	return a.inner.Since(ctx, checkpoint)
+// Since forwards. The checkpoint argument from source.Sincer is unused
+// — gmail.Plugin keeps its checkpoint state in the injected
+// Checkpointer (KVStateRepo at runtime) under p.checkpointKey. PR-71's
+// scheduler only ever supplies a single global "last_run" checkpoint
+// and lets individual plugins manage finer-grained state internally,
+// exactly like the markdown adapter. The argument name is _ to mirror
+// markdown.Adapter.Since and so the discard is visible at the call
+// site rather than buried in the inner Plugin.
+func (a *Adapter) Since(ctx context.Context, _ string) ([]source.Task, error) {
+	return a.inner.Since(ctx, "")
 }
 
 // Complete forwards by ExternalID. Gmail message ids carry no
