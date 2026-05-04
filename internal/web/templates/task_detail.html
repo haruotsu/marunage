@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task #{{.ID}} — marunage</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">marunage</a></h1>
+    <p class="hint">Task detail</p>
+  </header>
+  <main>
+    <section class="panel task-detail-header">
+      <header class="panel-head">
+        <h2>#{{.ID}} {{.Title}}</h2>
+        <span class="badge badge-source">{{.Source}}</span>
+        <span class="badge badge-status badge-{{.Status}}">{{.Status}}</span>
+      </header>
+    </section>
+
+    <section class="panel" aria-labelledby="detail-meta-heading">
+      <h3 id="detail-meta-heading">Metadata</h3>
+      <table class="detail-table">
+        <tbody>
+          <tr><th scope="row">ID</th><td>{{.ID}}</td></tr>
+          <tr><th scope="row">Source</th><td>{{.Source}}</td></tr>
+          {{if .ExternalID}}<tr><th scope="row">External ID</th><td>{{.ExternalID}}</td></tr>{{end}}
+          {{if .ExternalURL}}<tr><th scope="row">External URL</th><td><a href="{{.ExternalURL}}" rel="noopener noreferrer">{{.ExternalURL}}</a></td></tr>{{end}}
+          <tr><th scope="row">Status</th><td>{{.Status}}</td></tr>
+          <tr><th scope="row">Priority</th><td>{{.Priority}}</td></tr>
+          {{if .WS}}<tr><th scope="row">Workspace</th><td><code>{{.WS}}</code></td></tr>{{end}}
+          {{if .CWD}}<tr><th scope="row">Working directory</th><td><code>{{.CWD}}</code></td></tr>{{end}}
+          {{if .LockKey}}<tr><th scope="row">Lock key</th><td><code>{{.LockKey}}</code></td></tr>{{end}}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" aria-labelledby="detail-timestamps-heading">
+      <h3 id="detail-timestamps-heading">Timeline</h3>
+      <table class="detail-table">
+        <tbody>
+          <tr><th scope="row">Created</th><td>{{.CreatedAt}}</td></tr>
+          <tr><th scope="row">Updated</th><td>{{.UpdatedAt}}</td></tr>
+          <tr><th scope="row">Started</th><td>{{.StartedAt}}</td></tr>
+          <tr><th scope="row">Completed</th><td>{{.CompletedAt}}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    {{if .Body}}
+    <section class="panel" aria-labelledby="detail-body-heading">
+      <h3 id="detail-body-heading">Body</h3>
+      <pre class="detail-content">{{.Body}}</pre>
+    </section>
+    {{end}}
+
+    {{if .Notes}}
+    <section class="panel" aria-labelledby="detail-notes-heading">
+      <h3 id="detail-notes-heading">Notes</h3>
+      <pre class="detail-content">{{.Notes}}</pre>
+    </section>
+    {{end}}
+
+    {{if .JudgmentReason}}
+    <section class="panel" aria-labelledby="detail-judgment-heading">
+      <h3 id="detail-judgment-heading">Judgment reason</h3>
+      <pre class="detail-content">{{.JudgmentReason}}</pre>
+    </section>
+    {{end}}
+
+    {{if .ResultSummary}}
+    <section class="panel" aria-labelledby="detail-result-heading">
+      <h3 id="detail-result-heading">Result summary</h3>
+      <pre class="detail-content">{{.ResultSummary}}</pre>
+    </section>
+    {{end}}
+
+    {{if .Reflection}}
+    <section class="panel" aria-labelledby="detail-reflection-heading">
+      <h3 id="detail-reflection-heading">Reflection</h3>
+      <pre class="detail-content">{{.Reflection}}</pre>
+    </section>
+    {{end}}
+
+    <section class="panel" aria-labelledby="detail-audit-heading">
+      <h3 id="detail-audit-heading">Audit log entries</h3>
+      {{if .AuditEntries}}
+        <table class="breakdown">
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Action</th>
+              <th scope="col">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .AuditEntries}}
+              <tr>
+                <td>{{.Time}}</td>
+                <td><code>{{.Action}}</code></td>
+                <td>{{.Value}}</td>
+              </tr>
+            {{end}}
+          </tbody>
+        </table>
+      {{else}}
+        <p class="hint">No audit log entries for this task.</p>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>
