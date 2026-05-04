@@ -385,7 +385,7 @@ func validateInstalledTriage(target string) error {
 		// Triage is optional in --from-dir scenarios that ship only
 		// other skills. If the file does not exist after install,
 		// there's nothing to validate.
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("read installed triage: %w", err)
@@ -400,7 +400,7 @@ func validateInstalledAutoReply(target string) error {
 	p := filepath.Join(target, autoReplySkillName, "SKILL.md")
 	body, err := os.ReadFile(p)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("read installed autoreply: %w", err)
