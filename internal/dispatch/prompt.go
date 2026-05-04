@@ -71,7 +71,9 @@ var leftAngleRunRe = regexp.MustCompile(`<+`)
 
 // rightAngleRunRe matches any run of two or more ">" characters. We
 // rewrite these so ">>" cannot appear inside a <<source: ...>> opening
-// tag attribute, which would prematurely close the tag.
+// tag attribute, which would prematurely close the tag. A run of N ">"
+// is expanded to N ">\", producing a pattern like ">\>\" with no two
+// adjacent ">" — the same strategy fenceEscape uses for "<" runs.
 var rightAngleRunRe = regexp.MustCompile(`>{2,}`)
 
 // fenceEscape rewrites every multi-"<" run inside a user-derived value
