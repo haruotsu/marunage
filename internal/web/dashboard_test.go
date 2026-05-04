@@ -159,8 +159,10 @@ func TestDashboardProvider_SourcesMergeAuthAndCheckpoint(t *testing.T) {
 	now := time.Date(2026, 5, 4, 8, 0, 0, 0, time.UTC)
 	store := &fakeDashboardStore{
 		sourceCheckpoint: map[string]time.Time{
-			"markdown": now.Add(-30 * time.Minute),
-			"gmail":    now.Add(-2 * time.Hour),
+			// Raw kv_state keys; the provider attributes them
+			// to source rows via prefix-against-registered-name.
+			"markdown:mtime:/tmp/todo.md": now.Add(-30 * time.Minute),
+			"gmail_last_id":               now.Add(-2 * time.Hour),
 		},
 	}
 	lister := &fakeSourceLister{
@@ -210,6 +212,40 @@ func TestDashboardProvider_SourceAuthErrorBecomesUnknown(t *testing.T) {
 	}
 	if snap.Sources[0].AuthStatus != "unknown" {
 		t.Errorf("auth status on error = %q; want %q", snap.Sources[0].AuthStatus, "unknown")
+	}
+}
+
+// TestDashboardProvider_SourcesAttributeMultiUnderscoreNames pins the
+// per-source checkpoint attribution against source names that contain
+// an underscore (the `google_tasks` adapter is the canonical example).
+// A naive split-on-first-`_` would credit "google_tasks_last_id" to a
+// non-existent "google" source and leave the real google_tasks row at
+// "never".
+func TestDashboardProvider_SourcesAttributeMultiUnderscoreNames(t *testing.T) {
+	now := time.Date(2026, 5, 4, 8, 0, 0, 0, time.UTC)
+	store := &fakeDashboardStore{
+		sourceCheckpoint: map[string]time.Time{
+			"google_tasks_last_id": now.Add(-15 * time.Minute),
+		},
+	}
+	lister := &fakeSourceLister{
+		names: []string{"google_tasks"},
+		statuses: map[string]source.AuthStatus{
+			"google_tasks": source.AuthAuthenticated,
+		},
+	}
+	prov := NewDashboardProvider(store, lister, DashboardOptions{
+		Now: func() time.Time { return now },
+	})
+	snap, err := prov.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(snap.Sources) != 1 {
+		t.Fatalf("sources len = %d; want 1", len(snap.Sources))
+	}
+	if got := snap.Sources[0].LastListedAt; !got.Equal(now.Add(-15 * time.Minute)) {
+		t.Errorf("google_tasks LastListedAt = %v; want %v", got, now.Add(-15*time.Minute))
 	}
 }
 

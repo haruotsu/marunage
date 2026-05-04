@@ -5,20 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/haruotsu/marunage/internal/store"
 )
-
-// indexAny returns the index of the first byte in s that is one of
-// the bytes in chars, or -1 when none match. Equivalent to
-// strings.IndexAny but kept package-local to avoid pulling in the
-// (slightly heavier) Unicode-aware variant for an ASCII-only
-// delimiter set.
-func indexAny(s, chars string) int {
-	return strings.IndexAny(s, chars)
-}
 
 // sqlDashboardStore is the production DashboardStore implementation.
 // It runs targeted SELECTs against the same SQLite *sql.DB the
@@ -208,6 +198,12 @@ func (s *sqlDashboardStore) Recent(ctx context.Context, since time.Time) (Dashbo
 	return totals, nil
 }
 
+// SourceCheckpoints returns every kv_state row keyed by its raw key.
+// The provider layer matches keys against the registered source
+// names so source attribution can use the actual name list as the
+// authoritative dictionary. This is also what fixes the
+// `google_tasks_last_id` mis-attribution (a naive split would
+// credit it to a non-existent `google` source).
 func (s *sqlDashboardStore) SourceCheckpoints(ctx context.Context) (map[string]time.Time, error) {
 	const q = `SELECT key, updated_at FROM kv_state`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -222,35 +218,11 @@ func (s *sqlDashboardStore) SourceCheckpoints(ctx context.Context) (map[string]t
 		if err := rows.Scan(&key, &updatedAt); err != nil {
 			return nil, fmt.Errorf("source checkpoints scan: %w", err)
 		}
-		// kv_state keys are namespaced with the source prefix.
-		// Two conventions exist in the wild:
-		//   * `<source>_<rest>` — used by the gmail / slack
-		//     defaults declared in config.go (gmail_last_id,
-		//     slack_last_ts, ...).
-		//   * `<source>:<rest>` — used by markdown's per-file
-		//     checkpoint (`markdown:mtime:<path>`), and the
-		//     recommended shape going forward because source
-		//     names are allowed to contain `_` themselves
-		//     (`google_calendar_*` would otherwise split on
-		//     the wrong boundary).
-		// Splitting on whichever delimiter appears first lets
-		// both shapes coexist while a future PR consolidates
-		// the rule and migrates legacy keys.
-		idx := indexAny(key, ":_")
-		if idx <= 0 {
-			continue
-		}
-		source := key[:idx]
 		t, err := parseStoreTime(updatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("source checkpoints parse updated_at: %w", err)
 		}
-		// Keep the most recent checkpoint per source: a plugin
-		// may store multiple state rows (e.g. last_id +
-		// last_seen), and the dashboard wants the freshest one.
-		if existing, ok := out[source]; !ok || t.After(existing) {
-			out[source] = t
-		}
+		out[key] = t
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("source checkpoints rows: %w", err)
