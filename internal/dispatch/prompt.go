@@ -69,6 +69,13 @@ const promptSeparator = "\n\n"
 // left-to-right and leaves "<<" at the seams.
 var leftAngleRunRe = regexp.MustCompile(`<+`)
 
+// rightAngleRunRe matches any run of two or more ">" characters. We
+// rewrite these so ">>" cannot appear inside a <<source: ...>> opening
+// tag attribute, which would prematurely close the tag. A run of N ">"
+// is expanded to N ">\", producing a pattern like ">\>\" with no two
+// adjacent ">" — the same strategy fenceEscape uses for "<" runs.
+var rightAngleRunRe = regexp.MustCompile(`>{2,}`)
+
 // fenceEscape rewrites every multi-"<" run inside a user-derived value
 // so an attacker cannot forge a fence boundary. Idempotent under
 // repeated application. Trusted sections (Base / SourceSpecific) skip
@@ -82,9 +89,54 @@ func fenceEscape(s string) string {
 	})
 }
 
+// tagAttrEscape sanitises a user-derived value for safe embedding as an
+// attribute in a <<source: ...>> opening tag:
+//
+//   - fenceEscape rewrites << runs so the value cannot forge a nested
+//     fence-open or fence-close boundary.
+//   - rightAngleRunRe rewrites runs of 2+ ">" so the value cannot form
+//     the ">>" sequence that closes the opening tag prematurely.
+//   - The 3-character sequence " / " (space-slash-space) is rewritten to
+//     " \/ " so the value cannot forge the attribute separator that
+//     sourceEnvelope uses between attributes (e.g. "evil / external_id:
+//     injected" would otherwise appear as a second, phantom attribute).
+//     Plain "/" without surrounding spaces (as in URLs) is left intact.
+//   - Newlines and carriage returns are collapsed to a space so the attribute
+//     value stays on a single line; a multi-line opening tag would cause the
+//     LLM to misparse the tag boundary.
+func tagAttrEscape(s string) string {
+	s = fenceEscape(s)
+	s = rightAngleRunRe.ReplaceAllStringFunc(s, func(run string) string {
+		return strings.Repeat(`>\`, len(run))
+	})
+	s = strings.ReplaceAll(s, " / ", ` \/ `)
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
 // fenced wraps the (already-escaped) value in <<label>>...<</label>>.
 func fenced(label, value string) string {
 	return fmt.Sprintf("<<%s>>\n%s\n<</%s>>", label, value, label)
+}
+
+// sourceEnvelope wraps the task section in a <<source: ...>>...<</source>>
+// envelope so the receiving Claude session can identify all user-derived
+// task content as external data rather than trusted instructions. The
+// opening tag carries source provenance metadata (source name, external_id,
+// origin URL) so an injected "ignore previous instructions" payload is
+// structurally separated from the execution skill. The closing tag uses only
+// the "source" label to keep long prompts readable without repeating the full
+// attribute list.
+func sourceEnvelope(source, externalID, externalURL, content string) string {
+	label := "source: " + tagAttrEscape(source)
+	if externalID != "" {
+		label += " / external_id: " + tagAttrEscape(externalID)
+	}
+	if externalURL != "" {
+		label += " / origin: " + tagAttrEscape(externalURL)
+	}
+	return fmt.Sprintf("<<%s>>\n%s\n<</source>>", label, content)
 }
 
 // BuildPrompt concatenates (Base, SourceSpecific, Triage, Task, Sentinel)
@@ -103,14 +155,14 @@ func fenced(label, value string) string {
 // inspects it via `marunage show <id>` or the Web UI.
 func BuildPrompt(in PromptInputs) string {
 	taskHeader := fmt.Sprintf("## Task #%d", in.Task.ID)
-	taskBlock := strings.Join([]string{
+	taskInner := strings.Join([]string{
 		taskHeader,
-		fenced("source", fenceEscape(in.Task.Source)),
 		fenced("external_id", fenceEscape(in.Task.ExternalID)),
 		fenced("origin", fenceEscape(in.Task.ExternalURL)),
 		fenced("title", fenceEscape(in.Task.Title)),
 		fenced("body", fenceEscape(in.Task.Body)),
 	}, "\n\n")
+	taskBlock := sourceEnvelope(in.Task.Source, in.Task.ExternalID, in.Task.ExternalURL, taskInner)
 
 	parts := make([]string, 0, 5)
 	if s := strings.TrimSpace(in.Base); s != "" {
