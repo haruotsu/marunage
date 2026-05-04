@@ -324,3 +324,161 @@ func TestKVStateRepoConcurrentSet(t *testing.T) {
 		t.Errorf("value after concurrent Set = %q; want %q", got, "v")
 	}
 }
+
+// PR-71 follow-on: InsertIfAbsent + DeleteIfValue are the atomic
+// primitives the loop's kv_state-backed lock is built on. The prior
+// Get → Set pattern had a TOCTOU race two design-review agents flagged
+// as 🔴; these tests pin the new contract.
+
+// TestInsertIfAbsent_RejectsEmptyKey guards the validation surface so
+// a forgotten key on the caller side fails loud rather than writing a
+// row keyed by "".
+func TestInsertIfAbsent_RejectsEmptyKey(t *testing.T) {
+	f := newKVFixture(t)
+	if _, err := f.repo.InsertIfAbsent(f.ctx, "", "v"); !errors.Is(err, store.ErrKVKeyRequired) {
+		t.Fatalf("InsertIfAbsent(empty key) = %v; want ErrKVKeyRequired", err)
+	}
+}
+
+// TestInsertIfAbsent_RejectsEmptyValue mirrors Set: an empty value
+// would later be indistinguishable from "row deleted" on a follow-up
+// Get, breaking the "missing == row absence" invariant.
+func TestInsertIfAbsent_RejectsEmptyValue(t *testing.T) {
+	f := newKVFixture(t)
+	if _, err := f.repo.InsertIfAbsent(f.ctx, "k", ""); !errors.Is(err, store.ErrKVValueRequired) {
+		t.Fatalf("InsertIfAbsent(empty value) = %v; want ErrKVValueRequired", err)
+	}
+}
+
+// TestInsertIfAbsent_FirstWriteWins: the first call inserts, the second
+// returns inserted=false. The row is unchanged after the second call.
+func TestInsertIfAbsent_FirstWriteWins(t *testing.T) {
+	f := newKVFixture(t)
+	ok, err := f.repo.InsertIfAbsent(f.ctx, "lock", "owner-A")
+	if err != nil {
+		t.Fatalf("first InsertIfAbsent: %v", err)
+	}
+	if !ok {
+		t.Fatalf("first InsertIfAbsent inserted = false; want true")
+	}
+	ok, err = f.repo.InsertIfAbsent(f.ctx, "lock", "owner-B")
+	if err != nil {
+		t.Fatalf("second InsertIfAbsent: %v", err)
+	}
+	if ok {
+		t.Fatalf("second InsertIfAbsent inserted = true; want false (row already exists)")
+	}
+	got, err := f.repo.Get(f.ctx, "lock")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "owner-A" {
+		t.Errorf("value after losing race = %q; want %q (first writer wins)", got, "owner-A")
+	}
+}
+
+// TestInsertIfAbsent_ConcurrentCallsExactlyOneWins: under N concurrent
+// goroutines all racing on the same key, exactly one observes
+// inserted=true. This is the property the loop's lock acquire relies
+// on; without it the prior Get → Set pattern would let two loops both
+// "claim" the lock.
+func TestInsertIfAbsent_ConcurrentCallsExactlyOneWins(t *testing.T) {
+	f := newKVFixture(t)
+	const goroutines = 32
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	results := make(chan bool, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			ok, err := f.repo.InsertIfAbsent(f.ctx, "lock", "owner")
+			if err != nil {
+				results <- false
+				return
+			}
+			results <- ok
+		}()
+	}
+	wg.Wait()
+	close(results)
+	wins := 0
+	for ok := range results {
+		if ok {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("InsertIfAbsent winners = %d; want exactly 1", wins)
+	}
+}
+
+// TestDeleteIfValue_RemovesOnMatch: release with the matching owner
+// token clears the row so a follow-up InsertIfAbsent re-acquires.
+func TestDeleteIfValue_RemovesOnMatch(t *testing.T) {
+	f := newKVFixture(t)
+	if _, err := f.repo.InsertIfAbsent(f.ctx, "lock", "owner-A"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	deleted, err := f.repo.DeleteIfValue(f.ctx, "lock", "owner-A")
+	if err != nil {
+		t.Fatalf("DeleteIfValue: %v", err)
+	}
+	if !deleted {
+		t.Fatalf("DeleteIfValue(matching) deleted = false; want true")
+	}
+	if _, err := f.repo.Get(f.ctx, "lock"); !errors.Is(err, store.ErrKVNotFound) {
+		t.Errorf("Get after release: %v; want ErrKVNotFound", err)
+	}
+}
+
+// TestDeleteIfValue_NoOpOnMismatch: the "stale defer after key was
+// re-acquired by another owner" scenario. The mismatched release must
+// be a no-op so it does not stomp the live holder.
+func TestDeleteIfValue_NoOpOnMismatch(t *testing.T) {
+	f := newKVFixture(t)
+	if _, err := f.repo.InsertIfAbsent(f.ctx, "lock", "owner-B"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	deleted, err := f.repo.DeleteIfValue(f.ctx, "lock", "owner-A")
+	if err != nil {
+		t.Fatalf("DeleteIfValue: %v", err)
+	}
+	if deleted {
+		t.Fatalf("DeleteIfValue(mismatch) deleted = true; want false (must not stomp live holder)")
+	}
+	got, err := f.repo.Get(f.ctx, "lock")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "owner-B" {
+		t.Errorf("value after mismatched release = %q; want %q", got, "owner-B")
+	}
+}
+
+// TestDeleteIfValue_NoOpOnAbsent: releasing an already-released lock
+// is a quiet no-op rather than an error, so a defer'd release after a
+// crash + restart sequence does not surface a confusing error.
+func TestDeleteIfValue_NoOpOnAbsent(t *testing.T) {
+	f := newKVFixture(t)
+	deleted, err := f.repo.DeleteIfValue(f.ctx, "lock", "owner-A")
+	if err != nil {
+		t.Fatalf("DeleteIfValue(absent): %v", err)
+	}
+	if deleted {
+		t.Fatalf("DeleteIfValue(absent) deleted = true; want false")
+	}
+}
+
+// TestDeleteIfValue_RejectsEmpty mirrors the Set / InsertIfAbsent
+// validation: the value sentinel is the owner token and an empty one
+// would silently accept any release.
+func TestDeleteIfValue_RejectsEmpty(t *testing.T) {
+	f := newKVFixture(t)
+	if _, err := f.repo.DeleteIfValue(f.ctx, "", "v"); !errors.Is(err, store.ErrKVKeyRequired) {
+		t.Errorf("DeleteIfValue(empty key) = %v; want ErrKVKeyRequired", err)
+	}
+	if _, err := f.repo.DeleteIfValue(f.ctx, "k", ""); !errors.Is(err, store.ErrKVValueRequired) {
+		t.Errorf("DeleteIfValue(empty value) = %v; want ErrKVValueRequired", err)
+	}
+}
