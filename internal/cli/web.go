@@ -13,6 +13,9 @@ import (
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/source"
+	"github.com/haruotsu/marunage/internal/source/markdown"
+	"github.com/haruotsu/marunage/internal/store"
 	"github.com/haruotsu/marunage/internal/web"
 )
 
@@ -82,8 +85,22 @@ const (
 // The returned closer releases the listener and flushes the log
 // regardless of whether Run completes cleanly.
 func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
+	cfg, err := config.Load(opts.ConfigPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("web: load %s: %w", opts.ConfigPath, err)
+	}
+	dbPath, err := expandHome(cfg.Core.DBPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("web: resolve core.db_path %q: %w", cfg.Core.DBPath, err)
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("web: open %s: %w", dbPath, err)
+	}
+
 	listener, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
+		_ = db.Close()
 		return nil, nil, fmt.Errorf("web: listen %s: %w", opts.Addr, err)
 	}
 
@@ -91,12 +108,21 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	rot, err := logging.NewRotatingFile(logPath, daemonLogMaxBytes, daemonLogMaxBackups)
 	if err != nil {
 		_ = listener.Close()
+		_ = db.Close()
 		return nil, nil, fmt.Errorf("web: open daemon log %s: %w", logPath, err)
 	}
 	logger := logging.NewLogger(rot, logging.LevelInfo)
 
+	registry := buildWebSourceRegistry(cfg.Discovery.SourcesEnabled)
+	dashboardProvider := web.NewDashboardProvider(
+		web.NewSQLDashboardStore(db),
+		web.RegistrySourceLister{Registry: registry},
+		web.DashboardOptions{},
+	)
+
 	srv, err := web.NewServer(web.Options{
 		AccessLogger: slogAccessLogger{logger: logger},
+		Dashboard:    dashboardProvider,
 		// Production CSRF entropy + 30s SSE heartbeat are the
 		// zero-value defaults inside web.NewServer; explicitly
 		// listing them here would just add noise.
@@ -104,6 +130,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	if err != nil {
 		_ = rot.Close()
 		_ = listener.Close()
+		_ = db.Close()
 		return nil, nil, err
 	}
 
@@ -112,6 +139,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 		// network connection" — swallow it so the cleanup path is
 		// idempotent and safe to call after a normal shutdown.
 		_ = listener.Close()
+		_ = db.Close()
 		return rot.Close()
 	}
 	return &serverRunner{srv: srv, listener: listener}, closer, nil
@@ -124,6 +152,30 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 // so no nil-guard is needed here.
 func daemonLogPathFor(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "logs", "daemon.log")
+}
+
+// buildWebSourceRegistry assembles the source.Registry the web
+// dashboard's source-status panel reads from.  We register every
+// known built-in whose name appears in discovery.sources_enabled so
+// the dashboard can show its auth status — Markdown's AuthStatus is
+// constant ("authenticated") regardless of the configured file list,
+// so registering the plugin with no files is fine for read-side
+// display.  Unknown names are skipped silently: the dashboard panel
+// would otherwise emit a noisy "registration failed" row, but the
+// operator-facing surface for that error is the discover command.
+func buildWebSourceRegistry(enabled []string) *source.Registry {
+	r := source.NewRegistry()
+	for _, name := range enabled {
+		switch name {
+		case "markdown":
+			// Ignore the registration error: a duplicate or
+			// manifest-self-check failure here would taint
+			// the dashboard but should not stop `marunage web`
+			// from serving the rest of the panels.
+			_ = markdown.RegisterBuiltin(r)
+		}
+	}
+	return r
 }
 
 // slogAccessLogger adapts a slog.Logger to web.AccessLogger so
