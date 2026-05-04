@@ -59,6 +59,16 @@ This skill does not create a new bi-directional chat channel. It sends one
 reply per task through the existing Source adapter and does not receive
 follow-up messages automatically.
 
+## Non-Goals
+
+- **No new bi-directional chat channel**: This skill sends one reply per task
+  through the existing Source adapter. It does not receive follow-up messages
+  automatically or establish an ongoing conversation loop.
+- **No category discovery**: This skill does not classify incoming messages into
+  categories; that is the responsibility of the caller (triage / executor layer).
+- **No credential storage**: The autoreply.toml file stores only category lists
+  and mode flags — never credentials, tokens, or secrets.
+
 ## Output Format
 
 On successful auto-reply:
