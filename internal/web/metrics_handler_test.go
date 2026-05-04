@@ -198,6 +198,27 @@ func TestMetricsAPIHandler_ReturnsJSON(t *testing.T) {
 	}
 }
 
+// GET /metrics with provider error still returns 200 with error banner
+// (matches the dashboard.go graceful-degradation pattern — provider errors
+// degrade to a banner rather than a hard 500 so the page remains accessible).
+func TestMetricsHandler_ProviderErrorRendersErrorBanner(t *testing.T) {
+	srv := newMetricsServer(t, staticMetricsProvider{err: errMetricsTestFailed})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200 (graceful degradation)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "unavailable") {
+		t.Errorf("error banner missing 'unavailable' in body: %q", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), errMetricsTestFailed.Error()) {
+		t.Errorf("error banner leaks raw error: %q", w.Body.String())
+	}
+}
+
 var errMetricsTestFailed = metricsTestSentinel("metrics provider test failure")
 
 type metricsTestSentinel string
