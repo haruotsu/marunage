@@ -222,6 +222,70 @@ func TestListSurfaceSiteAndKeyInRawMetadata(t *testing.T) {
 	}
 }
 
+// TestListStampsOriginTag is the design-review 🔴 #2 fix: every task
+// emitted by the browser plugin MUST carry an `origin` tag of the form
+// "external/browser/<site>" so downstream LLM/Memory layers can apply
+// the SOUL.md "ユーザ指示と区別" guard. Title and Body are attacker-
+// controlled DOM text and would otherwise be indistinguishable from
+// trusted user-authored task data.
+func TestListStampsOriginTag(t *testing.T) {
+	t.Parallel()
+
+	p, err := New(WithDriver(helperFakeDriver()), WithConfig(helperConfig()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no tasks")
+	}
+	for i, tk := range got {
+		if tk.RawMetadata["origin"] != "external/browser/slack-saved" {
+			t.Errorf("task[%d].RawMetadata[origin] = %v, want external/browser/slack-saved",
+				i, tk.RawMetadata["origin"])
+		}
+	}
+}
+
+// TestListMultiSitePartialFailureReturnsNothing pins the design judgment
+// §H: when one of several sites fails, the whole List call returns
+// (nil, err) — successful sites are NOT partially returned, so a
+// transient failure does not silently produce a smaller-than-expected
+// task list. The single-site error test (TestListDriverErrorPropagates)
+// covers the trivial case; this one guards the multi-site invariant
+// against a future "return what we have" refactor.
+func TestListMultiSitePartialFailureReturnsNothing(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("site B is wedged")
+	driver := &fakeDriver{
+		responses: map[string][]ScrapedItem{
+			"https://a/": {{Fields: map[string]string{"id": "a-1", "title": "A"}}},
+		},
+		errors: map[string]error{"https://b/": wantErr},
+	}
+	cfg := &Config{Sites: []SiteConfig{
+		{Name: "alpha", URL: "https://a/", ItemSelector: ".x", KeyField: "id",
+			Fields: map[string]FieldRule{"id": {Selector: "[data-id]", Attr: "data-id"}}},
+		{Name: "beta", URL: "https://b/", ItemSelector: ".x", KeyField: "id",
+			Fields: map[string]FieldRule{"id": {Selector: "[data-id]", Attr: "data-id"}}},
+	}}
+	p, err := New(WithDriver(driver), WithConfig(cfg))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := p.List(context.Background())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want wraps %v", err, wantErr)
+	}
+	if got != nil {
+		t.Errorf("partial result leaked: %+v", got)
+	}
+}
+
 // TestListDriverErrorPropagates ensures we do not swallow driver errors:
 // a wedged Slack page must surface as a List error, not as silent data
 // loss in the discovery loop.
