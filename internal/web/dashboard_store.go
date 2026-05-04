@@ -3,12 +3,22 @@ package web
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/haruotsu/marunage/internal/store"
 )
+
+// indexAny returns the index of the first byte in s that is one of
+// the bytes in chars, or -1 when none match. Equivalent to
+// strings.IndexAny but kept package-local to avoid pulling in the
+// (slightly heavier) Unicode-aware variant for an ASCII-only
+// delimiter set.
+func indexAny(s, chars string) int {
+	return strings.IndexAny(s, chars)
+}
 
 // sqlDashboardStore is the production DashboardStore implementation.
 // It runs targeted SELECTs against the same SQLite *sql.DB the
@@ -55,10 +65,10 @@ func formatStoreTime(t time.Time) string {
 func (s *sqlDashboardStore) Running(ctx context.Context, limit, previewBytes int) ([]DashboardRunning, error) {
 	const q = `SELECT id, source, title, COALESCE(ws, ''), COALESCE(started_at, ''), COALESCE(body, '')
 		FROM tasks
-		WHERE status = 'running'
+		WHERE status = ?
 		ORDER BY started_at ASC, id ASC
 		LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, q, limit)
+	rows, err := s.db.QueryContext(ctx, q, store.StatusRunning, limit)
 	if err != nil {
 		return nil, fmt.Errorf("running query: %w", err)
 	}
@@ -88,10 +98,10 @@ func (s *sqlDashboardStore) Running(ctx context.Context, limit, previewBytes int
 func (s *sqlDashboardStore) PendingTop(ctx context.Context, limit int) ([]DashboardPending, error) {
 	const q = `SELECT id, source, title, priority, created_at
 		FROM tasks
-		WHERE status = 'pending'
+		WHERE status = ?
 		ORDER BY priority DESC, created_at ASC, id ASC
 		LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, q, limit)
+	rows, err := s.db.QueryContext(ctx, q, store.StatusPending, limit)
 	if err != nil {
 		return nil, fmt.Errorf("pending top query: %w", err)
 	}
@@ -118,12 +128,12 @@ func (s *sqlDashboardStore) PendingTop(ctx context.Context, limit int) ([]Dashbo
 }
 
 func (s *sqlDashboardStore) PendingCount(ctx context.Context) (int, error) {
-	const q = `SELECT COUNT(*) FROM tasks WHERE status = 'pending'`
+	const q = `SELECT COUNT(*) FROM tasks WHERE status = ?`
 	var n int
-	if err := s.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
-		}
+	// COUNT(*) always returns one row, so sql.ErrNoRows is
+	// unreachable here; the explicit branch survived from an earlier
+	// shape that filtered with LIMIT and is removed for clarity.
+	if err := s.db.QueryRowContext(ctx, q, store.StatusPending).Scan(&n); err != nil {
 		return 0, fmt.Errorf("pending count: %w", err)
 	}
 	return n, nil
@@ -141,11 +151,14 @@ func (s *sqlDashboardStore) Recent(ctx context.Context, since time.Time) (Dashbo
 		  COUNT(*)
 		FROM tasks
 		WHERE
-		  (status IN ('done', 'failed') AND completed_at IS NOT NULL AND completed_at >= ?)
-		  OR (status = 'skipped' AND updated_at >= ?)
+		  (status IN (?, ?) AND completed_at IS NOT NULL AND completed_at >= ?)
+		  OR (status = ? AND updated_at >= ?)
 		GROUP BY source, status`
 	cutoff := formatStoreTime(since.UTC())
-	rows, err := s.db.QueryContext(ctx, q, cutoff, cutoff)
+	rows, err := s.db.QueryContext(ctx, q,
+		store.StatusDone, store.StatusFailed, cutoff,
+		store.StatusSkipped, cutoff,
+	)
 	if err != nil {
 		return DashboardRecent{}, fmt.Errorf("recent query: %w", err)
 	}
@@ -168,13 +181,13 @@ func (s *sqlDashboardStore) Recent(ctx context.Context, since time.Time) (Dashbo
 			bySource[src] = bucket
 		}
 		switch status {
-		case "done":
+		case store.StatusDone:
 			totals.DoneCount += n
 			bucket.Done += n
-		case "failed":
+		case store.StatusFailed:
 			totals.FailedCount += n
 			bucket.Failed += n
-		case "skipped":
+		case store.StatusSkipped:
 			totals.SkippedCount += n
 			bucket.Skipped += n
 		}
@@ -209,12 +222,21 @@ func (s *sqlDashboardStore) SourceCheckpoints(ctx context.Context) (map[string]t
 		if err := rows.Scan(&key, &updatedAt); err != nil {
 			return nil, fmt.Errorf("source checkpoints scan: %w", err)
 		}
-		// kv_state keys follow the convention `<source>_<rest>`
-		// (gmail_last_id, slack_last_ts, ...). Anything without
-		// a `_` is left out — it cannot be ascribed to a known
-		// source and would otherwise produce an empty-string
-		// row in the dashboard.
-		idx := strings.Index(key, "_")
+		// kv_state keys are namespaced with the source prefix.
+		// Two conventions exist in the wild:
+		//   * `<source>_<rest>` — used by the gmail / slack
+		//     defaults declared in config.go (gmail_last_id,
+		//     slack_last_ts, ...).
+		//   * `<source>:<rest>` — used by markdown's per-file
+		//     checkpoint (`markdown:mtime:<path>`), and the
+		//     recommended shape going forward because source
+		//     names are allowed to contain `_` themselves
+		//     (`google_calendar_*` would otherwise split on
+		//     the wrong boundary).
+		// Splitting on whichever delimiter appears first lets
+		// both shapes coexist while a future PR consolidates
+		// the rule and migrates legacy keys.
+		idx := indexAny(key, ":_")
 		if idx <= 0 {
 			continue
 		}
