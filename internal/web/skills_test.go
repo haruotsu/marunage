@@ -129,7 +129,7 @@ func TestRoutes_SkillsRegistryAPI_FetchesAndFilters(t *testing.T) {
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
 
-	srv := newSkillsServer(t, SkillsConfig{RegistryURL: upstream.URL})
+	srv := newSkillsServer(t, SkillsConfig{RegistryURL: upstream.URL, AllowInsecure: true})
 	rec := doGet(t, srv, "/api/skills/registry?q=jira")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rec.Code)

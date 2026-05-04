@@ -55,7 +55,7 @@ func newRegistryServer(t *testing.T, body []byte, sum string) *httptest.Server {
 // documented /index.json URL and parses the response.
 func TestClient_FetchIndex_HappyPath(t *testing.T) {
 	srv := newRegistryServer(t, nil, "")
-	c := &Client{BaseURL: srv.URL}
+	c := &Client{BaseURL: srv.URL, AllowInsecure: true}
 
 	idx, err := c.FetchIndex(context.Background())
 	if err != nil {
@@ -69,7 +69,7 @@ func TestClient_FetchIndex_HappyPath(t *testing.T) {
 // TestClient_FetchManifest_HappyPath pins the per-skill URL.
 func TestClient_FetchManifest_HappyPath(t *testing.T) {
 	srv := newRegistryServer(t, nil, "")
-	c := &Client{BaseURL: srv.URL}
+	c := &Client{BaseURL: srv.URL, AllowInsecure: true}
 
 	m, err := c.FetchManifest(context.Background(), "marunage-source-jira")
 	if err != nil {
@@ -91,7 +91,7 @@ func TestClient_FetchManifest_UpstreamError(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	c := &Client{BaseURL: srv.URL}
+	c := &Client{BaseURL: srv.URL, AllowInsecure: true}
 	_, err := c.FetchManifest(context.Background(), "missing")
 	if !errors.Is(err, ErrUpstream) {
 		t.Errorf("err = %v; want errors.Is(_, ErrUpstream)", err)
@@ -114,7 +114,7 @@ func TestClient_FetchTarball_VerifiesSHA256(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	c := &Client{BaseURL: srv.URL}
+	c := &Client{BaseURL: srv.URL, AllowInsecure: true}
 	got, err := c.FetchTarball(context.Background(), Version{
 		Version:    "0.1.0",
 		TarballURL: srv.URL + "/t.tar.gz",
@@ -139,7 +139,7 @@ func TestClient_FetchTarball_DigestMismatchAborts(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	c := &Client{BaseURL: srv.URL}
+	c := &Client{BaseURL: srv.URL, AllowInsecure: true}
 	body, err := c.FetchTarball(context.Background(), Version{
 		Version:    "0.1.0",
 		TarballURL: srv.URL + "/t.tar.gz",
@@ -162,6 +162,30 @@ func TestClient_RejectsInsecureScheme(t *testing.T) {
 	}
 }
 
+// TestClient_RejectsHTTPByDefault pins the OpenClaw §11.1 #10
+// guard: a plain http:// registry would let MITM rewrite the
+// integrity manifest itself, so the default refuses it. Tests that
+// truly need http (httptest servers) must opt in via AllowInsecure.
+func TestClient_RejectsHTTPByDefault(t *testing.T) {
+	c := &Client{BaseURL: "http://example.invalid"}
+	_, err := c.FetchIndex(context.Background())
+	if !errors.Is(err, ErrInsecureRegistry) {
+		t.Errorf("err = %v; want errors.Is(_, ErrInsecureRegistry)", err)
+	}
+}
+
+// TestClient_AllowsHTTPWhenOptedIn pins the escape hatch: an
+// httptest server runs over plain http, so the test surface and
+// the operator's `--allow-insecure-registry` flag both rely on
+// AllowInsecure flipping the guard.
+func TestClient_AllowsHTTPWhenOptedIn(t *testing.T) {
+	srv := newRegistryServer(t, nil, "")
+	c := &Client{BaseURL: srv.URL, AllowInsecure: true}
+	if _, err := c.FetchIndex(context.Background()); err != nil {
+		t.Errorf("FetchIndex with AllowInsecure: %v", err)
+	}
+}
+
 // TestClient_RejectsOversizedBody pins the slow-loris / DoS guard:
 // MaxBodyBytes truncates and surfaces an error rather than letting a
 // publisher exhaust the CLI's memory.
@@ -173,7 +197,7 @@ func TestClient_RejectsOversizedBody(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	c := &Client{BaseURL: srv.URL, MaxBodyBytes: 10}
+	c := &Client{BaseURL: srv.URL, MaxBodyBytes: 10, AllowInsecure: true}
 	_, err := c.FetchIndex(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "exceeded") {
 		t.Errorf("err = %v; want exceeded-bytes error", err)

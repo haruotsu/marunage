@@ -19,6 +19,11 @@ import (
 // resource a malicious publisher can force the CLI to spend.
 const MaxTarBytes = int64(64 << 20) // 64 MiB
 
+// MaxTarFiles caps the number of regular-file entries a single
+// tarball may contain. Without it a publisher could ship millions of
+// 1-byte files that fit under MaxTarBytes but still exhaust inodes.
+const MaxTarFiles = 2048
+
 // ErrUnsafeTarPath is returned when a tar entry's name escapes the
 // destination root (`..`, absolute paths, symlinks). The typed
 // sentinel keeps the install path's "abort and clean up" branch
@@ -28,6 +33,11 @@ var ErrUnsafeTarPath = errors.New("registry: unsafe tar entry path")
 // ErrTarTooLarge is returned when the cumulative uncompressed bytes
 // in the tarball exceed MaxTarBytes (or the per-call override).
 var ErrTarTooLarge = errors.New("registry: tar exceeds size cap")
+
+// ErrTarTooManyFiles is returned when a tarball ships more regular
+// files than MaxTarFiles (or the per-call override). The typed
+// sentinel keeps the inode-exhaustion branch explicit.
+var ErrTarTooManyFiles = errors.New("registry: tar exceeds file-count cap")
 
 // ExtractOptions controls how ExtractTarball lays the skill out on
 // disk. The zero value installs into Dest with the default cap.
@@ -49,6 +59,10 @@ type ExtractOptions struct {
 	// MaxBytes overrides MaxTarBytes; zero defaults to the package
 	// constant.
 	MaxBytes int64
+
+	// MaxFiles overrides MaxTarFiles; zero defaults to the package
+	// constant.
+	MaxFiles int
 }
 
 // ExtractTarball decompresses body (gzip-wrapped tar), validates each
@@ -64,6 +78,10 @@ func ExtractTarball(body []byte, opts ExtractOptions) error {
 	maxBytes := opts.MaxBytes
 	if maxBytes <= 0 {
 		maxBytes = MaxTarBytes
+	}
+	maxFiles := opts.MaxFiles
+	if maxFiles <= 0 {
+		maxFiles = MaxTarFiles
 	}
 
 	gz, err := gzip.NewReader(bytes.NewReader(body))
@@ -88,7 +106,10 @@ func ExtractTarball(body []byte, opts ExtractOptions) error {
 	cleanup := func() { _ = os.RemoveAll(tmpRoot) }
 
 	tr := tar.NewReader(gz)
-	var written int64
+	var (
+		written int64
+		fileN   int
+	)
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -117,6 +138,11 @@ func ExtractTarball(body []byte, opts ExtractOptions) error {
 				return fmt.Errorf("registry: mkdir %s: %w", rel, err)
 			}
 		case tar.TypeReg:
+			fileN++
+			if fileN > maxFiles {
+				cleanup()
+				return fmt.Errorf("%w: %d > %d", ErrTarTooManyFiles, fileN, maxFiles)
+			}
 			full := filepath.Join(tmpRoot, rel)
 			if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
 				cleanup()

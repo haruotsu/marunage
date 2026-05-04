@@ -72,7 +72,7 @@ func TestInstaller_HappyPath_WritesSkillAndState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), ".claude", "skills")
 
 	in := &Installer{
-		Client:     &Client{BaseURL: fix.URL},
+		Client:     &Client{BaseURL: fix.URL, AllowInsecure: true},
 		SkillsRoot: root,
 		Clock:      func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
@@ -132,13 +132,13 @@ func TestInstaller_RecordsPreviousVersion(t *testing.T) {
 	fix1 := newFixtureRegistry(t, "marunage-source-x", "0.1.0", "<!-- version: 0.1.0 -->\n# x\n")
 	root := filepath.Join(t.TempDir(), ".claude", "skills")
 
-	in1 := &Installer{Client: &Client{BaseURL: fix1.URL}, SkillsRoot: root}
+	in1 := &Installer{Client: &Client{BaseURL: fix1.URL, AllowInsecure: true}, SkillsRoot: root}
 	if _, err := in1.Install(context.Background(), InstallOptions{Name: "marunage-source-x"}); err != nil {
 		t.Fatalf("first Install: %v", err)
 	}
 
 	fix2 := newFixtureRegistry(t, "marunage-source-x", "0.2.0", "<!-- version: 0.2.0 -->\n# x v2\n")
-	in2 := &Installer{Client: &Client{BaseURL: fix2.URL}, SkillsRoot: root}
+	in2 := &Installer{Client: &Client{BaseURL: fix2.URL, AllowInsecure: true}, SkillsRoot: root}
 	rep, err := in2.Install(context.Background(), InstallOptions{Name: "marunage-source-x"})
 	if err != nil {
 		t.Fatalf("second Install: %v", err)
