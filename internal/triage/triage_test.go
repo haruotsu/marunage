@@ -2,6 +2,7 @@ package triage_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -150,5 +151,85 @@ func TestApplyPropagatesAppendStoreError(t *testing.T) {
 	})
 	if !errors.Is(err, wantErr) {
 		t.Errorf("Apply(task with store err): err = %v; want it to wrap %v", err, wantErr)
+	}
+}
+
+// PR-72 TR7 (review-fix-loop iter 1): the triage skill output may
+// quote message bodies that carry tokens (Bearer headers, GitHub
+// PATs, Slack tokens). Apply must run Reason through logging.Redact
+// BEFORE handing it to the store, mirroring dispatch.markFailed so a
+// leaked secret never lands in tasks.judgment_reason.
+func TestApplyRedactsSecretsInReasonOnSkipPath(t *testing.T) {
+	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+	s := &fakeStore{}
+	err := triage.Apply(context.Background(), s, 5, triage.Decision{
+		Decision: triage.DecisionSkip,
+		Reason:   "rule 5: already replied; quoted body header: Authorization: Bearer " + leaked,
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(s.skipped) != 1 {
+		t.Fatalf("MarkSkippedWithReason called %d times; want 1", len(s.skipped))
+	}
+	if strings.Contains(s.skipped[0].reason, leaked) {
+		t.Errorf("skip reason persisted leaked secret %q in:\n%s", leaked, s.skipped[0].reason)
+	}
+}
+
+func TestApplyRedactsSecretsInReasonOnTaskPath(t *testing.T) {
+	const leaked = "xoxb-1234567890-1234567890-AbCdEfGhIjKlMnOpQrStUvWx"
+	s := &fakeStore{}
+	err := triage.Apply(context.Background(), s, 6, triage.Decision{
+		Decision: triage.DecisionTask,
+		Reason:   "rule 1: direct mention; body contained slack token " + leaked,
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(s.appended) != 1 {
+		t.Fatalf("AppendJudgmentReason called %d times; want 1", len(s.appended))
+	}
+	if strings.Contains(s.appended[0].reason, leaked) {
+		t.Errorf("task reason persisted leaked secret %q in:\n%s", leaked, s.appended[0].reason)
+	}
+}
+
+// PR-72 TR8 (review-fix-loop iter 1): Decision must carry ExternalID
+// so the discovery layer can json.Unmarshal directly into this struct
+// (matching SKILL.md's documented JSON-Lines schema).
+func TestDecisionDecodesExternalIDFromSkillJSON(t *testing.T) {
+	const payload = `{"external_id": "T123.456", "decision": "task", "reason": "rule 1", "priority": 1}`
+	var d triage.Decision
+	if err := json.Unmarshal([]byte(payload), &d); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if d.ExternalID != "T123.456" {
+		t.Errorf("ExternalID = %q; want %q", d.ExternalID, "T123.456")
+	}
+	if d.Decision != triage.DecisionTask {
+		t.Errorf("Decision = %q; want %q", d.Decision, triage.DecisionTask)
+	}
+	if d.Priority != 1 {
+		t.Errorf("Priority = %d; want 1", d.Priority)
+	}
+}
+
+// PR-72 TR9 (review-fix-loop iter 1): ErrInvalidDecision message
+// must enumerate the actual constant values rather than hardcoded
+// literals — adding a future verdict (e.g. DecisionDefer) shouldn't
+// silently leave the error wording stale.
+func TestErrInvalidDecisionMentionsBothConstants(t *testing.T) {
+	s := &fakeStore{}
+	err := triage.Apply(context.Background(), s, 1, triage.Decision{
+		Decision: "maybe", Reason: "x",
+	})
+	if !errors.Is(err, triage.ErrInvalidDecision) {
+		t.Fatalf("err = %v; want ErrInvalidDecision", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, triage.DecisionTask) || !strings.Contains(msg, triage.DecisionSkip) {
+		t.Errorf("error message = %q; want it to mention %q and %q",
+			msg, triage.DecisionTask, triage.DecisionSkip)
 	}
 }
