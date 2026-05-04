@@ -131,11 +131,9 @@ func newTestPostHandler() http.Handler {
 	})
 }
 
-// securityHeaders wraps next, adding the baseline headers PR-62
-// promises (X-Content-Type-Options / X-Frame-Options / a strict CSP).
-// HTMX needs script-src 'unsafe-inline' for its hx-on attributes; we
-// intentionally do NOT allow that here since the placeholder page
-// ships without HTMX — PR-63 can relax CSP if it actually needs it.
+// securityHeaders wraps next, adding the baseline security headers on every
+// response. HSTS is set only on TLS requests — emitting it over plain HTTP is
+// meaningless and would confuse local-dev browsers.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -151,6 +149,9 @@ func securityHeaders(next http.Handler) http.Handler {
 				"form-action 'self'; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'none'")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

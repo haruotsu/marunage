@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -177,6 +178,40 @@ func TestRoutes_EventsServesSSE(t *testing.T) {
 	}
 	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("Content-Type = %q; want text/event-stream", got)
+	}
+}
+
+// TestRoutes_HSTSOnTLS pins that Strict-Transport-Security is set on TLS
+// requests so browsers enforce HTTPS after the first visit.
+func TestRoutes_HSTSOnTLS(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	hsts := rec.Header().Get("Strict-Transport-Security")
+	if hsts == "" {
+		t.Error("Strict-Transport-Security missing on TLS request; want HSTS header")
+	}
+	if !strings.Contains(hsts, "max-age=") {
+		t.Errorf("Strict-Transport-Security = %q; want max-age directive", hsts)
+	}
+}
+
+// TestRoutes_NoHSTSOnPlainHTTP pins that HSTS is NOT set on plain-HTTP
+// requests — a Strict-Transport-Security header over HTTP is meaningless and
+// would confuse browsers on local dev.
+func TestRoutes_NoHSTSOnPlainHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if hsts := rec.Header().Get("Strict-Transport-Security"); hsts != "" {
+		t.Errorf("Strict-Transport-Security = %q on plain HTTP; want absent", hsts)
 	}
 }
 

@@ -42,7 +42,7 @@ func TestWeb_FactoryReceivesEffectiveAddress(t *testing.T) {
 // TestWeb_DefaultsFromConfig pins that, with no flag overrides, the
 // command picks up whatever [web] declares.
 func TestWeb_DefaultsFromConfig(t *testing.T) {
-	cfgPath := writeMinimalWebConfig(t, "10.0.0.1", 8080)
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 8080)
 
 	var captured WebFactoryOptions
 	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
@@ -55,8 +55,8 @@ func TestWeb_DefaultsFromConfig(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
 	}
-	if captured.Addr != "10.0.0.1:8080" {
-		t.Errorf("Addr = %q; want 10.0.0.1:8080", captured.Addr)
+	if captured.Addr != "127.0.0.1:8080" {
+		t.Errorf("Addr = %q; want 127.0.0.1:8080", captured.Addr)
 	}
 }
 
@@ -73,7 +73,8 @@ func TestWeb_RemoteBindsToAllInterfaces(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"--config", cfgPath, "web", "--remote"}, &stdout, &stderr)
+	code := Execute([]string{"--config", cfgPath, "web", "--remote",
+		"--tls-cert", "server.crt", "--tls-key", "server.key"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
 	}
@@ -146,7 +147,8 @@ func TestWeb_RemotePrintsAuthlessWarning(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"--config", cfgPath, "web", "--remote"}, &stdout, &stderr)
+	code := Execute([]string{"--config", cfgPath, "web", "--remote",
+		"--tls-cert", "server.crt", "--tls-key", "server.key"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
 	}
@@ -250,6 +252,95 @@ func pollHealthz(t *testing.T, url string, timeout time.Duration) error {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout waiting for %s", url)
+}
+
+// TestWeb_RemoteRequiresTLSCertAndKey pins the HTTPS-only requirement:
+// --remote without both --tls-cert and --tls-key must exit non-zero with a
+// clear error message so an operator cannot accidentally expose the dashboard
+// over plain HTTP to the network.
+func TestWeb_RemoteRequiresTLSCertAndKey(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, nil, nil
+	})
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no cert no key", []string{"--config", cfgPath, "web", "--remote"}},
+		{"cert but no key", []string{"--config", cfgPath, "web", "--remote", "--tls-cert", "server.crt"}},
+		{"key but no cert", []string{"--config", cfgPath, "web", "--remote", "--tls-key", "server.key"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Execute(tc.args, &stdout, &stderr)
+			if code == 0 {
+				t.Fatalf("expected non-zero exit when --remote without TLS cert+key; got 0")
+			}
+			combined := stderr.String()
+			if !strings.Contains(combined, "tls") && !strings.Contains(combined, "cert") && !strings.Contains(combined, "TLS") {
+				t.Errorf("stderr = %q; want TLS/cert error message", combined)
+			}
+		})
+	}
+}
+
+// TestWeb_RemoteWithTLSCertAndKey_Passes pins the positive side: --remote with
+// both --tls-cert and --tls-key must not fail at the validation step.
+func TestWeb_RemoteWithTLSCertAndKey_Passes(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	withWebFactory(t, func(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, nil, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web", "--remote",
+		"--tls-cert", "server.crt", "--tls-key", "server.key"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected zero exit with --remote + cert/key; stderr=%q", stderr.String())
+	}
+}
+
+// TestWeb_NonLocalhostBindWithoutRemote_Fails pins the second binding rule:
+// --bind on a non-localhost address without --remote must exit non-zero so
+// an operator cannot accidentally skip the explicit opt-in.
+func TestWeb_NonLocalhostBindWithoutRemote_Fails(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, nil, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web", "--bind", "0.0.0.0"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit when --bind non-localhost without --remote; got 0")
+	}
+}
+
+// TestWeb_BypassRemoteExtraWarning pins that --remote with permission_mode=bypass
+// emits a louder, additional warning about running without sandboxing.
+func TestWeb_BypassRemoteExtraWarning(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		return immediateExitWebRunner{}, nil, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web", "--remote",
+		"--tls-cert", "server.crt", "--tls-key", "server.key"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
+	}
+	combined := stderr.String()
+	if !strings.Contains(combined, "bypass") && !strings.Contains(combined, "WARNING") {
+		t.Errorf("stderr = %q; want bypass-mode warning when --remote + permission_mode=bypass", combined)
+	}
 }
 
 // TestWeb_StubRemoved confirms the leaf stub for `web` is gone — the
