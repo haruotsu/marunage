@@ -172,12 +172,17 @@ func TestFetchItems(t *testing.T) {
 		t.Errorf("items[0].UpdatedAt = %v, want %v", items[0].UpdatedAt, wantTime)
 	}
 
-	// Verify the gh command was called correctly.
-	if len(runner.recorded) < 2 {
-		t.Fatalf("runner.recorded = %v, want at least gh + project", runner.recorded)
+	// Verify the exact gh command invocation — important because validOwnerName
+	// sanitises owner before it reaches the runner; this asserts the safe value
+	// lands in the correct argv positions.
+	wantArgv := []string{"gh", "project", "item-list", "5", "--owner", "myorg", "--format", "json"}
+	if len(runner.recorded) != len(wantArgv) {
+		t.Fatalf("runner.recorded = %v, want %v", runner.recorded, wantArgv)
 	}
-	if runner.recorded[0] != "gh" {
-		t.Errorf("runner.recorded[0] = %q, want gh", runner.recorded[0])
+	for i, want := range wantArgv {
+		if runner.recorded[i] != want {
+			t.Errorf("runner.recorded[%d] = %q, want %q", i, runner.recorded[i], want)
+		}
 	}
 }
 
