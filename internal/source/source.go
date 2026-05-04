@@ -67,6 +67,15 @@ type Task struct {
 	// Source is the plugin name that produced this task ("markdown",
 	// "gmail", ...). The queue layer copies it verbatim into the
 	// tasks.source column so a row's origin is auditable forever.
+	//
+	// A plugin that fans out to multiple logical sub-sources (the
+	// browser plugin scrapes N sites; a future Slack-channels plugin
+	// might cover M channels) MAY emit "<plugin>:<sub-id>" here
+	// (e.g. "browser:slack-saved", "browser:github-bookmarks") so
+	// downstream UI can route by sub-source without re-parsing
+	// RawMetadata. The Registry still keys on the bare "<plugin>"
+	// name (the prefix before ":") — Discovery dispatchers MUST split
+	// on the first ':' before calling Registry.Get.
 	Source string
 
 	// ExternalID is the upstream-stable identifier (Gmail message id,
