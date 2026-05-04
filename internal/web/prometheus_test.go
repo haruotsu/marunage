@@ -9,16 +9,17 @@ import (
 )
 
 // Test list:
-// 1. formatPrometheus includes marunage_tasks_total
+// 1. formatPrometheus includes marunage_tasks (gauge, no _total suffix)
 // 2. formatPrometheus includes marunage_tasks_by_status with labels
 // 3. formatPrometheus includes marunage_tasks_by_source with labels
-// 4. formatPrometheus includes marunage_task_success_rate
+// 4. formatPrometheus includes marunage_task_success_ratio
 // 5. formatPrometheus includes marunage_task_avg_duration_seconds
 // 6. GET /prometheus returns 200
 // 7. GET /prometheus Content-Type is text/plain; version=0.0.4; charset=utf-8
 // 8. GET /prometheus returns 500 on provider error
 // 9. GET /metrics with Accept: text/plain returns Prometheus format
 // 10. GET /metrics without Accept header returns HTML (existing behavior)
+// 11. acceptsTextPlain returns false when Accept is */* (browser wildcard)
 
 func newPrometheusServer(t *testing.T, prov MetricsProvider) *Server {
 	t.Helper()
@@ -33,16 +34,20 @@ func newPrometheusServer(t *testing.T, prov MetricsProvider) *Server {
 	return srv
 }
 
-// 1. formatPrometheus includes marunage_tasks_total
+// 1. formatPrometheus includes marunage_tasks (gauge, no _total suffix)
 func TestFormatPrometheus_TasksTotal(t *testing.T) {
 	snap := sampleMetricsSnapshot()
 	out := formatPrometheus(snap)
 
-	if !strings.Contains(out, "marunage_tasks_total 42") {
-		t.Errorf("output missing marunage_tasks_total 42:\n%s", out)
+	if !strings.Contains(out, "marunage_tasks 42") {
+		t.Errorf("output missing marunage_tasks 42:\n%s", out)
 	}
-	if !strings.Contains(out, "# TYPE marunage_tasks_total gauge") {
-		t.Errorf("output missing TYPE line for marunage_tasks_total:\n%s", out)
+	if !strings.Contains(out, "# TYPE marunage_tasks gauge") {
+		t.Errorf("output missing TYPE line for marunage_tasks:\n%s", out)
+	}
+	// Ensure the old _total name is not present (would conflict with counter convention)
+	if strings.Contains(out, "marunage_tasks_total") {
+		t.Errorf("output must not use _total suffix for a gauge metric:\n%s", out)
 	}
 }
 
@@ -81,16 +86,16 @@ func TestFormatPrometheus_TasksBySource(t *testing.T) {
 	}
 }
 
-// 4. formatPrometheus includes marunage_task_success_rate
+// 4. formatPrometheus includes marunage_task_success_ratio
 func TestFormatPrometheus_SuccessRate(t *testing.T) {
 	snap := sampleMetricsSnapshot()
 	out := formatPrometheus(snap)
 
-	if !strings.Contains(out, "marunage_task_success_rate 0.857") {
-		t.Errorf("output missing success_rate:\n%s", out)
+	if !strings.Contains(out, "marunage_task_success_ratio 0.857") {
+		t.Errorf("output missing success_ratio:\n%s", out)
 	}
-	if !strings.Contains(out, "# TYPE marunage_task_success_rate gauge") {
-		t.Errorf("output missing TYPE line for marunage_task_success_rate:\n%s", out)
+	if !strings.Contains(out, "# TYPE marunage_task_success_ratio gauge") {
+		t.Errorf("output missing TYPE line for marunage_task_success_ratio:\n%s", out)
 	}
 }
 
@@ -165,7 +170,7 @@ func TestMetricsHandler_AcceptTextPlain_ReturnsPrometheus(t *testing.T) {
 	if ct != want {
 		t.Errorf("Content-Type=%q; want %q", ct, want)
 	}
-	if !strings.Contains(w.Body.String(), "marunage_tasks_total") {
+	if !strings.Contains(w.Body.String(), "marunage_tasks") {
 		t.Errorf("body missing Prometheus metrics:\n%s", w.Body.String())
 	}
 }
@@ -184,5 +189,23 @@ func TestMetricsHandler_NoAcceptHeader_ReturnsHTML(t *testing.T) {
 	ct := w.Header().Get("Content-Type")
 	if !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type=%q; want text/html", ct)
+	}
+}
+
+// 11. acceptsTextPlain returns false when Accept is */* (browser wildcard)
+func TestAcceptsTextPlain_WildcardOnly_ReturnsFalse(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept", "*/*")
+	if acceptsTextPlain(req) {
+		t.Error("acceptsTextPlain should return false for Accept: */*")
+	}
+}
+
+// acceptsTextPlain returns true when Accept contains text/plain alongside */*
+func TestAcceptsTextPlain_MixedWithWildcard_ReturnsTrue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept", "text/plain, */*")
+	if !acceptsTextPlain(req) {
+		t.Error("acceptsTextPlain should return true for Accept: text/plain, */*")
 	}
 }

@@ -14,9 +14,9 @@ const prometheusContentType = "text/plain; version=0.0.4; charset=utf-8"
 func formatPrometheus(snap MetricsSnapshot) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "# HELP marunage_tasks_total Total number of tasks\n")
-	fmt.Fprintf(&b, "# TYPE marunage_tasks_total gauge\n")
-	fmt.Fprintf(&b, "marunage_tasks_total %d\n", snap.TotalTasks)
+	fmt.Fprintf(&b, "# HELP marunage_tasks Total number of tasks (current snapshot)\n")
+	fmt.Fprintf(&b, "# TYPE marunage_tasks gauge\n")
+	fmt.Fprintf(&b, "marunage_tasks %d\n", snap.TotalTasks)
 
 	fmt.Fprintf(&b, "# HELP marunage_tasks_by_status Number of tasks by status\n")
 	fmt.Fprintf(&b, "# TYPE marunage_tasks_by_status gauge\n")
@@ -30,9 +30,9 @@ func formatPrometheus(snap MetricsSnapshot) string {
 		fmt.Fprintf(&b, "marunage_tasks_by_source{source=%q} %d\n", src, snap.BySource[src])
 	}
 
-	fmt.Fprintf(&b, "# HELP marunage_task_success_rate Task success rate\n")
-	fmt.Fprintf(&b, "# TYPE marunage_task_success_rate gauge\n")
-	fmt.Fprintf(&b, "marunage_task_success_rate %g\n", snap.SuccessRate)
+	fmt.Fprintf(&b, "# HELP marunage_task_success_ratio Ratio of tasks completed successfully (0–1)\n")
+	fmt.Fprintf(&b, "# TYPE marunage_task_success_ratio gauge\n")
+	fmt.Fprintf(&b, "marunage_task_success_ratio %g\n", snap.SuccessRate)
 
 	fmt.Fprintf(&b, "# HELP marunage_task_avg_duration_seconds Average task duration in seconds\n")
 	fmt.Fprintf(&b, "# TYPE marunage_task_avg_duration_seconds gauge\n")
