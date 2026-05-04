@@ -1,0 +1,12 @@
+[plugin]
+name        = "slack:reaction"
+version     = "0.1.0"
+description = "Slack Reaction Trigger Discovery source (PR-100). Polls for configured emoji reactions added to Slack messages and converts matching events to tasks. Posts a DM completion notification when dm_on_complete is enabled."
+sync_mode   = "read-only"
+capabilities = [
+    "list",
+    "setup",
+    "auth-status",
+    "since",
+    "complete",
+]
