@@ -134,7 +134,10 @@ type SetupOptions struct {
 // subcommands documented in requirement.md.
 type Plugin interface {
 	// Name returns the stable identifier under which the registry
-	// dispatches calls. It also becomes Task.Source.
+	// dispatches calls. It is the Registry key, AND the prefix of
+	// Task.Source: a single-source plugin emits Task.Source =
+	// Name(); a fan-out plugin (browser scrapes N sites, ...) emits
+	// Task.Source = Name() + ":" + sub-id (see Task.Source godoc).
 	Name() string
 
 	// List returns every currently-known task. Per requirement.md,
