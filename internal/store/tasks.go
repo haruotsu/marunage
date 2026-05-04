@@ -611,15 +611,25 @@ func (r *TaskRepo) MarkFailedWithReason(ctx context.Context, id int64, reason st
 	return nil
 }
 
-// SetReflection writes reflection text on a row. The PR-102 reflection
-// hook (internal/dispatch/reflection.go) calls this from its async
+// SetReflection writes reflection text on a terminal row (done /
+// failed). The PR-102 reflection hook calls this from its async
 // goroutine after Claude has written its review answer to the workspace
-// dir. Empty text clears the column to NULL so a re-run that produced no
+// dir; the status guard means a `marunage reopen` that flipped the row
+// back to pending mid-flight cannot have the late answer pinned onto
+// what is now a fresh dispatch.
+//
+// Empty text clears the column to NULL so a re-run that produced no
 // answer does not leave a stale value behind. Missing id surfaces
-// ErrNotFound the same way SetWorkspace / SetCompletedAt do.
+// ErrNotFound; a non-terminal current state surfaces ErrInvalidTransition
+// (mirroring EscalateToHuman's two-step probe so callers can branch on
+// the typed sentinel).
 func (r *TaskRepo) SetReflection(ctx context.Context, id int64, text string) error {
-	res, err := r.db.ExecContext(ctx,
-		"UPDATE tasks SET reflection = ? WHERE id = ?", nullable(text), id)
+	const q = `
+		UPDATE tasks
+		   SET reflection = ?
+		 WHERE id = ?
+		   AND status IN ('done', 'failed')`
+	res, err := r.db.ExecContext(ctx, q, nullable(text), id)
 	if err != nil {
 		return fmt.Errorf("set reflection: %w", err)
 	}
@@ -627,10 +637,22 @@ func (r *TaskRepo) SetReflection(ctx context.Context, id int64, text string) err
 	if err != nil {
 		return fmt.Errorf("set reflection rows: %w", err)
 	}
-	if n == 0 {
+	if n == 1 {
+		return nil
+	}
+	// Disambiguate "id missing" vs "wrong status" so callers can decide
+	// whether a stale id is the cause or a reopen race.
+	var current string
+	err = r.db.QueryRowContext(ctx,
+		"SELECT status FROM tasks WHERE id = ?", id,
+	).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("set reflection probe: %w", err)
+	}
+	return fmt.Errorf("%w: cannot set reflection from %q", ErrInvalidTransition, current)
 }
 
 // JudgmentReasonSeparator is the canonical join token between the prior

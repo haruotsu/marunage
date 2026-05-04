@@ -403,6 +403,12 @@ func readReflectionFile(path string) ([]byte, error) {
 // write instruction. Empty workspaceDir collapses to just the skill
 // (no place to publish the sentinel) — callers should not invoke
 // OnDone in that state, but defending here keeps the helper testable.
+//
+// The publish snippet uses a single-quoted heredoc (cat <<'EOF') rather
+// than printf so a reflection containing %, ", \, or embedded newlines
+// is delivered to disk verbatim — printf '%s' would mangle %-prefixed
+// substrings and quote nesting would silently lose lines (design-review
+// finding from go-design / security agents).
 func buildReflectionPrompt(skill, workspaceDir string) string {
 	body := strings.TrimSpace(skill)
 	if workspaceDir == "" {
@@ -410,13 +416,21 @@ func buildReflectionPrompt(skill, workspaceDir string) string {
 	}
 	finalPath := filepath.Join(workspaceDir, reflectionFile)
 	tmpPath := filepath.Join(workspaceDir, reflectionFile+".tmp")
-	return body + "\n\n## Reflection sentinel\n\n" +
+	return body + "\n\n## Reflection sentinel (auto-injected)\n\n" +
 		"After writing your review, publish it atomically so the marunage " +
-		"reflection hook can read a complete file:\n\n" +
-		"  printf '%s\\n' \"<your full reflection>\" > " + tmpPath + "\n" +
+		"reflection hook can read a complete file. The hook waits up to " +
+		defaultReflectionTimeout.String() + " for the file to appear and reads at most " +
+		fmt.Sprintf("%d KiB", reflectionMaxBytes/1024) + " of plain UTF-8 text " +
+		"(symlinks and oversized files are rejected). Use a heredoc so the " +
+		"body survives quotes / newlines / percent signs:\n\n" +
+		"  cat > " + tmpPath + " <<'EOF'\n" +
+		"  <your full reflection here, free-form text>\n" +
+		"  EOF\n" +
 		"  mv " + tmpPath + " " + finalPath + "\n\n" +
 		"Do not write " + finalPath + " directly; always go through the .tmp " +
-		"+ mv so the reader never sees a half-written file."
+		"+ mv so the reader never sees a half-written file. Do not include " +
+		"secrets (API keys, tokens, raw credentials) in the body — the value " +
+		"is rendered in the marunage Web UI."
 }
 
 func (r *Reflector) recordAudit(action string, id int64, value string) {
