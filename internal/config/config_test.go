@@ -169,6 +169,27 @@ func TestValidate(t *testing.T) {
 			mutate:  func(c *Config) { c.Web.Port = 70000 },
 			wantErr: "web.port",
 		},
+		{
+			name:    "journal.interval must parse as duration",
+			mutate:  func(c *Config) { c.Journal.Interval = "never" },
+			wantErr: "journal.interval",
+		},
+		{
+			name: "reaction_trigger enabled with empty reactions",
+			mutate: func(c *Config) {
+				c.Discovery.Slack.ReactionTrigger.Enabled = true
+				c.Discovery.Slack.ReactionTrigger.Reactions = nil
+			},
+			wantErr: "discovery.slack.reaction_trigger.reactions",
+		},
+		{
+			name: "reaction_trigger disabled with empty reactions is OK",
+			mutate: func(c *Config) {
+				c.Discovery.Slack.ReactionTrigger.Enabled = false
+				c.Discovery.Slack.ReactionTrigger.Reactions = nil
+			},
+			wantErr: "",
+		},
 	}
 
 	for _, tc := range cases {

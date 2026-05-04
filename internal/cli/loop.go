@@ -21,6 +21,7 @@ import (
 	"github.com/haruotsu/marunage/internal/render"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/source/markdown"
+	"github.com/haruotsu/marunage/internal/source/slack/reaction"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -168,8 +169,16 @@ func registerEnabledSources(r *source.Registry, cfg config.Config) error {
 			if err := markdown.RegisterBuiltin(r); err != nil {
 				return fmt.Errorf("register markdown: %w", err)
 			}
+		case "slack:reaction":
+			opts := []reaction.Option{
+				reaction.WithReactions(cfg.Discovery.Slack.ReactionTrigger.Reactions),
+				reaction.WithDMOnComplete(cfg.Discovery.Slack.ReactionTrigger.DMOnComplete),
+			}
+			if err := reaction.RegisterBuiltin(r, opts...); err != nil {
+				return fmt.Errorf("register slack:reaction: %w", err)
+			}
 		default:
-			return fmt.Errorf("loop: unknown discovery.sources_enabled entry %q (built-in plugins: markdown)", name)
+			return fmt.Errorf("loop: unknown discovery.sources_enabled entry %q (built-in plugins: markdown, slack:reaction)", name)
 		}
 	}
 	return nil
