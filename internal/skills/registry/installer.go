@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -109,7 +110,7 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (InstallR
 	state = state.Upsert(InstalledSkill{
 		Name:      opts.Name,
 		Version:   v.Version,
-		Source:    in.Client.BaseURL,
+		Source:    redactURL(in.Client.BaseURL),
 		SHA256:    v.SHA256,
 		UpdatedAt: clock().UTC().Format(time.RFC3339),
 	})
@@ -121,7 +122,7 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (InstallR
 		Name:       opts.Name,
 		NewVersion: v.Version,
 		OldVersion: prev.Version,
-		Source:     in.Client.BaseURL,
+		Source:     redactURL(in.Client.BaseURL),
 		SHA256:     v.SHA256,
 		Path:       filepath.Join(dest, "SKILL.md"),
 	}, nil
@@ -135,10 +136,10 @@ func Search(idx Index, query string) []IndexEntry {
 	if query == "" {
 		return append([]IndexEntry(nil), idx.Skills...)
 	}
-	q := toLower(query)
+	q := strings.ToLower(query)
 	var hits []IndexEntry
 	for _, e := range idx.Skills {
-		if substr(toLower(e.Name), q) || substr(toLower(e.Description), q) {
+		if strings.Contains(strings.ToLower(e.Name), q) || strings.Contains(strings.ToLower(e.Description), q) {
 			hits = append(hits, e)
 		}
 	}
@@ -169,29 +170,3 @@ func FindUpdates(state State, idx Index) []IndexEntry {
 	return outdated
 }
 
-func toLower(s string) string {
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if 'A' <= c && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
-}
-
-func substr(haystack, needle string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	if len(needle) > len(haystack) {
-		return false
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}

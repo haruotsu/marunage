@@ -169,7 +169,7 @@ func TestExtractTarball_ReplacesExistingTree(t *testing.T) {
 func TestExtractTarball_RejectsTooManyFiles(t *testing.T) {
 	files := map[string]string{}
 	for i := 0; i < 5; i++ {
-		files["marunage-x/" + string(rune('a'+i)) + ".txt"] = "x"
+		files["marunage-x/"+string(rune('a'+i))+".txt"] = "x"
 	}
 	tarball := makeTarball(t, files)
 	dest := filepath.Join(t.TempDir(), "marunage-x")
@@ -179,6 +179,23 @@ func TestExtractTarball_RejectsTooManyFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(dest); err == nil {
 		t.Errorf("file-count overrun should leave no destination behind")
+	}
+}
+
+// TestExtractTarball_AcceptsFilesAtCap pins the boundary: exactly
+// MaxFiles regular entries should succeed (the cap is "more than"
+// not "at least"). With MaxFiles=2 and two entries we expect
+// extraction to succeed.
+func TestExtractTarball_AcceptsFilesAtCap(t *testing.T) {
+	tarball := makeTarball(t, map[string]string{
+		"marunage-x/a.md": "<!-- version: 1.0.0 -->\n",
+		"marunage-x/b.md": "extra",
+	})
+	dest := filepath.Join(t.TempDir(), "marunage-x")
+	if err := ExtractTarball(tarball, ExtractOptions{
+		Dest: dest, SkillName: "marunage-x", MaxFiles: 2,
+	}); err != nil {
+		t.Errorf("ExtractTarball at MaxFiles boundary: %v", err)
 	}
 }
 

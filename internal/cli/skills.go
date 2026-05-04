@@ -67,10 +67,8 @@ func newSkillsCmd() *cobra.Command {
 
 func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Command {
 	var (
-		version       string
-		allowEmbed    bool
-		registryArg   string
-		insecureLocal bool
+		version    string
+		allowEmbed bool
 	)
 	cmd := &cobra.Command{
 		Use:          "install <name>",
@@ -78,7 +76,7 @@ func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Comma
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			base := pickRegistryURL(registryArg, *registryURL)
+			base := pickRegistryURL(*registryURL)
 			if base == "" {
 				return errSkillsRegistryNotConfigured
 			}
@@ -86,11 +84,13 @@ func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Comma
 			if err != nil {
 				return err
 			}
+			allowInsecure := boolDeref(parentInsecure) || envInsecureEnabled()
+			warnIfEnvInsecure(cmd.ErrOrStderr())
 			in := &registry.Installer{
 				Client: &registry.Client{
 					BaseURL:       base,
 					UserAgent:     "marunage-cli",
-					AllowInsecure: insecureLocal || boolDeref(parentInsecure) || envInsecureEnabled(),
+					AllowInsecure: allowInsecure,
 				},
 				SkillsRoot: root,
 			}
@@ -108,8 +108,6 @@ func newSkillsInstallCmd(registryURL *string, parentInsecure *bool) *cobra.Comma
 	}
 	cmd.Flags().StringVar(&version, "version", "", "Pin a specific published version (default: latest).")
 	cmd.Flags().BoolVar(&allowEmbed, "allow-embedded-override", false, "Permit overwriting marunage-triage / marunage-execute / marunage-reflect.")
-	cmd.Flags().StringVar(&registryArg, "registry", "", "Override the registry base URL for this command.")
-	cmd.Flags().BoolVar(&insecureLocal, "allow-insecure-registry", false, "Permit plain http:// registries for this command.")
 	return cmd
 }
 
@@ -135,17 +133,13 @@ func newSkillsListCmd() *cobra.Command {
 }
 
 func newSkillsSearchCmd(registryURL *string, parentInsecure *bool) *cobra.Command {
-	var (
-		registryArg   string
-		insecureLocal bool
-	)
 	cmd := &cobra.Command{
 		Use:          "search [query]",
 		Short:        "Search the registry catalog.",
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			base := pickRegistryURL(registryArg, *registryURL)
+			base := pickRegistryURL(*registryURL)
 			if base == "" {
 				return errSkillsRegistryNotConfigured
 			}
@@ -153,10 +147,12 @@ func newSkillsSearchCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 			if len(args) == 1 {
 				query = args[0]
 			}
+			allowInsecure := boolDeref(parentInsecure) || envInsecureEnabled()
+			warnIfEnvInsecure(cmd.ErrOrStderr())
 			client := &registry.Client{
 				BaseURL:       base,
 				UserAgent:     "marunage-cli",
-				AllowInsecure: insecureLocal || boolDeref(parentInsecure) || envInsecureEnabled(),
+				AllowInsecure: allowInsecure,
 			}
 			idx, err := client.FetchIndex(cmd.Context())
 			if err != nil {
@@ -167,23 +163,17 @@ func newSkillsSearchCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&registryArg, "registry", "", "Override the registry base URL for this command.")
-	cmd.Flags().BoolVar(&insecureLocal, "allow-insecure-registry", false, "Permit plain http:// registries for this command.")
 	return cmd
 }
 
 func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool) *cobra.Command {
-	var (
-		registryArg   string
-		insecureLocal bool
-	)
 	cmd := &cobra.Command{
 		Use:          "update [name]",
 		Short:        "Re-install installed skills (or one named skill) at the latest version.",
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			base := pickRegistryURL(registryArg, *registryURL)
+			base := pickRegistryURL(*registryURL)
 			if base == "" {
 				return errSkillsRegistryNotConfigured
 			}
@@ -195,10 +185,12 @@ func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 			if err != nil {
 				return err
 			}
+			allowInsecure := boolDeref(parentInsecure) || envInsecureEnabled()
+			warnIfEnvInsecure(cmd.ErrOrStderr())
 			client := &registry.Client{
 				BaseURL:       base,
 				UserAgent:     "marunage-cli",
-				AllowInsecure: insecureLocal || boolDeref(parentInsecure) || envInsecureEnabled(),
+				AllowInsecure: allowInsecure,
 			}
 			ctx := cmd.Context()
 
@@ -230,8 +222,6 @@ func newSkillsUpdateCmd(registryURL *string, parentInsecure *bool) *cobra.Comman
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&registryArg, "registry", "", "Override the registry base URL for this command.")
-	cmd.Flags().BoolVar(&insecureLocal, "allow-insecure-registry", false, "Permit plain http:// registries for this command.")
 	return cmd
 }
 
@@ -256,17 +246,27 @@ func envInsecureEnabled() bool {
 	return false
 }
 
-// pickRegistryURL implements the --registry > $MARUNAGE_SKILLS_REGISTRY_URL >
-// (parent --registry) precedence. Centralised so all three subcommands
-// honour the same order.
-func pickRegistryURL(localFlag, persistentFlag string) string {
-	if v := strings.TrimSpace(localFlag); v != "" {
-		return v
-	}
+// pickRegistryURL applies the --registry > $MARUNAGE_SKILLS_REGISTRY_URL
+// precedence. The flag is a cobra persistent flag bound at the
+// `marunage skills` parent so every subcommand inherits the same
+// resolution path.
+func pickRegistryURL(persistentFlag string) string {
 	if v := strings.TrimSpace(persistentFlag); v != "" {
 		return v
 	}
 	return strings.TrimSpace(os.Getenv(EnvRegistryURL))
+}
+
+// warnIfEnvInsecure prints a one-shot stderr warning when the
+// http opt-in came from MARUNAGE_SKILLS_REGISTRY_ALLOW_HTTP rather
+// than the explicit --allow-insecure-registry flag. The intent is
+// to keep the env-var path noisy enough that a developer who set
+// it once in `.zshrc` notices the silent downgrade — OpenClaw
+// §11.1 calls "danger flag normalisation" the typical regression.
+func warnIfEnvInsecure(stderr io.Writer) {
+	if envInsecureEnabled() {
+		fmt.Fprintln(stderr, "warning: "+EnvAllowInsecure+" is set; plain http:// registries are accepted. Unset it for https-only.")
+	}
 }
 
 func printInstallReport(w io.Writer, rep registry.InstallReport) {

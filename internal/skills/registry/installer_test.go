@@ -151,6 +151,40 @@ func TestInstaller_RecordsPreviousVersion(t *testing.T) {
 	}
 }
 
+// TestInstaller_RedactsCredentialsInState pins that a userinfo-
+// bearing BaseURL never lands in the on-disk state file or the
+// returned report. Without the redaction a user who threaded
+// `--registry https://user:token@host/` through the CLI would have
+// the token persisted in `~/.claude/skills/.marunage-registry.json`
+// and surfaced via the Web UI.
+func TestInstaller_RedactsCredentialsInState(t *testing.T) {
+	fix := newFixtureRegistry(t, "marunage-source-x", "0.1.0",
+		"<!-- version: 0.1.0 -->\n# x\n")
+	tampered := strings.Replace(fix.URL, "http://", "http://user:tokensecret@", 1)
+
+	root := filepath.Join(t.TempDir(), ".claude", "skills")
+	in := &Installer{
+		Client:     &Client{BaseURL: tampered, AllowInsecure: true},
+		SkillsRoot: root,
+	}
+	rep, err := in.Install(context.Background(), InstallOptions{Name: "marunage-source-x"})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if strings.Contains(rep.Source, "tokensecret") {
+		t.Errorf("InstallReport.Source leaked credential: %q", rep.Source)
+	}
+
+	state, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	rec, _ := state.Find("marunage-source-x")
+	if strings.Contains(rec.Source, "tokensecret") {
+		t.Errorf("state Source leaked credential: %q", rec.Source)
+	}
+}
+
 // TestSearch_FiltersByQuery pins the small helper Search() to keep
 // the CLI and Web UI on the same matching rules.
 func TestSearch_FiltersByQuery(t *testing.T) {

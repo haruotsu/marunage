@@ -66,6 +66,12 @@ var ErrIntegrity = errors.New("registry: tarball integrity check failed")
 // timeout) without parsing strings.
 var ErrUpstream = errors.New("registry: upstream returned non-2xx")
 
+// ErrBodyTooLarge is returned when an upstream body exceeds
+// MaxBodyBytes (or the package default). The typed sentinel keeps
+// the size-cap branch grep-able and assertable without falling back
+// to error-message string matches.
+var ErrBodyTooLarge = errors.New("registry: upstream body exceeds size cap")
+
 // FetchIndex retrieves and parses `<BaseURL>/index.json`.
 func (c *Client) FetchIndex(ctx context.Context) (Index, error) {
 	body, err := c.fetchJSON(ctx, IndexFileName)
@@ -145,9 +151,10 @@ func (c *Client) resolve(rel string) (string, error) {
 }
 
 func (c *Client) get(ctx context.Context, full string) ([]byte, error) {
+	safe := redactURL(full)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
-		return nil, fmt.Errorf("registry: build request %s: %w", full, err)
+		return nil, fmt.Errorf("registry: build request %s: %w", safe, err)
 	}
 	if c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
@@ -159,12 +166,12 @@ func (c *Client) get(ctx context.Context, full string) ([]byte, error) {
 	}
 	resp, err := doer.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("registry: GET %s: %w", full, err)
+		return nil, fmt.Errorf("registry: GET %s: %w", safe, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: GET %s: %d", ErrUpstream, full, resp.StatusCode)
+		return nil, fmt.Errorf("%w: GET %s: %d", ErrUpstream, safe, resp.StatusCode)
 	}
 
 	max := c.MaxBodyBytes
@@ -173,12 +180,26 @@ func (c *Client) get(ctx context.Context, full string) ([]byte, error) {
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
 	if err != nil {
-		return nil, fmt.Errorf("registry: read %s: %w", full, err)
+		return nil, fmt.Errorf("registry: read %s: %w", safe, err)
 	}
 	if int64(len(body)) > max {
-		return nil, fmt.Errorf("registry: %s exceeded %d bytes", full, max)
+		return nil, fmt.Errorf("%w: %s exceeded %d bytes", ErrBodyTooLarge, safe, max)
 	}
 	return body, nil
+}
+
+// redactURL returns u with any userinfo component (`user:token@`)
+// stripped, so error messages, audit logs, and the state file never
+// surface a credential the operator typed into `--registry`. Falls
+// back to the literal input on parse failure (keeps error wrapping
+// safe) and to the original on URLs without userinfo.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // assertScheme is the per-Client scheme guard. https is always

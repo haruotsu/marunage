@@ -134,6 +134,52 @@ func TestSkills_Install_WithoutRegistryURL_Errors(t *testing.T) {
 	}
 }
 
+// TestSkills_Install_FlagBeatsEnvVar pins the precedence rule:
+// --registry on the command line wins over $MARUNAGE_SKILLS_REGISTRY_URL.
+// Without this guard a stale env var in the operator's shell would
+// silently override the explicit flag.
+func TestSkills_Install_FlagBeatsEnvVar(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	flagURL := startFixtureRegistry(t, "marunage-source-x", "0.1.0",
+		"<!-- version: 0.1.0 -->\n# x\n")
+	t.Setenv(EnvRegistryURL, "https://wrong.invalid")
+	t.Setenv(EnvAllowInsecure, "1")
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"skills", "install", "marunage-source-x", "--registry", flagURL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "marunage-source-x", "SKILL.md")); err != nil {
+		t.Errorf("expected SKILL.md to exist; flag URL was ignored: %v", err)
+	}
+}
+
+// TestSkills_EnvInsecure_WarnsOnStderr pins the noisy-default
+// promise: when http is allowed via env var, the CLI prints a
+// stderr warning so a developer who set it once does not silently
+// keep accepting plain http registries forever.
+func TestSkills_EnvInsecure_WarnsOnStderr(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	url := startFixtureRegistry(t, "marunage-source-x", "0.1.0",
+		"<!-- version: 0.1.0 -->\n# x\n")
+	t.Setenv(EnvRegistryURL, url)
+	t.Setenv(EnvAllowInsecure, "1")
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"skills", "install", "marunage-source-x"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), EnvAllowInsecure) {
+		t.Errorf("stderr missing env-var warning; got %q", stderr.String())
+	}
+}
+
 // TestSkills_Install_HonoursEnvVar pins the env-var override path so
 // scripted use does not need to thread --registry through every
 // invocation.
