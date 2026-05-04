@@ -42,6 +42,11 @@ func DefaultConfig() Config {
 			},
 			Deny: append([]string(nil), hardcodedDenyCategories...),
 		},
+		// DraftMode is intentionally disabled by default: the skill sends
+		// immediately for OK categories. Users who want human review before
+		// sending should set draft_mode.enabled = true in autoreply.toml.
+		// The executor layer (follow-up phase) is responsible for enforcing
+		// the draft-mode write path.
 		DraftMode: DraftMode{
 			Enabled: false,
 		},
