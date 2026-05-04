@@ -51,9 +51,28 @@ type DiscoveryGmail struct {
 }
 
 type DiscoverySlack struct {
-	MCPServer       string `toml:"mcp_server"`
-	IncludeDM       bool   `toml:"include_dm"`
-	IncludeMentions bool   `toml:"include_mentions"`
+	MCPServer       string                    `toml:"mcp_server"`
+	IncludeDM       bool                      `toml:"include_dm"`
+	IncludeMentions bool                      `toml:"include_mentions"`
+	ReactionTrigger SlackReactionTriggerConfig `toml:"reaction_trigger"`
+}
+
+// SlackReactionTriggerConfig holds the settings for the Slack Reaction
+// Trigger source (PR-100). When enabled, the plugin polls for messages
+// that have been reacted to with one of the configured reactions and
+// creates a task for each matching event.
+type SlackReactionTriggerConfig struct {
+	// Enabled gates the plugin. Off by default so a fresh install does not
+	// start watching reactions until the user opts in.
+	Enabled bool `toml:"enabled"`
+
+	// Reactions is the list of emoji names (without colons) to watch.
+	// Example: ["todo", "inbox_tray"].
+	Reactions []string `toml:"reactions"`
+
+	// DMOnComplete sends a DM to the user who added the reaction when the
+	// task transitions to done.
+	DMOnComplete bool `toml:"dm_on_complete"`
 }
 
 type DiscoveryGitHub struct {
@@ -159,6 +178,11 @@ func Default() Config {
 				MCPServer:       "slack",
 				IncludeDM:       true,
 				IncludeMentions: true,
+				ReactionTrigger: SlackReactionTriggerConfig{
+					Enabled:      false,
+					Reactions:    []string{"todo", "inbox_tray"},
+					DMOnComplete: false,
+				},
 			},
 			GitHub: DiscoveryGitHub{
 				Filter: "is:open assignee:@me",
@@ -257,6 +281,10 @@ func (c Config) Validate() error {
 	}
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
+	}
+	rt := c.Discovery.Slack.ReactionTrigger
+	if rt.Enabled && len(rt.Reactions) == 0 {
+		return fmt.Errorf("discovery.slack.reaction_trigger.reactions: must be non-empty when enabled = true")
 	}
 	if c.Reflection.SampleRate < 0 || c.Reflection.SampleRate > 1 {
 		return fmt.Errorf("reflection.sample_rate: must be in [0,1] (got %v)", c.Reflection.SampleRate)
