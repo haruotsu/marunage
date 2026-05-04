@@ -30,6 +30,11 @@ type Client interface {
 	// workspace has disappeared (mark failed). Order is unspecified;
 	// callers turn the slice into a set before doing the diff.
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
+
+	// ReadOutput captures the current visible terminal pane for ws. The
+	// returned string is the trimmed stdout of `cmux pane-text <ws.ID>`.
+	// PR-91 polls this to stream live output to the browser.
+	ReadOutput(ctx context.Context, ws Workspace) (string, error)
 }
 
 // ReadinessProbe returns whether ws has finished its boot sequence (trust
@@ -308,6 +313,23 @@ func (c *client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 		out = append(out, Workspace{ID: m[1]})
 	}
 	return out, nil
+}
+
+// ReadOutput shells out to `cmux pane-text <ws.ID>` and returns the trimmed
+// stdout. Returns ErrInvalidWorkspace for an empty ID so callers cannot
+// accidentally read pane text for an unset workspace.
+func (c *client) ReadOutput(ctx context.Context, ws Workspace) (string, error) {
+	if ws.ID == "" {
+		return "", ErrInvalidWorkspace
+	}
+	stdout, stderr, err := c.runner.Run(ctx, "cmux", "pane-text", ws.ID)
+	if err != nil {
+		if isBinaryNotFound(err) {
+			return "", ErrCmuxNotFound
+		}
+		return "", fmt.Errorf("cmux pane-text: %w (stderr=%s)", err, strings.TrimSpace(string(stderr)))
+	}
+	return strings.TrimSpace(string(stdout)), nil
 }
 
 // WaitReady blocks until the readiness probe reports ws is ready, the

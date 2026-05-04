@@ -104,6 +104,12 @@ func (f *fakeCmux) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
 	return nil, nil
 }
 
+// ReadOutput is a no-op stub: dispatch never calls it. Present only so
+// *fakeCmux satisfies cmux.Client after PR-91 added the method.
+func (f *fakeCmux) ReadOutput(_ context.Context, _ cmux.Workspace) (string, error) {
+	return "", nil
+}
+
 // dispatchFixture wires a real on-disk SQLite store, a fake cmux client,
 // and a Dispatcher with a deterministic clock so tests can assert exact
 // started_at values.
