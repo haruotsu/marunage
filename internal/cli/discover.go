@@ -12,6 +12,7 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/source/markdown"
 	"github.com/haruotsu/marunage/internal/source/slack"
+	"github.com/haruotsu/marunage/internal/source/slack/reaction"
 )
 
 // newDiscoverCmd builds the `marunage discover` command. PR-70 ships only
@@ -91,6 +92,17 @@ var builtins = map[string]builtinRegistrar{
 	"slack": func(r *source.Registry, _ []string) error {
 		if err := slack.RegisterBuiltin(r); err != nil {
 			return fmt.Errorf("register slack: %w", err)
+		}
+		return nil
+	},
+	// PR-100: register the Slack Reaction Trigger source with no Client wired.
+	// Discover-once surfaces ErrClientNotConfigured at List time, signalling
+	// that the user has not configured the reaction client yet. The daemon
+	// loop supplies options (WithReactions / WithDMOnComplete) from config
+	// when discovery.slack.reaction_trigger.enabled is true.
+	"slack:reaction": func(r *source.Registry, _ []string) error {
+		if err := reaction.RegisterBuiltin(r); err != nil {
+			return fmt.Errorf("register slack:reaction: %w", err)
 		}
 		return nil
 	},
