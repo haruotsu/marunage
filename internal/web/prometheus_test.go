@@ -209,3 +209,42 @@ func TestAcceptsTextPlain_MixedWithWildcard_ReturnsTrue(t *testing.T) {
 		t.Error("acceptsTextPlain should return true for Accept: text/plain, */*")
 	}
 }
+
+// formatPrometheus does not panic when ByStatus or BySource is nil.
+func TestFormatPrometheus_NilMaps_NoPanic(t *testing.T) {
+	snap := MetricsSnapshot{
+		TotalTasks:  0,
+		ByStatus:    nil,
+		BySource:    nil,
+		SuccessRate: 0,
+		AvgDuration: 0,
+	}
+	out := formatPrometheus(snap)
+	if !strings.Contains(out, "# TYPE marunage_tasks gauge") {
+		t.Errorf("output missing TYPE line even with nil maps:\n%s", out)
+	}
+	if strings.Contains(out, "marunage_tasks_by_status{") {
+		t.Errorf("output must have no label lines when ByStatus is nil:\n%s", out)
+	}
+	if strings.Contains(out, "marunage_tasks_by_source{") {
+		t.Errorf("output must have no label lines when BySource is nil:\n%s", out)
+	}
+}
+
+// formatPrometheus escapes label values containing double-quotes and backslashes.
+func TestFormatPrometheus_LabelEscaping(t *testing.T) {
+	snap := MetricsSnapshot{
+		TotalTasks:  1,
+		ByStatus:    map[string]int{`done"test`: 1},
+		BySource:    map[string]int{`back\slash`: 1},
+		SuccessRate: 1,
+		AvgDuration: 1,
+	}
+	out := formatPrometheus(snap)
+	if strings.Contains(out, `status="done"test"`) {
+		t.Errorf("unescaped double-quote in label value breaks Prometheus format:\n%s", out)
+	}
+	if strings.Contains(out, `source="back\slash"`) && !strings.Contains(out, `source="back\\slash"`) {
+		t.Errorf("backslash in label value must be escaped:\n%s", out)
+	}
+}
