@@ -144,6 +144,14 @@ func (c *GoogleClient) InsertTask(ctx context.Context, tasklistID string, task G
 // use Patch (not Update) so a Status-only flip from Complete does not
 // blank the upstream Title / Notes; an Update call would PUT the full
 // resource and zero out fields the patch does not name.
+//
+// Caveat: the empty-string elision means the API CANNOT be used to
+// reset a field to "". This is fine for the only caller today (Plugin's
+// Complete sends a Status-only patch), but a future "Edit" path that
+// wants to clear Notes will need a richer patch shape (e.g. *string
+// pointers or a fieldmask). The Client interface uses the same shape
+// to keep the fake test double aligned, so any change must move both
+// in lockstep.
 func (c *GoogleClient) PatchTask(ctx context.Context, tasklistID, taskID string, patch GTask) (GTask, error) {
 	body := &tasksapi.Task{}
 	if patch.Title != "" {
