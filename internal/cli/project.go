@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/project"
 )
 
@@ -25,21 +27,18 @@ func (defaultBoardFetcher) Fetch(ctx context.Context, parsed project.ParsedURL) 
 }
 
 // projectRunnerFactory builds a boardFetcher for a given board URL.
-// Production returns nil (signals "use default"); tests return a fake.
 type projectRunnerFactory func(boardURL string) boardFetcher
 
 var projectRunnerHook projectRunnerFactory
 
 // withProjectRunnerHook installs a test-only boardFetcher factory and
-// restores the previous factory when t.Cleanup runs.
+// restores the previous factory on cleanup.
 func withProjectRunnerHook(t interface{ Cleanup(func()) }, f projectRunnerFactory) {
 	prev := projectRunnerHook
 	projectRunnerHook = f
 	t.Cleanup(func() { projectRunnerHook = prev })
 }
 
-// activeProjectBoardFetcher returns the configured fetcher, preferring the
-// test hook when it is set.
 func activeProjectBoardFetcher(boardURL string) boardFetcher {
 	if projectRunnerHook != nil {
 		return projectRunnerHook(boardURL)
@@ -47,14 +46,81 @@ func activeProjectBoardFetcher(boardURL string) boardFetcher {
 	return defaultBoardFetcher{}
 }
 
+// projectDispatchFunc dispatches a single board item by starting a cmux
+// workspace and sending a prompt. Returns nil on success.
+type projectDispatchFunc func(ctx context.Context, configPath string, item project.BoardItem) error
+
+var projectDispatchHook projectDispatchFunc
+
+// withProjectDispatchHook installs a test-only dispatch function and
+// restores the previous on cleanup.
+func withProjectDispatchHook(t interface{ Cleanup(func()) }, f projectDispatchFunc) {
+	prev := projectDispatchHook
+	projectDispatchHook = f
+	t.Cleanup(func() { projectDispatchHook = prev })
+}
+
+func activeProjectDispatch() projectDispatchFunc {
+	if projectDispatchHook != nil {
+		return projectDispatchHook
+	}
+	return productionProjectDispatch
+}
+
+// productionProjectDispatch loads config, creates a cmux workspace with
+// the configured claude_command, and sends a prompt for the board item.
+// The workspace runs until the item is moved to Done on the board, which
+// the outer polling loop detects on the next fetch cycle.
+func productionProjectDispatch(ctx context.Context, configPath string, item project.BoardItem) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cwd, err := expandHome(cfg.Core.DefaultCwd)
+	if err != nil {
+		cwd = cfg.Core.DefaultCwd
+	}
+
+	cm := cmux.NewClient()
+	ws, err := cm.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
+		CWD:     cwd,
+		Command: cfg.Execution.ClaudeCommand,
+		Name:    fmt.Sprintf("project:%s", item.ID),
+	})
+	if err != nil {
+		return fmt.Errorf("create workspace for %q: %w", item.Title, err)
+	}
+
+	if err := cm.WaitReady(ctx, ws); err != nil {
+		return fmt.Errorf("workspace not ready for %q: %w", item.Title, err)
+	}
+
+	prompt := buildProjectPrompt(item)
+	if err := cm.Send(ctx, ws, prompt); err != nil {
+		return fmt.Errorf("send prompt for %q: %w", item.Title, err)
+	}
+	return nil
+}
+
+// buildProjectPrompt formats the task prompt sent to the Claude session.
+func buildProjectPrompt(item project.BoardItem) string {
+	return fmt.Sprintf(
+		"## GitHub Projects Task\n\n"+
+			"Title: %s\n"+
+			"ID: %s\n\n"+
+			"Please work on this task. When complete, mark the item as Done on the GitHub Projects board.",
+		item.Title, item.ID,
+	)
+}
+
 // newProjectCmd builds `marunage project` with its subcommands.
-func newProjectCmd(_ *string) *cobra.Command {
+func newProjectCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "project",
 		Short:        "Manage and run GitHub Projects boards.",
 		SilenceUsage: true,
 	}
-	cmd.AddCommand(newProjectRunCmd())
+	cmd.AddCommand(newProjectRunCmd(configPath))
 	return cmd
 }
 
@@ -62,7 +128,7 @@ func newProjectCmd(_ *string) *cobra.Command {
 // It polls the board, sorts items by phase × date, and dispatches tasks
 // one-by-one. [human] tasks block forward progress until they are marked
 // Done on the board; when the board is all Done, the command exits 0.
-func newProjectRunCmd() *cobra.Command {
+func newProjectRunCmd(configPath *string) *cobra.Command {
 	var (
 		pollInterval time.Duration
 		dryRun       bool
@@ -80,6 +146,10 @@ func newProjectRunCmd() *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if pollInterval < time.Second {
+				return fmt.Errorf("--interval must be at least 1s (got %s)", pollInterval)
+			}
+
 			boardURL := args[0]
 			parsed, err := project.ParseBoardURL(boardURL)
 			if err != nil {
@@ -122,17 +192,21 @@ func newProjectRunCmd() *cobra.Command {
 					if dryRun {
 						return nil
 					}
-					// TODO(PR-101): wire into internal/dispatch to start a cmux
-					// workspace for this board item. For now the command polls until
-					// the board item moves to Done, which a human or an external
-					// process must do.
-					cmd.Println("Waiting for task to move to Done on the board...")
+					if err := activeProjectDispatch()(cmd.Context(), *configPath, *item); err != nil {
+						return fmt.Errorf("dispatch %q: %w", item.Title, err)
+					}
+					cmd.Printf("Task dispatched. Polling every %s for completion.\n", pollInterval)
 				}
 
+				// Use time.NewTimer so the timer goroutine is GC'd immediately
+				// when the context is cancelled, rather than leaking until
+				// pollInterval expires (the time.After pattern).
+				timer := time.NewTimer(pollInterval)
 				select {
 				case <-cmd.Context().Done():
+					timer.Stop()
 					return cmd.Context().Err()
-				case <-time.After(pollInterval):
+				case <-timer.C:
 				}
 			}
 		},

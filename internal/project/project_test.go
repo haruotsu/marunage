@@ -97,8 +97,8 @@ func TestNextTask(t *testing.T) {
 
 	t.Run("all done returns ActionAllDone", func(t *testing.T) {
 		items := []BoardItem{
-			{ID: "a", Title: "Task A", Status: "Done", UpdatedAt: t1},
-			{ID: "b", Title: "Task B", Status: "Done", UpdatedAt: t1},
+			{ID: "a", Title: "Task A", Status: StatusDone, UpdatedAt: t1},
+			{ID: "b", Title: "Task B", Status: StatusDone, UpdatedAt: t1},
 		}
 		item, action := NextTask(items)
 		if item != nil {
@@ -148,7 +148,7 @@ func TestNextTask(t *testing.T) {
 
 	t.Run("done item skipped second item dispatched", func(t *testing.T) {
 		items := []BoardItem{
-			{ID: "a", Title: "Task A", Status: "Done", UpdatedAt: t1},
+			{ID: "a", Title: "Task A", Status: StatusDone, UpdatedAt: t1},
 			{ID: "b", Title: "Task B", Status: "Todo", UpdatedAt: t1},
 		}
 		item, action := NextTask(items)
@@ -162,7 +162,7 @@ func TestNextTask(t *testing.T) {
 
 	t.Run("in-progress item returns ActionWaitRunning", func(t *testing.T) {
 		items := []BoardItem{
-			{ID: "a", Title: "Task A", Status: "In Progress", UpdatedAt: t1},
+			{ID: "a", Title: "Task A", Status: StatusInProgress, UpdatedAt: t1},
 		}
 		item, action := NextTask(items)
 		if item == nil || item.ID != "a" {
@@ -175,7 +175,7 @@ func TestNextTask(t *testing.T) {
 
 	t.Run("done human item does not block", func(t *testing.T) {
 		items := []BoardItem{
-			{ID: "a", Title: "[human] Done interview", Status: "Done", UpdatedAt: t1},
+			{ID: "a", Title: "[human] Done interview", Status: StatusDone, UpdatedAt: t1},
 			{ID: "b", Title: "Task B", Status: "Todo", UpdatedAt: t1},
 		}
 		item, action := NextTask(items)

@@ -34,6 +34,24 @@ func (r *fakeProjectRunner) Run(_ context.Context, _ string, _ ...string) ([]byt
 	return r.stdout, nil, r.err
 }
 
+// sequentialBoardFetcher returns different JSON responses on each Fetch call.
+// Once the list is exhausted, it keeps returning the last response. This lets
+// tests simulate a board that transitions from "has tasks" to "all done"
+// across multiple polling cycles without needing context cancellation.
+type sequentialBoardFetcher struct {
+	responses []string
+	callIdx   int
+}
+
+func (f *sequentialBoardFetcher) Fetch(ctx context.Context, parsed project.ParsedURL) ([]project.BoardItem, error) {
+	resp := f.responses[f.callIdx]
+	if f.callIdx < len(f.responses)-1 {
+		f.callIdx++
+	}
+	runner := &fakeProjectRunner{stdout: []byte(resp)}
+	return project.FetchItems(ctx, runner, parsed)
+}
+
 func TestProjectCmd_Help(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"project", "--help"}, &stdout, &stderr)
@@ -124,7 +142,6 @@ func TestProjectRunCmd_DryRunDispatch(t *testing.T) {
 }
 
 func TestProjectRunCmd_DryRunHuman(t *testing.T) {
-	// dry-run with a [human] task: should print wait_human and exit.
 	fakeHumanTask := `{"items":[{"id":"PVTI_h","title":"[human] Stakeholder review","status":"Todo","updatedAt":"2024-01-15T10:00:00Z"}],"totalCount":1}`
 	withProjectRunnerHook(t, func(_ string) boardFetcher {
 		return &fakeBoardFetcher{json: fakeHumanTask}
@@ -142,5 +159,72 @@ func TestProjectRunCmd_DryRunHuman(t *testing.T) {
 	out := stdout.String()
 	if !strings.Contains(out, "human") {
 		t.Errorf("project run --dry-run (human) stdout=%q; want 'human' mention", out)
+	}
+}
+
+func TestProjectRunCmd_IntervalTooShort(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute(
+		[]string{"project", "run",
+			"https://github.com/orgs/myorg/projects/5",
+			"--interval", "100ms"},
+		&stdout, &stderr)
+	if code == 0 {
+		t.Fatal("project run --interval 100ms exit=0; want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "at least 1s") {
+		t.Errorf("stderr=%q; want 'at least 1s'", stderr.String())
+	}
+}
+
+func TestProjectRunCmd_InvalidHostURL(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute(
+		[]string{"project", "run", "https://attacker.example.com/orgs/evil/projects/1"},
+		&stdout, &stderr)
+	if code == 0 {
+		t.Fatal("project run with non-github.com host exit=0; want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "invalid board URL") {
+		t.Errorf("stderr=%q; want 'invalid board URL'", stderr.String())
+	}
+}
+
+func TestProjectRunCmd_DispatchInvoked(t *testing.T) {
+	// Verify that ActionDispatch triggers the dispatch function. The board
+	// returns a single Todo item on the first Fetch and an empty board on
+	// the second, so the loop exits via ActionAllDone → exit 0.
+	fakeSingleTask := `{"items":[{"id":"PVTI_d","title":"Phase 1: Build CI","status":"Todo","updatedAt":"2024-01-15T10:00:00Z"}],"totalCount":1}`
+	emptyBoard := `{"items":[],"totalCount":0}`
+
+	withProjectRunnerHook(t, func(_ string) boardFetcher {
+		return &sequentialBoardFetcher{
+			responses: []string{fakeSingleTask, emptyBoard},
+		}
+	})
+
+	var dispatched []project.BoardItem
+	withProjectDispatchHook(t, func(_ context.Context, _ string, item project.BoardItem) error {
+		dispatched = append(dispatched, item)
+		return nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	// --interval 1s: after dispatch we wait 1s, then fetch empty board → done.
+	code := Execute(
+		[]string{"project", "run",
+			"https://github.com/orgs/myorg/projects/5",
+			"--interval", "1s"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("project run (dispatch+complete) exit=%d; stderr=%q; stdout=%q",
+			code, stderr.String(), stdout.String())
+	}
+	if len(dispatched) == 0 {
+		t.Error("dispatch function was never called")
+		return
+	}
+	if dispatched[0].ID != "PVTI_d" {
+		t.Errorf("dispatched item ID = %q, want PVTI_d", dispatched[0].ID)
 	}
 }

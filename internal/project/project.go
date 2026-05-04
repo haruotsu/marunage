@@ -92,19 +92,19 @@ func SortByPhaseDate(items []BoardItem) []BoardItem {
 // Decision matrix (first non-Done item wins):
 //
 //	[human] and not Done  → ActionWaitHuman  (blocks; do not skip past it)
-//	"In Progress"         → ActionWaitRunning (already dispatched)
+//	StatusInProgress      → ActionWaitRunning (already dispatched)
 //	any other non-Done    → ActionDispatch
 //	all Done (or empty)   → ActionAllDone
 func NextTask(items []BoardItem) (*BoardItem, NextAction) {
 	for i := range items {
 		item := &items[i]
-		if item.Status == "Done" {
+		if item.Status == StatusDone {
 			continue
 		}
 		if IsHumanTask(*item) {
 			return item, ActionWaitHuman
 		}
-		if item.Status == "In Progress" {
+		if item.Status == StatusInProgress {
 			return item, ActionWaitRunning
 		}
 		return item, ActionDispatch
