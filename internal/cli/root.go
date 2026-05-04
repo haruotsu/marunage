@@ -90,6 +90,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskReviewCmd(&configPath))
 	root.AddCommand(newJournalCmd(&configPath))
 	root.AddCommand(newProjectCmd(&configPath))
+	root.AddCommand(newStopCmd(&configPath))
 
 	return root
 }

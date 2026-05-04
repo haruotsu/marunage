@@ -125,6 +125,30 @@ func (s *sqlTaskOpsStore) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// webStopReason is the judgment_reason recorded when the Web UI stops a task.
+// Keep in sync with internal/cli/stop.go:stopReason.
+const webStopReason = "stopped by marunage stop"
+
+// StopTask force-stops a running task (running -> failed).
+func (s *sqlTaskOpsStore) StopTask(ctx context.Context, id int64) error {
+	const q = `UPDATE tasks
+		SET status = 'failed',
+		    judgment_reason = ?
+		WHERE id = ? AND status = 'running'`
+	res, err := s.db.ExecContext(ctx, q, webStopReason, id)
+	if err != nil {
+		return fmt.Errorf("task ops stop: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("task ops stop rows: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	return s.probeExistence(ctx, id)
+}
+
 // probeExistence checks whether a row with the given id exists.
 // Used after a conditional UPDATE reports RowsAffected == 0 to disambiguate
 // "task not found" (404) from "task exists but wrong status" (409).

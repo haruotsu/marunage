@@ -242,6 +242,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(s.taskOps))
 		mux.Handle("POST /api/tasks/{id}/promote", newPromoteTaskHandler(s.taskOps))
 		mux.Handle("POST /api/tasks/{id}/reopen", newReopenTaskHandler(s.taskOps))
+		mux.Handle("POST /api/tasks/{id}/stop", newStopTaskHandler(s.taskOps))
 		mux.Handle("POST /api/tasks", newAddTaskHandler(s.taskOps))
 		mux.Handle("PATCH /api/tasks/{id}/priority", newUpdatePriorityHandler(s.taskOps))
 		mux.Handle("DELETE /api/tasks/{id}", newDeleteTaskHandler(s.taskOps))

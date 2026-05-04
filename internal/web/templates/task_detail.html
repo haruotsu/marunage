@@ -18,6 +18,11 @@
         <span class="badge badge-source">{{.Source}}</span>
         <span class="badge badge-status badge-{{.Status}}">{{.Status}}</span>
       </header>
+      {{if eq .Status "running"}}
+      <div class="panel-actions">
+        <button class="btn btn-danger" data-stop-task-id="{{.ID}}">Force Stop</button>
+      </div>
+      {{end}}
     </section>
 
     <section class="panel" aria-labelledby="detail-meta-heading">
@@ -124,7 +129,7 @@
       {{end}}
     </section>
   </main>
-  {{if .WS}}
+  {{if or .WS (eq .Status "running")}}
   <script src="/static/task_detail.js" defer></script>
   {{end}}
 </body>
