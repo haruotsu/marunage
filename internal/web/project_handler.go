@@ -46,7 +46,7 @@ type projectAPIResponse struct {
 
 // projectPageData is the template payload for project.html.
 type projectPageData struct {
-	Phases   []ProjectPhase
+	Phases []ProjectPhase
 	// BoardURL is typed as template.URL so html/template renders it as a safe
 	// URL rather than escaping the value. Only http/https pass validateBoardURL,
 	// so this cast is safe and makes the contract explicit.
