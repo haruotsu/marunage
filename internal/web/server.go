@@ -93,6 +93,13 @@ type Options struct {
 	// Project wires the project board provider for GET /project and GET /api/project.
 	// Nil falls back to a noop provider that returns empty phases.
 	Project ProjectProvider
+
+	// LiveStream wires the live terminal stream endpoints:
+	//   GET  /api/tasks/{id}/stream  — SSE feed of cmux pane output
+	//   POST /api/tasks/{id}/send    — forward text to the workspace
+	// Zero-valued fields fall back to noop implementations so servers that
+	// do not care about live streaming keep working without wiring a fake.
+	LiveStream LiveStreamConfig
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -110,13 +117,14 @@ type Server struct {
 	metrics    MetricsProvider
 	journal    JournalProvider
 	project    ProjectProvider
+	liveStream LiveStreamConfig
 	opts       Options
 }
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
 // the assembled struct (rather than a bare http.Handler) lets the CLI
-// layer reach into Hub later — PR-91 will hook real dispatch events
-// into the same hub instance.
+// layer reach into Hub for the global /events SSE feed. PR-91 live
+// stream uses its own per-task polling loop, not the shared Hub.
 func NewServer(opts Options) (*Server, error) {
 	if opts.TokenSource == nil {
 		opts.TokenSource = DefaultTokenSource
@@ -153,6 +161,13 @@ func NewServer(opts Options) (*Server, error) {
 	if project == nil {
 		project = noopProjectProvider{}
 	}
+	liveStream := opts.LiveStream
+	if liveStream.Streamer == nil {
+		liveStream.Streamer = noopWorkspaceStreamer{}
+	}
+	if liveStream.Provider == nil {
+		liveStream.Provider = noopLiveStreamProvider{}
+	}
 	return &Server{
 		csrf:       csrf,
 		hub:        NewHub(),
@@ -165,13 +180,13 @@ func NewServer(opts Options) (*Server, error) {
 		metrics:    metrics,
 		journal:    journal,
 		project:    project,
+		liveStream: liveStream,
 		opts:       opts,
 	}, nil
 }
 
-// Hub exposes the shared event hub so PR-91 (and any in-tree caller
-// that wants to publish from the CLI side) can fan events into the
-// same fan-out the SSE handler reads from.
+// Hub exposes the shared event hub so in-tree callers can fan events
+// into the same fan-out the /events SSE handler reads from.
 func (s *Server) Hub() *Hub { return s.hub }
 
 // Routes returns the wired-up http.Handler.  Order of middleware
@@ -213,6 +228,13 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
 	mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
 	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+
+	// Live-stream endpoints (PR-91). Always registered with noop fallback so
+	// the route exists even when no real streamer/provider is wired — the noop
+	// provider returns 404 for every task, which is the correct behaviour for a
+	// server that has no cmux integration.
+	mux.Handle("GET /api/tasks/{id}/stream", newLiveStreamHandler(s.liveStream.Streamer, s.liveStream.Provider))
+	mux.Handle("POST /api/tasks/{id}/send", newSendToWorkspaceHandler(s.liveStream.Streamer, s.liveStream.Provider))
 
 	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
 	// has been wired so servers without a store never expose /api/tasks/*.

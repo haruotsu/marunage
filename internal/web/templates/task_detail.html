@@ -84,6 +84,20 @@
     </section>
     {{end}}
 
+    {{if .WS}}
+    <section class="panel" aria-labelledby="detail-terminal-heading">
+      <h3 id="detail-terminal-heading">Terminal output
+        <span id="terminal-status" class="hint" aria-live="polite"></span>
+      </h3>
+      <pre id="terminal-output" class="detail-content terminal-output" data-task-id="{{.ID}}"></pre>
+      <form id="terminal-send-form" class="terminal-send-form">
+        <label for="terminal-input" class="visually-hidden">Send text to workspace</label>
+        <input id="terminal-input" type="text" name="text" placeholder="Send text to workspace…" autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
+    </section>
+    {{end}}
+
     <section class="panel" aria-labelledby="detail-audit-heading">
       <h3 id="detail-audit-heading">Audit log entries</h3>
       {{if .AuditEntries}}
@@ -110,5 +124,8 @@
       {{end}}
     </section>
   </main>
+  {{if .WS}}
+  <script src="/static/task_detail.js" defer></script>
+  {{end}}
 </body>
 </html>
