@@ -1,0 +1,8 @@
+services:
+  slackhog:
+    build:
+      context: hack/slackhog
+      dockerfile: Dockerfile
+    ports:
+      - "4112:4112"
+    restart: unless-stopped
