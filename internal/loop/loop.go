@@ -23,6 +23,8 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,6 +32,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -60,11 +63,17 @@ type TaskRepo interface {
 
 // KVStateRepo is the narrow surface the loop needs against the kv_state
 // table. *store.KVStateRepo satisfies it.
+//
+// InsertIfAbsent + DeleteIfValue are the atomic primitives the loop's
+// lock acquire / release path uses. Together with an owner token they
+// give mutual exclusion that survives a panic + a crash + a concurrent
+// re-acquire by another process — see the matching primitives'
+// godoc on *store.KVStateRepo for the SQL contract.
 type KVStateRepo interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string) error
-	CompareAndSwap(ctx context.Context, key, expected, newValue string) error
-	Delete(ctx context.Context, key string) error
+	InsertIfAbsent(ctx context.Context, key, value string) (bool, error)
+	DeleteIfValue(ctx context.Context, key, expected string) (bool, error)
 }
 
 // Dispatcher is the dispatch surface the loop needs. *dispatch.Dispatcher
@@ -92,6 +101,11 @@ type Loop struct {
 	now         func() time.Time
 	maxParallel int
 	lockKey     string
+	// ownerToken is the per-Loop sentinel used as the kv_state lock
+	// row's value so DeleteIfValue can detect "this defer's lock is no
+	// longer mine" and skip the release. Generated once at New time so
+	// the same Loop instance always presents the same owner identity.
+	ownerToken string
 }
 
 // Option mutates Loop construction.
@@ -160,7 +174,24 @@ func New(opts ...Option) (*Loop, error) {
 	if l.render == nil {
 		return nil, fmt.Errorf("%w: WithRender", ErrInvalidConfig)
 	}
+	tok, err := newOwnerToken()
+	if err != nil {
+		return nil, fmt.Errorf("loop: generate owner token: %w", err)
+	}
+	l.ownerToken = tok
 	return l, nil
+}
+
+// newOwnerToken returns a 16-hex-char random sentinel used as the
+// kv_state lock row's value. Long enough to be globally unique within
+// any reasonable lifetime (8 random bytes), short enough that a stuck
+// row inspected by an operator stays grep-friendly.
+func newOwnerToken() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // checkpointKeyPrefix namespaces the per-plugin discover checkpoints
@@ -169,10 +200,10 @@ func New(opts ...Option) (*Loop, error) {
 // mtime checkpoints).
 const checkpointKeyPrefix = "loop.checkpoint."
 
-// lockSentinel is the kv_state value the loop writes to claim its lock.
-// The exact value does not matter beyond "non-empty"; the
-// CompareAndSwap-based release just needs a reproducible token.
-const lockSentinel = "held"
+// lockKeyPrefix namespaces loop locks under a single kv_state key
+// space so an unrelated kv_state caller using the same key cannot
+// collide.
+const lockKeyPrefix = "loop.lock."
 
 // RunOnce performs one full discover -> dispatch -> render iteration.
 // Per-plugin Discovery failures are isolated: they record an audit entry
@@ -206,7 +237,7 @@ func (l *Loop) RunOnce(ctx context.Context) (err error) {
 	if err := l.dispatcher.Run(ctx, dispatch.RunOptions{MaxParallel: l.maxParallel}); err != nil {
 		l.auditor.Record(config.AuditEvent{
 			Action: "loop.dispatch.fail",
-			Value:  err.Error(),
+			Value:  logging.Redact(err.Error()),
 		})
 		return fmt.Errorf("loop: dispatch: %w", err)
 	}
@@ -214,7 +245,7 @@ func (l *Loop) RunOnce(ctx context.Context) (err error) {
 	if err := l.render.Render(ctx); err != nil {
 		l.auditor.Record(config.AuditEvent{
 			Action: "loop.render.fail",
-			Value:  err.Error(),
+			Value:  logging.Redact(err.Error()),
 		})
 		return fmt.Errorf("loop: render: %w", err)
 	}
@@ -259,7 +290,7 @@ func (l *Loop) runTick(ctx context.Context) error {
 		}
 		l.auditor.Record(config.AuditEvent{
 			Action: "loop.tick.fail",
-			Value:  err.Error(),
+			Value:  logging.Redact(err.Error()),
 		})
 	}
 	return nil
@@ -280,7 +311,7 @@ func (l *Loop) discoverAll(ctx context.Context) {
 			l.auditor.Record(config.AuditEvent{
 				Action: "loop.discover.fail",
 				Key:    "source:" + name,
-				Value:  err.Error(),
+				Value:  logging.Redact(err.Error()),
 			})
 			continue
 		}
@@ -299,7 +330,7 @@ func (l *Loop) discoverOne(ctx context.Context, plugin source.Plugin) {
 		l.auditor.Record(config.AuditEvent{
 			Action: "loop.discover.fail",
 			Key:    "source:" + name,
-			Value:  err.Error(),
+			Value:  logging.Redact(err.Error()),
 		})
 		return
 	}
@@ -315,7 +346,7 @@ func (l *Loop) discoverOne(ctx context.Context, plugin source.Plugin) {
 			l.auditor.Record(config.AuditEvent{
 				Action: "loop.discover.fail",
 				Key:    "source:" + name,
-				Value:  fmt.Sprintf("insert %q: %v", t.ExternalID, insErr),
+				Value:  logging.Redact(fmt.Sprintf("insert %q: %v", t.ExternalID, insErr)),
 			})
 			return
 		}
@@ -357,7 +388,7 @@ func (l *Loop) advanceCheckpoint(ctx context.Context, name string) {
 		l.auditor.Record(config.AuditEvent{
 			Action: "loop.checkpoint.fail",
 			Key:    "source:" + name,
-			Value:  err.Error(),
+			Value:  logging.Redact(err.Error()),
 		})
 	}
 }
@@ -378,60 +409,57 @@ func taskFromSource(t source.Task, sourceName string) store.Task {
 	}
 }
 
-// acquireLock attempts a kv_state CompareAndSwap from "" -> sentinel,
-// or an Insert when the key is absent. Returns (true, nil) on
-// successful claim, (false, nil) when another holder still owns the
-// lock, and (_, err) on a store-level failure. The lockKey field
-// receives the configured prefix so a future caller using the same key
-// for an unrelated kv_state need does not collide.
+// acquireLock claims the configured lock via the atomic InsertIfAbsent
+// primitive. Returns (true, nil) on a successful claim, (false, nil)
+// when another holder owns the row, and (_, err) on a store-level
+// failure. The single SQL statement avoids the Get → Set TOCTOU two
+// design-review agents flagged: two callers racing both observing
+// "absent" cannot both succeed.
 func (l *Loop) acquireLock(ctx context.Context) (bool, error) {
-	key := "loop.lock." + l.lockKey
-	cur, err := l.kv.Get(ctx, key)
-	if err != nil && !errors.Is(err, store.ErrKVNotFound) {
-		return false, fmt.Errorf("loop: acquire lock read: %w", err)
+	ok, err := l.kv.InsertIfAbsent(ctx, lockKeyPrefix+l.lockKey, l.ownerToken)
+	if err != nil {
+		return false, fmt.Errorf("loop: acquire lock: %w", err)
 	}
-	if errors.Is(err, store.ErrKVNotFound) {
-		if setErr := l.kv.Set(ctx, key, lockSentinel); setErr != nil {
-			return false, fmt.Errorf("loop: acquire lock set: %w", setErr)
-		}
-		return true, nil
-	}
-	// Existing row. If somebody else holds the sentinel, refuse.
-	if cur == lockSentinel {
-		return false, nil
-	}
-	// Recover from a stale value (different sentinel). CAS so we do not
-	// stomp on a holder racing to write a new sentinel.
-	if casErr := l.kv.CompareAndSwap(ctx, key, cur, lockSentinel); casErr != nil {
-		if errors.Is(casErr, store.ErrKVStaleValue) {
-			return false, nil
-		}
-		return false, fmt.Errorf("loop: acquire lock cas: %w", casErr)
-	}
-	return true, nil
+	return ok, nil
 }
 
-// releaseLock drops the kv_state row so the next RunOnce can claim it.
-// Best-effort: a failure here is audited but does not bubble — the
-// caller has already returned from RunOnce. Delete + an audit entry is
-// the chosen sequence so a future operator can inspect a stuck row.
+// releaseLock drops the lock row only when its value still equals this
+// Loop's owner token. The owner-tagged release primitive prevents the
+// "stale defer stomps the live holder" bug — if another process
+// re-acquired the lock after this one was forcibly evicted, our
+// deferred release sees value mismatch and is a no-op. Best-effort: a
+// store-level failure is redacted + audited but does not bubble.
 func (l *Loop) releaseLock(ctx context.Context) {
-	key := "loop.lock." + l.lockKey
-	if err := l.kv.Delete(ctx, key); err != nil && !errors.Is(err, store.ErrKVNotFound) {
+	key := lockKeyPrefix + l.lockKey
+	deleted, err := l.kv.DeleteIfValue(ctx, key, l.ownerToken)
+	if err != nil {
 		l.auditor.Record(config.AuditEvent{
 			Action: "loop.lock.release.fail",
 			Key:    key,
-			Value:  err.Error(),
+			Value:  logging.Redact(err.Error()),
+		})
+		return
+	}
+	if !deleted {
+		// Either the row was already gone or another owner claimed it.
+		// Audit so an operator inspecting a "lock churn" symptom has a
+		// trail to follow without parsing application logs.
+		l.auditor.Record(config.AuditEvent{
+			Action: "loop.lock.release.skipped",
+			Key:    key,
+			Value:  "owner token mismatch (another process holds the lock)",
 		})
 	}
 }
 
-// durationOrError returns "" on success and the error string otherwise,
-// so the loop.end audit entry's Value column carries enough context for
-// a post-mortem without forcing the auditor schema to grow new fields.
+// durationOrError returns "" on success and the redacted error string
+// otherwise, so the loop.end audit entry's Value column carries enough
+// context for a post-mortem without forcing the auditor schema to grow
+// new fields. Redaction matches the per-phase failure audits so a
+// secret cannot survive a wrapping fmt.Errorf into the loop.end entry.
 func durationOrError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	return logging.Redact(err.Error())
 }

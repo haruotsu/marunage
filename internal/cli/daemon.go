@@ -156,14 +156,25 @@ func (d *fileBackedDaemon) Start(args []string) (int, error) {
 		return 0, fmt.Errorf("daemon: spawn: %w", err)
 	}
 	pid := cmd.Process.Pid
-	// Release the child so it keeps running after this CLI invocation
-	// exits. The pidfile records the pid so daemon stop / status can
-	// re-find it on the next CLI invocation.
-	if err := cmd.Process.Release(); err != nil {
-		return pid, fmt.Errorf("daemon: release child: %w", err)
-	}
+	// Persist the pidfile BEFORE releasing the child handle so a
+	// writePID failure can still cleanly kill the just-spawned daemon
+	// (Release()'d processes lose their *os.Process Kill() target on
+	// some platforms, leaving an orphan that the operator now has no
+	// recorded pid for). On success Release() detaches normally so the
+	// CLI can exit without becoming the daemon's parent.
 	if err := writePID(d.pidPath, pid); err != nil {
+		// Best-effort cleanup: kill the child + reap so the operator
+		// is not left with a zombie or an unkilled detached process
+		// they cannot find via pidfile.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return pid, fmt.Errorf("daemon: write pidfile: %w", err)
+	}
+	if err := cmd.Process.Release(); err != nil {
+		// Pidfile is already written; the operator can `daemon stop`
+		// even if Release() failed, so surface the error but do not
+		// roll back.
+		return pid, fmt.Errorf("daemon: release child: %w", err)
 	}
 	return pid, nil
 }
