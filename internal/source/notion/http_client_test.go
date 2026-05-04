@@ -269,6 +269,57 @@ func TestHTTPClientCreatePagePostsToPagesEndpoint(t *testing.T) {
 	}
 }
 
+// TestHTTPClientMaps429ToRateLimitedError — Notion's documented 429 body
+// carries code="rate_limited"; the client must surface a typed
+// RateLimitedError (also wrapping ErrRateLimited) and decode the
+// Retry-After header so daemons can honour the back-off without
+// hand-parsing strings.
+func TestHTTPClientMaps429ToRateLimitedError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"object":"error","status":429,"code":"rate_limited","message":"slow down"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewHTTPClient(srv.Client(), srv.URL, "tok")
+	_, err := c.QueryDatabase(context.Background(), "db", QueryOptions{})
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err = %v, want ErrRateLimited", err)
+	}
+	var rle *RateLimitedError
+	if !errors.As(err, &rle) {
+		t.Fatalf("errors.As: want *RateLimitedError, got %T", err)
+	}
+	if rle.RetryAfter.Seconds() != 7 {
+		t.Errorf("RetryAfter = %v", rle.RetryAfter)
+	}
+}
+
+// TestHTTPClientHonoursCtxCancellationBetweenPages — daemon shutdown must
+// stop the cursor walk between pages even if a single response was fast.
+// We feed a server that always returns has_more=true; the client should
+// surface ctx.Err() as soon as it sees the cancellation.
+func TestHTTPClientHonoursCtxCancellationBetweenPages(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[],"has_more":true,"next_cursor":"c"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the call so the loop's first check fires.
+
+	c := NewHTTPClient(srv.Client(), srv.URL, "tok")
+	_, err := c.QueryDatabase(ctx, "db", QueryOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
 // TestHTTPClientUpdatePagePatchesArchived — Completer / Deleter path: PATCH
 // /v1/pages/<id> with {"archived": true}. Neither Complete nor Delete have
 // a permanent delete on Notion, so this is the user-visible "remove from
