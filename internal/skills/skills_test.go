@@ -420,6 +420,25 @@ func TestInstall_TriageMissingRequiredSection_Fails(t *testing.T) {
 	}
 }
 
+// TestInstall_AutoReplyMissingRequiredSection_Fails mirrors
+// TestInstall_TriageMissingRequiredSection_Fails for the autoreply skill:
+// a SKILL.md that omits one of the four permission-boundary sections must
+// cause Install to fail loudly rather than silently break the trust model.
+func TestInstall_AutoReplyMissingRequiredSection_Fails(t *testing.T) {
+	src := fstest.MapFS{
+		"marunage-autoreply/SKILL.md": &fstest.MapFile{
+			// Missing "Auto-Reply NG (NEVER auto-reply)" section.
+			Data: []byte("<!-- version: 0.1.0 -->\n# autoreply\n## Permissions\nok\n## Auto-Reply OK\nok\n## Draft Mode\nok\n"),
+		},
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+
+	_, err := Install(InstallOptions{Target: target, Source: src})
+	if !errors.Is(err, ErrMissingSection) {
+		t.Errorf("err = %v; want errors.Is(_, ErrMissingSection)", err)
+	}
+}
+
 // TestInstall_Merge_OverwriteChoice pins the simplest --merge contract:
 // for each conflicting skill the operator is offered a choice; selecting
 // "o"verwrite produces the same end state as --force for that skill

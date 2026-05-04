@@ -43,6 +43,7 @@ If a message matches any NG category, stop immediately and escalate to the human
 operator. Do NOT compose a reply. Log the escalation reason to
 `~/.marunage/logs/audit.log` in JSONL format with fields:
 `{action:"autoreply.escalation", category, task_id, ts}`.
+(The audit-log write is performed by the Executor layer; see Draft Mode note.)
 
 ## Draft Mode
 

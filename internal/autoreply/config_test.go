@@ -68,6 +68,36 @@ func TestLoad_InvalidTOML_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoad_UserDenyListReplacesDefault pins the go-toml v2 slice-replace
+// semantics: when the user writes deny=[...], the default deny list is fully
+// replaced, not merged. The hardcoded NG safety is enforced by Boundary, not
+// by Config.Permissions.Deny.
+func TestLoad_UserDenyListReplacesDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "autoreply.toml")
+	content := []byte(`
+[permissions]
+allow = ["schedule_adjustment"]
+deny  = ["personal_information", "financial_decisions"]
+`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := autoreply.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// User wrote only 2 deny entries; default entries contracts/personnel_matters
+	// are replaced (not merged). Boundary still blocks them via hardcoded list.
+	if sliceContains(cfg.Permissions.Deny, "contracts") {
+		t.Error("Deny should not contain 'contracts' after user override (go-toml replaces slices)")
+	}
+	if !sliceContains(cfg.Permissions.Deny, "personal_information") {
+		t.Error("Deny should contain user-specified 'personal_information'")
+	}
+}
+
 func TestLoad_EmptyAllow_ParsesWithoutError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "autoreply.toml")
