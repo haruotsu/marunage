@@ -1,5 +1,7 @@
 # Changelog
 
+## [v0.0.2](https://github.com/haruotsu/marunage/compare/v0.0.1...v0.0.2) - 2026-05-04
+
 ## [v0.0.1](https://github.com/haruotsu/marunage/commits/v0.0.1) - 2026-05-04
 - ci: tagpr でリリースを自動化 by @haruotsu in https://github.com/haruotsu/marunage/pull/1
 - ci: tagpr に issues: write 権限を追加 by @haruotsu in https://github.com/haruotsu/marunage/pull/2
