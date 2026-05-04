@@ -145,6 +145,9 @@ func (f *fakeTaskRepo) List(_ context.Context, filter store.ListFilter) ([]store
 		if len(filter.Sources) > 0 && !contains(filter.Sources, t.Source) {
 			continue
 		}
+		if !filter.CreatedAfter.IsZero() && !t.CreatedAt.After(filter.CreatedAfter) {
+			continue
+		}
 		out = append(out, t)
 	}
 	// Stable order: by ID ASC. Tests that need dispatch-order specifics
