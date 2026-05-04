@@ -13,11 +13,15 @@ func TestLoad_FileNotExist_ReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(cfg.Permissions.Allow) == 0 {
-		t.Error("default Allow list must not be empty")
+	for _, want := range []string{"schedule_adjustment", "information_sharing", "known_questions"} {
+		if !sliceContains(cfg.Permissions.Allow, want) {
+			t.Errorf("default Allow missing %q; got %v", want, cfg.Permissions.Allow)
+		}
 	}
-	if len(cfg.Permissions.Deny) == 0 {
-		t.Error("default Deny list must not be empty")
+	for _, want := range []string{"personal_information", "contracts", "financial_decisions", "personnel_matters"} {
+		if !sliceContains(cfg.Permissions.Deny, want) {
+			t.Errorf("default Deny missing %q; got %v", want, cfg.Permissions.Deny)
+		}
 	}
 }
 
