@@ -195,6 +195,70 @@ func (r *KVStateRepo) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// InsertIfAbsent atomically inserts (key, value) only when key is not
+// already present. Returns inserted=true on a successful claim,
+// inserted=false when the row already exists. Implemented as a single
+// `INSERT ... ON CONFLICT DO NOTHING` so the absent-check and the
+// write happen in one statement: two callers racing both observing
+// "absent" cannot both succeed (which the prior Get → Set pattern
+// allowed).
+//
+// This is the lock-acquire primitive callers like internal/loop's
+// kv_state-backed exclusion want; combined with DeleteIfValue (the
+// owner-tagged release primitive below) it gives mutual exclusion that
+// survives a panic + a crash + a concurrent re-acquire by another
+// process.
+func (r *KVStateRepo) InsertIfAbsent(ctx context.Context, key, value string) (bool, error) {
+	if key == "" {
+		return false, ErrKVKeyRequired
+	}
+	if value == "" {
+		return false, ErrKVValueRequired
+	}
+	now := formatTime(r.now().UTC())
+	const q = `INSERT INTO kv_state(key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO NOTHING`
+	res, err := r.db.ExecContext(ctx, q, key, value, now)
+	if err != nil {
+		return false, fmt.Errorf("kv_state insert if absent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("kv_state insert if absent rows: %w", err)
+	}
+	return n == 1, nil
+}
+
+// DeleteIfValue atomically removes the row only when its current value
+// equals expected. Returns deleted=true on a successful release,
+// deleted=false when the row is absent or the value changed (another
+// owner). Implemented as a single conditional DELETE so the precondition
+// check and the write happen in one statement.
+//
+// The owner-tagged release primitive: a holder writes its uuid via
+// InsertIfAbsent, releases via DeleteIfValue(key, uuid). A stale defer
+// from a prior holder after a key was re-acquired by a fresh process
+// observes deleted=false (its uuid no longer matches) and is a no-op,
+// preventing the "double release stomps the live holder" bug.
+func (r *KVStateRepo) DeleteIfValue(ctx context.Context, key, expected string) (bool, error) {
+	if key == "" {
+		return false, ErrKVKeyRequired
+	}
+	if expected == "" {
+		return false, ErrKVValueRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM kv_state WHERE key = ? AND value = ?`, key, expected)
+	if err != nil {
+		return false, fmt.Errorf("kv_state delete if value: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("kv_state delete if value rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // CompareAndSwap atomically updates value to newValue only when the row's
 // current value still equals expected. Returns ErrKVStaleValue when the
 // precondition fails (another writer raced ahead) and ErrKVNotFound when
