@@ -180,13 +180,15 @@ func registerEnabledSources(r *source.Registry, cfg config.Config) error {
 // resolved destination path so the loop tick does not have to recompute
 // either on every iteration.
 type fileRenderer struct {
-	repo TaskRepoLister
+	repo taskRepoLister
 	dest string
 }
 
-// TaskRepoLister is the narrow read surface fileRenderer needs against
-// the tasks table. *store.TaskRepo satisfies it implicitly.
-type TaskRepoLister interface {
+// taskRepoLister is the narrow read surface fileRenderer needs against
+// the tasks table. *store.TaskRepo satisfies it implicitly. Kept
+// unexported because no caller outside internal/cli needs to reference
+// it.
+type taskRepoLister interface {
 	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
 }
 
