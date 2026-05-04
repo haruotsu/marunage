@@ -88,7 +88,7 @@ func (d *CmuxDriver) Scrape(ctx context.Context, target ScrapeTarget) ([]Scraped
 	var raw []map[string]string
 	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return nil, fmt.Errorf("%w: %v: stdout=%q",
-			ErrUnparseableEval, err, strings.TrimSpace(string(stdout)))
+			ErrUnparseableEval, err, truncateForLog(stdout))
 	}
 
 	out := make([]ScrapedItem, len(raw))
@@ -136,6 +136,23 @@ func buildExtractionJS(target ScrapeTarget) string {
 	return "JSON.stringify(Array.from(document.querySelectorAll(" +
 		jsString(target.ItemSelector) + ")).map(function(item) { return {" +
 		strings.Join(fieldExprs, ", ") + "}; }))"
+}
+
+// truncateForLog bounds the eval-output snippet that ends up in
+// ErrUnparseableEval messages. The cmux browser eval payload can be
+// arbitrarily large (an attacker-controlled page could console.log
+// every Slack DM body), and ErrUnparseableEval ends up in structured
+// logs / monitoring sinks. Capping at logSnippetLen keeps the wrapped
+// error well under 1 KiB while still leaving the operator enough
+// context to diagnose the parse failure.
+const logSnippetLen = 256
+
+func truncateForLog(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) <= logSnippetLen {
+		return s
+	}
+	return s[:logSnippetLen] + fmt.Sprintf("... (%d bytes truncated)", len(s)-logSnippetLen)
 }
 
 // jsString returns s as a JS string literal. encoding/json's string

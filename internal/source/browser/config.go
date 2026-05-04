@@ -78,6 +78,24 @@ func LoadConfig(path string) (*Config, error) {
 	return LoadConfigFromBytes(body)
 }
 
+// invalidSiteNameByte returns the first byte in name that violates the
+// "<plugin>:<sub-id>" splitting contract documented on Task.Source. We
+// forbid `:` (would create an extra split position the dispatcher
+// cannot disambiguate), whitespace bytes (would smuggle into Source /
+// RawMetadata where downstream renderers may break), and `/` (would
+// look like a hierarchy in `external/browser/<site>` origin tags).
+// Returns 0 when the name is acceptable.
+func invalidSiteNameByte(name string) byte {
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch c {
+		case ':', ' ', '\t', '\n', '\r', '/':
+			return c
+		}
+	}
+	return 0
+}
+
 // validateScrapeURL is the SSRF / arbitrary-code-execution gate the
 // design-review's 🔴 #1 finding demands: a `browser.toml` URL with a
 // `javascript:` / `file://` / `data:` / `ftp://` scheme would let a
@@ -123,6 +141,10 @@ func LoadConfigFromBytes(body []byte) (*Config, error) {
 	for i, s := range raw.Sites {
 		if s.Name == "" {
 			return nil, fmt.Errorf("%w: site #%d missing required field `name`", ErrInvalidConfig, i+1)
+		}
+		if invalid := invalidSiteNameByte(s.Name); invalid != 0 {
+			return nil, fmt.Errorf("%w: site name %q contains forbidden byte %q",
+				ErrInvalidConfig, s.Name, invalid)
 		}
 		if s.URL == "" {
 			return nil, fmt.Errorf("%w: site %q missing required field `url`", ErrInvalidConfig, s.Name)

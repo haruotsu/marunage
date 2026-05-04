@@ -286,6 +286,70 @@ id = { selector = "[data-id]", attr = "data-id" }
 	}
 }
 
+// TestLoadConfigRejectsInvalidSiteName guards the contract documented in
+// internal/source/source.go's Task.Source docstring: a sub-id'd source
+// is "<plugin>:<sub-id>" and the dispatcher splits on the FIRST ':'.
+// A site name containing ':' or whitespace would either break that
+// split (producing an unexpected sub-id) or smuggle control characters
+// into Source/RawMetadata. The validator rejects them at config load.
+func TestLoadConfigRejectsInvalidSiteName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		siteName string
+	}{
+		{"contains colon", "foo:bar"},
+		{"contains space", "foo bar"},
+		{"contains tab", "foo\tbar"},
+		{"contains newline", "foo\nbar"},
+		{"contains slash", "foo/bar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `[[site]]
+name = ` + tomlString(tc.siteName) + `
+url = "https://example.com/"
+item_selector = ".x"
+key_field = "id"
+[site.fields]
+id = { selector = "[data-id]", attr = "data-id" }
+`
+			path := writeFile(t, t.TempDir(), "browser.toml", body)
+			_, err := LoadConfig(path)
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("err = %v, want ErrInvalidConfig", err)
+			}
+			if !strings.Contains(err.Error(), "name") {
+				t.Errorf("err message %q missing `name` hint", err)
+			}
+		})
+	}
+}
+
+// tomlString renders s as a TOML basic string with the bare-minimum
+// escapes the validator's negative tests require (`"`, `\`, `\n`,
+// `\t`). Avoids reaching for a full TOML encoder.
+func tomlString(s string) string {
+	out := []byte{'"'}
+	for _, r := range s {
+		switch r {
+		case '"':
+			out = append(out, '\\', '"')
+		case '\\':
+			out = append(out, '\\', '\\')
+		case '\n':
+			out = append(out, '\\', 'n')
+		case '\t':
+			out = append(out, '\\', 't')
+		default:
+			out = append(out, []byte(string(r))...)
+		}
+	}
+	out = append(out, '"')
+	return string(out)
+}
+
 // TestLoadConfigAcceptsHTTPSchemes is the symmetric positive: http://
 // and https:// must continue to work. Plain http is allowed because
 // localhost / lab environments often serve over plain http; production
