@@ -234,16 +234,19 @@ func TestJournalRunStopsAndCallsTick(t *testing.T) {
 	j := New(w, WithCollectors(fc), WithClock(nowFn))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after a tiny delay so the initial Tick fires.
+	// Cancel after the first Tick completes by watching the checkpoint.
+	// A 5s deadline prevents the goroutine from hanging if Tick never writes.
 	go func() {
-		// Wait for the first Tick to complete by watching the checkpoint.
-		for {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
 			if _, err := w.LastCheckpoint(); err == nil {
 				cancel()
 				return
 			}
 			time.Sleep(time.Millisecond)
 		}
+		t.Errorf("timeout: checkpoint never written after 5s")
+		cancel()
 	}()
 	_ = j.Run(ctx, time.Hour) // long interval so only the initial Tick fires
 
