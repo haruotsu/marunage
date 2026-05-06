@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.0.4](https://github.com/haruotsu/marunage/compare/v0.0.3...v0.0.4) - 2026-05-06
+- chore: enable blank issues for all contributors by @haruotsu in https://github.com/haruotsu/marunage/pull/65
+- docs: add Prerequisites table to README (en/ja) by @haruotsu in https://github.com/haruotsu/marunage/pull/67
+- docs: add CONTRIBUTING.md with golangci-lint v2.12.1 install instructions by @haruotsu in https://github.com/haruotsu/marunage/pull/69
+- docs: add REST API reference for marunage web by @haruotsu in https://github.com/haruotsu/marunage/pull/70
+- feat(secrets): implement pass backend by @haruotsu in https://github.com/haruotsu/marunage/pull/71
+- refactor(cli): consolidate source plugin registration into registerBuiltin (PR-70) by @haruotsu in https://github.com/haruotsu/marunage/pull/72
+
 ## [v0.0.3](https://github.com/haruotsu/marunage/compare/v0.0.2...v0.0.3) - 2026-05-06
 - docs: OSS polish — README rewrite, README.ja.md, CODE_OF_CONDUCT, SECURITY, issue templates by @haruotsu in https://github.com/haruotsu/marunage/pull/63
 
