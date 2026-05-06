@@ -108,8 +108,8 @@ export async function addTask(data: {
   title: string
   body: string
   priority: number
-}): Promise<Task> {
-  return apiFetch<Task>('/api/tasks', {
+}): Promise<{ status: string; id: number }> {
+  return apiFetch<{ status: string; id: number }>('/api/tasks', {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify(data),

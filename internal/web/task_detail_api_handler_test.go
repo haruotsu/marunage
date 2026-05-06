@@ -14,20 +14,24 @@ import (
 )
 
 type staticTaskDetailAPIProvider struct {
-	task store.Task
-	err  error
+	task  store.Task
+	err   error
+	gotID int64
 }
 
-func (s staticTaskDetailAPIProvider) TaskDetail(_ context.Context, _ int64) (store.Task, error) {
+func (s *staticTaskDetailAPIProvider) TaskDetail(_ context.Context, id int64) (store.Task, error) {
+	s.gotID = id
 	return s.task, s.err
 }
 
 type staticAuditAPIReader struct {
 	entries []AuditEntry
 	err     error
+	gotID   int64
 }
 
-func (s staticAuditAPIReader) EntriesForTask(_ context.Context, _ int64) ([]AuditEntry, error) {
+func (s *staticAuditAPIReader) EntriesForTask(_ context.Context, id int64) ([]AuditEntry, error) {
+	s.gotID = id
 	return s.entries, s.err
 }
 
@@ -65,8 +69,28 @@ func newTaskDetailAPIServer(t *testing.T, prov TaskDetailProvider, audits AuditR
 	return srv
 }
 
+func TestTaskDetailAPIHandler_PassesIDToProvider(t *testing.T) {
+	prov := &staticTaskDetailAPIProvider{task: sampleDetailTask()}
+	audits := &staticAuditAPIReader{}
+	srv := newTaskDetailAPIServer(t, prov, audits)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200; body=%q", w.Code, w.Body.String())
+	}
+	if prov.gotID != 42 {
+		t.Errorf("provider.gotID=%d; want 42", prov.gotID)
+	}
+	if audits.gotID != 42 {
+		t.Errorf("auditReader.gotID=%d; want 42", audits.gotID)
+	}
+}
+
 func TestTaskDetailAPIHandler_ReturnsJSON(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{task: sampleDetailTask()}
+	prov := &staticTaskDetailAPIProvider{task: sampleDetailTask()}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42", nil)
@@ -106,7 +130,7 @@ func TestTaskDetailAPIHandler_ReturnsJSON(t *testing.T) {
 }
 
 func TestTaskDetailAPIHandler_NotFound(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{err: store.ErrNotFound}
+	prov := &staticTaskDetailAPIProvider{err: store.ErrNotFound}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/99", nil)
@@ -119,8 +143,8 @@ func TestTaskDetailAPIHandler_NotFound(t *testing.T) {
 }
 
 func TestTaskDetailAPIHandler_IncludesAuditEntries(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{task: sampleDetailTask()}
-	audits := staticAuditAPIReader{
+	prov := &staticTaskDetailAPIProvider{task: sampleDetailTask()}
+	audits := &staticAuditAPIReader{
 		entries: []AuditEntry{
 			{Time: "2024-01-01T11:00:00Z", Action: "dispatch.start", TaskID: 42, Value: "workspace:3"},
 		},
@@ -152,7 +176,7 @@ func TestTaskDetailAPIHandler_IncludesAuditEntries(t *testing.T) {
 }
 
 func TestTaskDetailAPIHandler_InvalidID(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{}
+	prov := &staticTaskDetailAPIProvider{}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/not-a-number", nil)
@@ -165,7 +189,7 @@ func TestTaskDetailAPIHandler_InvalidID(t *testing.T) {
 }
 
 func TestTaskDetailAPIHandler_SetsCacheControlNoStore(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{task: sampleDetailTask()}
+	prov := &staticTaskDetailAPIProvider{task: sampleDetailTask()}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42", nil)
@@ -178,7 +202,7 @@ func TestTaskDetailAPIHandler_SetsCacheControlNoStore(t *testing.T) {
 }
 
 func TestTaskDetailAPIHandler_ZeroIDReturnsBadRequest(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{}
+	prov := &staticTaskDetailAPIProvider{}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
 
 	for _, path := range []string{"/api/tasks/0", "/api/tasks/-1"} {
@@ -195,8 +219,8 @@ func TestTaskDetailAPIHandler_ZeroIDReturnsBadRequest(t *testing.T) {
 }
 
 func TestTaskDetailAPIHandler_AuditReaderError_ReturnsEmptyEntries(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{task: sampleDetailTask()}
-	audits := staticAuditAPIReader{err: errors.New("audit store unavailable")}
+	prov := &staticTaskDetailAPIProvider{task: sampleDetailTask()}
+	audits := &staticAuditAPIReader{err: errors.New("audit store unavailable")}
 	srv := newTaskDetailAPIServer(t, prov, audits)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42", nil)
@@ -220,7 +244,7 @@ func TestTaskDetailAPIHandler_AuditReaderError_ReturnsEmptyEntries(t *testing.T)
 }
 
 func TestTaskDetailAPIHandler_ProviderError(t *testing.T) {
-	prov := staticTaskDetailAPIProvider{err: errTaskDetailAPITestFailed}
+	prov := &staticTaskDetailAPIProvider{err: errTaskDetailAPITestFailed}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42", nil)

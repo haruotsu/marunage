@@ -7,7 +7,7 @@ export function cn(...inputs: ClassValue[]) {
 
 export function getCsrfToken(): string {
   if (typeof document === 'undefined') return ''
-  return document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? ''
+  return document.cookie.match(/marunage_csrf=([^;]+)/)?.[1] ?? ''
 }
 
 export function formatRelativeTime(iso: string | null): string {

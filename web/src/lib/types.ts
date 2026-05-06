@@ -17,8 +17,8 @@ export interface Task {
   status: TaskStatus
   judgment_reason: string
   priority: number
-  lock_key: string
-  cwd: string
+  lock_key?: string
+  cwd?: string
   ws: string
   result_summary: string
   reflection: string

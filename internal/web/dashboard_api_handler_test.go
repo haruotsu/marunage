@@ -154,6 +154,28 @@ func TestDashboardAPIHandler_SetsCacheControlNoStore(t *testing.T) {
 	}
 }
 
+func TestDashboardAPIHandler_EmptySlicesReturnArrays(t *testing.T) {
+	srv := newDashboardAPIServer(t, staticDashboardAPIProvider{snap: DashboardSnapshot{}})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200; body=%q", w.Code, w.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON decode: %v", err)
+	}
+	for _, field := range []string{"running", "pending", "sources"} {
+		val := string(raw[field])
+		if val != "[]" {
+			t.Errorf("%s=%s; want [] (empty array, not null)", field, val)
+		}
+	}
+}
+
 func TestDashboardAPIHandler_ProviderError(t *testing.T) {
 	srv := newDashboardAPIServer(t, staticDashboardAPIProvider{err: errDashboardAPITestFailed})
 
