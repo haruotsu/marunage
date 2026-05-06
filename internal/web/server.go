@@ -213,8 +213,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
 	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
 	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+	// GET /api/tasks/{id} uses the noop provider (returns 404 for all IDs)
+	// when TaskDetail is not wired. GET /api/tasks requires explicit TaskList wiring
+	// so servers without a store do not expose a list endpoint that returns nothing useful.
 	mux.Handle("GET /api/tasks/{id}", newTaskDetailAPIHandler(s.taskDetail, s.auditLog))
-
 	if s.taskList != nil {
 		mux.Handle("GET /api/tasks", newTaskListAPIHandler(s.taskList))
 	}

@@ -28,13 +28,12 @@ export interface Task {
   completed_at: string | null
 }
 
-// AuditEntry mirrors the Go web.AuditEntry JSON shape.
+// AuditEntry mirrors the Go web.AuditEntry JSON shape (audit_reader.go).
 export interface AuditEntry {
   time: string
   action: string
-  task_id?: number
-  key?: string
-  value?: string
+  task_id: number
+  value: string
 }
 
 export interface TaskDetail extends Task {

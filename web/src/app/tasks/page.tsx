@@ -225,7 +225,7 @@ function TaskDetailContent() {
                   {entry.action}
                 </span>
                 <span className="text-zinc-600 dark:text-zinc-400 break-all">
-                  {entry.key ? `${entry.key}=${entry.value}` : entry.value}
+                  {entry.value}
                 </span>
               </div>
             ))}

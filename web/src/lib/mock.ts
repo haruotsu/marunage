@@ -215,7 +215,7 @@ export const mockTaskDetail: TaskDetail = {
       time: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       action: 'task.created',
       task_id: 1,
-      value: 'github-source',
+      value: '',
     },
     {
       time: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
