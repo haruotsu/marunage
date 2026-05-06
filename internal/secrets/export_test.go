@@ -104,3 +104,9 @@ func NewPassBackendForTest(
 		runCmd:   runner,
 	}
 }
+
+// IsPassNotFoundForTest exposes isPassNotFound so tests can verify the
+// detection logic directly against both mock and real *exec.ExitError values.
+func IsPassNotFoundForTest(err error) bool {
+	return isPassNotFound(err)
+}

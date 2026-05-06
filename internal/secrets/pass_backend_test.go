@@ -104,7 +104,7 @@ func TestPassBackend_Set(t *testing.T) {
 	if cr.gotName != "pass" {
 		t.Errorf("Set: exec binary = %q; want pass", cr.gotName)
 	}
-	wantArgs := []string{"insert", "-m", "marunage/mytoken"}
+	wantArgs := []string{"insert", "-m", "-f", "marunage/mytoken"}
 	if !equalSlice(cr.gotArgs, wantArgs) {
 		t.Errorf("Set: args = %v; want %v", cr.gotArgs, wantArgs)
 	}
@@ -216,6 +216,33 @@ func TestPassBackend_List(t *testing.T) {
 	want := []string{"alpha", "beta", "zebra"}
 	if !equalSlice(names, want) {
 		t.Errorf("List: %v; want %v", names, want)
+	}
+}
+
+// --- Tests for isPassNotFound ---
+
+// TestIsPassNotFound_NotFoundString verifies detection of pass's "not in
+// the password store" message embedded in the error text.
+func TestIsPassNotFound_NotFoundString(t *testing.T) {
+	err := errors.New("exit status 1: Error: marunage/x is not in the password store.")
+	if !secrets.IsPassNotFoundForTest(err) {
+		t.Error("isPassNotFound must return true for not-in-store message")
+	}
+}
+
+// TestIsPassNotFound_OtherError ensures that unrelated errors are not
+// misidentified as "not found".
+func TestIsPassNotFound_OtherError(t *testing.T) {
+	err := errors.New("exit status 1: GPG decryption failed")
+	if secrets.IsPassNotFoundForTest(err) {
+		t.Error("isPassNotFound must return false for non-not-found errors")
+	}
+}
+
+// TestIsPassNotFound_Nil confirms nil does not panic or return true.
+func TestIsPassNotFound_Nil(t *testing.T) {
+	if secrets.IsPassNotFoundForTest(nil) {
+		t.Error("isPassNotFound must return false for nil")
 	}
 }
 

@@ -59,9 +59,12 @@ func newPassBackend(cfg Config) (Store, error) {
 // It wraps the stderr from *exec.ExitError into the returned error so that
 // isPassNotFound can do a plain string search rather than type-asserting
 // *exec.ExitError at every call site.
+// LC_ALL=C forces English output from pass(1) so that isPassNotFound's
+// string match is not broken by locale-specific error messages.
 func passCmdRunner(stdin io.Reader, name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = stdin
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -79,7 +82,9 @@ func (p *passBackend) Set(name, value string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
-	_, err := p.runCmd(strings.NewReader(value), "pass", "insert", "-m", passStorePrefixDir+"/"+name)
+	// -f forces overwrite of an existing entry without an interactive prompt,
+	// satisfying the Store.Set contract of "overwriting any existing entry".
+	_, err := p.runCmd(strings.NewReader(value), "pass", "insert", "-m", "-f", passStorePrefixDir+"/"+name)
 	if err != nil {
 		return fmt.Errorf("pass insert %q: %w", name, err)
 	}
