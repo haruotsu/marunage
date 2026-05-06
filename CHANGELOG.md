@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.0.6](https://github.com/haruotsu/marunage/compare/v0.0.5...v0.0.6) - 2026-05-06
+- docs: remove Go Reference badge from READMEs by @haruotsu in https://github.com/haruotsu/marunage/pull/76
+- feat(web): replace HTML templates with Next.js 15 frontend + JSON APIs by @haruotsu in https://github.com/haruotsu/marunage/pull/78
+
 ## [v0.0.5](https://github.com/haruotsu/marunage/compare/v0.0.4...v0.0.5) - 2026-05-06
 - fix(config): accept JSON array syntax for string-slice keys in config set by @haruotsu in https://github.com/haruotsu/marunage/pull/73
 - feat(gmail): implement GWSClient via gws CLI shell-out by @haruotsu in https://github.com/haruotsu/marunage/pull/75
