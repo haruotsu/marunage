@@ -7,7 +7,6 @@ Japanese version: [README.ja.md](./README.ja.md)
 > observation, intervention, and rollback one keystroke away.
 
 [![CI](https://github.com/haruotsu/marunage/actions/workflows/ci.yml/badge.svg)](https://github.com/haruotsu/marunage/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/haruotsu/marunage.svg)](https://pkg.go.dev/github.com/haruotsu/marunage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 `marunage` (Japanese for "to delegate completely") is a single-binary,
