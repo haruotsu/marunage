@@ -263,6 +263,9 @@ func TestSetRejectsInvalidValues(t *testing.T) {
 		{"bool parse error", "reflection.enabled", "kinda"},
 		{"permission_mode out of range", "execution.permission_mode", "yolo"},
 		{"log_level out of range", "core.log_level", "trace"},
+		{"string slice invalid JSON syntax", "execution.auto_accept_tools", "[invalid"},
+		{"string slice non-string JSON array", "execution.auto_accept_tools", "[1, 2, 3]"},
+		{"string slice nested JSON array", "execution.auto_accept_tools", `[["a"]]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
