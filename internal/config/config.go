@@ -48,6 +48,9 @@ type DiscoveryConfig struct {
 type DiscoveryGmail struct {
 	Query         string `toml:"query"`
 	CheckpointKey string `toml:"checkpoint_key"`
+	// NewerThanDays limits discovery to messages received within the past N days.
+	// 0 means no time filter. Appended to Query as "newer_than:Nd".
+	NewerThanDays int `toml:"newer_than_days"`
 }
 
 type DiscoverySlack struct {
@@ -173,6 +176,7 @@ func Default() Config {
 			Gmail: DiscoveryGmail{
 				Query:         "is:unread to:me -label:auto-archived",
 				CheckpointKey: "gmail_last_id",
+				NewerThanDays: 7,
 			},
 			Slack: DiscoverySlack{
 				MCPServer:       "slack",
