@@ -3,7 +3,6 @@ import { useEffect, useState, useCallback } from 'react'
 import { getJournal } from '@/lib/api'
 import type { JournalEntry } from '@/lib/types'
 import { RefreshCw } from 'lucide-react'
-import Link from 'next/link'
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10)

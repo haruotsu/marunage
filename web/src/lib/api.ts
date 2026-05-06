@@ -14,16 +14,6 @@ import type {
   SkillRegistryResponse,
   TaskListResponse,
 } from './types'
-import {
-  mockDashboard,
-  mockMetrics,
-  mockJournalEntries,
-  mockProject,
-  mockTasks,
-  mockTaskDetail,
-  mockSkillsInstalled,
-  mockSkillsRegistry,
-} from './mock'
 
 const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK === 'true'
 
@@ -142,20 +132,6 @@ export async function promoteTask(id: number): Promise<void> {
 
 export async function reopenTask(id: number): Promise<void> {
   await apiFetch(`/api/tasks/${id}/reopen`, {
-    method: 'POST',
-    headers: mutationHeaders(),
-  })
-}
-
-export async function doneTask(id: number): Promise<void> {
-  await apiFetch(`/api/tasks/${id}/done`, {
-    method: 'POST',
-    headers: mutationHeaders(),
-  })
-}
-
-export async function failTask(id: number): Promise<void> {
-  await apiFetch(`/api/tasks/${id}/fail`, {
     method: 'POST',
     headers: mutationHeaders(),
   })
