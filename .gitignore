@@ -55,3 +55,9 @@ CLAUDE.local.md
 TASK.md
 .claude-task.md
 .test-list*.md
+
+# Next.js frontend
+web/out/
+web/node_modules/
+web/.next/
+web/.env.local
