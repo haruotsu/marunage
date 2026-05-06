@@ -94,6 +94,10 @@ type Options struct {
 	// Nil falls back to a noop provider that returns empty phases.
 	Project ProjectProvider
 
+	// TaskList wires the read-only task list endpoint for GET /api/tasks.
+	// Nil disables GET /api/tasks so servers without a store never expose it.
+	TaskList TaskListProvider
+
 	// LiveStream wires the live terminal stream endpoints:
 	//   GET  /api/tasks/{id}/stream  — SSE feed of cmux pane output
 	//   POST /api/tasks/{id}/send    — forward text to the workspace
@@ -113,6 +117,7 @@ type Server struct {
 	taskDetail TaskDetailProvider
 	auditLog   AuditReader
 	taskOps    TaskOpsStore
+	taskList   TaskListProvider
 	review     ReviewProvider
 	metrics    MetricsProvider
 	journal    JournalProvider
@@ -176,6 +181,7 @@ func NewServer(opts Options) (*Server, error) {
 		taskDetail: taskDetail,
 		auditLog:   auditLog,
 		taskOps:    opts.TaskOps,
+		taskList:   opts.TaskList,
 		review:     opts.Review,
 		metrics:    metrics,
 		journal:    journal,
@@ -205,6 +211,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/dashboard", newDashboardAPIHandler(s.dashboard))
+
+	// Task list endpoint. Registered only when a TaskListProvider is wired.
+	if s.taskList != nil {
+		mux.Handle("GET /api/tasks", newTaskListAPIHandler(s.taskList))
+	}
 
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
