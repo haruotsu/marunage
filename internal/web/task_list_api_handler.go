@@ -90,15 +90,10 @@ const (
 	maxTaskListLimit     = 1000
 )
 
-// validTaskStatuses mirrors store.validStatuses for handler-level input validation.
-var validTaskStatuses = map[string]struct{}{
-	store.StatusPending:      {},
-	store.StatusRunning:      {},
-	store.StatusDone:         {},
-	store.StatusFailed:       {},
-	store.StatusSkipped:      {},
-	store.StatusWaitingHuman: {},
-}
+// validTaskStatuses is the canonical set of allowed task status values for
+// handler-level input validation. References store.ValidStatuses as the
+// single source of truth.
+var validTaskStatuses = store.ValidStatuses
 
 func newTaskListAPIHandler(provider TaskListProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

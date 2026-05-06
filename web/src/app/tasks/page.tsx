@@ -220,8 +220,8 @@ function TaskDetailContent() {
       {task.audit_entries.length > 0 && (
         <Section title="Audit Log" className="mt-4">
           <div className="space-y-2">
-            {task.audit_entries.map((entry, i) => (
-              <div key={i} className="flex gap-3 text-xs">
+            {task.audit_entries.map((entry) => (
+              <div key={`${entry.time}-${entry.action}`} className="flex gap-3 text-xs">
                 <span className="shrink-0 text-zinc-400 font-mono w-32">
                   {formatRelativeTime(entry.time)}
                 </span>
