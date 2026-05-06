@@ -1,17 +1,5 @@
 package secrets_test
 
-// Test list (t_wada TDD — tick off as each turns green):
-//
-//  1. probePassAvailable returns non-nil when pass binary is missing from PATH
-//  2. probePassAvailable returns nil when pass binary is present in PATH
-//  3. Backend() returns "pass"
-//  4. Set calls pass insert -m marunage/<name> with value on stdin
-//  5. Get calls pass show marunage/<name> and returns the first output line
-//  6. Get on a missing entry returns ok=false, err=nil
-//  7. Delete calls pass rm -f marunage/<name>
-//  8. Delete on a missing entry is a no-op (idempotent, no error)
-//  9. List reads *.gpg files under storeDir/marunage/ and returns sorted names
-
 import (
 	"errors"
 	"io"
