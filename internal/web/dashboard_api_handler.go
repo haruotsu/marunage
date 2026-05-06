@@ -6,12 +6,12 @@ import (
 )
 
 type dashboardAPIRunning struct {
-	ID            int64     `json:"id"`
-	Source        string    `json:"source"`
-	Title         string    `json:"title"`
-	WS            string    `json:"ws"`
-	StartedAt     time.Time `json:"started_at"`
-	OutputPreview string    `json:"output_preview"`
+	ID            int64      `json:"id"`
+	Source        string     `json:"source"`
+	Title         string     `json:"title"`
+	WS            string     `json:"ws"`
+	StartedAt     *time.Time `json:"started_at"`
+	OutputPreview string     `json:"output_preview"`
 }
 
 type dashboardAPIPending struct {
@@ -29,9 +29,9 @@ type dashboardAPIRecent struct {
 }
 
 type dashboardAPISource struct {
-	Name         string    `json:"name"`
-	AuthStatus   string    `json:"auth_status"`
-	LastListedAt time.Time `json:"last_listed_at"`
+	Name         string     `json:"name"`
+	AuthStatus   string     `json:"auth_status"`
+	LastListedAt *time.Time `json:"last_listed_at"`
 }
 
 type dashboardAPIResponse struct {
@@ -54,14 +54,17 @@ func newDashboardAPIHandler(provider DashboardProvider) http.Handler {
 
 		running := make([]dashboardAPIRunning, len(snap.Running))
 		for i, r := range snap.Running {
-			running[i] = dashboardAPIRunning{
+			ar := dashboardAPIRunning{
 				ID:            r.ID,
 				Source:        r.Source,
 				Title:         r.Title,
 				WS:            r.WS,
-				StartedAt:     r.StartedAt,
 				OutputPreview: r.OutputPreview,
 			}
+			if !r.StartedAt.IsZero() {
+				ar.StartedAt = &r.StartedAt
+			}
+			running[i] = ar
 		}
 
 		pending := make([]dashboardAPIPending, len(snap.Pending))
@@ -77,11 +80,14 @@ func newDashboardAPIHandler(provider DashboardProvider) http.Handler {
 
 		sources := make([]dashboardAPISource, len(snap.Sources))
 		for i, s := range snap.Sources {
-			sources[i] = dashboardAPISource{
-				Name:         s.Name,
-				AuthStatus:   s.AuthStatus,
-				LastListedAt: s.LastListedAt,
+			as := dashboardAPISource{
+				Name:       s.Name,
+				AuthStatus: s.AuthStatus,
 			}
+			if !s.LastListedAt.IsZero() {
+				as.LastListedAt = &s.LastListedAt
+			}
+			sources[i] = as
 		}
 
 		writeJSON(w, http.StatusOK, dashboardAPIResponse{

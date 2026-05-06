@@ -35,14 +35,20 @@ type taskAPITask struct {
 	ExternalID     string     `json:"external_id"`
 	ExternalURL    string     `json:"external_url"`
 	Title          string     `json:"title"`
+	Body           string     `json:"body"`
+	Notes          string     `json:"notes"`
 	Status         string     `json:"status"`
 	Priority       int        `json:"priority"`
+	LockKey        string     `json:"lock_key"`
+	CWD            string     `json:"cwd"`
+	WS             string     `json:"ws"`
+	JudgmentReason string     `json:"judgment_reason"`
+	ResultSummary  string     `json:"result_summary"`
+	Reflection     string     `json:"reflection"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	StartedAt      *time.Time `json:"started_at"`
 	CompletedAt    *time.Time `json:"completed_at"`
-	WS             string     `json:"ws"`
-	JudgmentReason string     `json:"judgment_reason"`
 }
 
 type taskListAPIResponse struct {
@@ -57,12 +63,18 @@ func toTaskAPITask(t store.Task) taskAPITask {
 		ExternalID:     t.ExternalID,
 		ExternalURL:    t.ExternalURL,
 		Title:          t.Title,
+		Body:           t.Body,
+		Notes:          t.Notes,
 		Status:         t.Status,
 		Priority:       t.Priority,
-		CreatedAt:      t.CreatedAt,
-		UpdatedAt:      t.UpdatedAt,
+		LockKey:        t.LockKey,
+		CWD:            t.CWD,
 		WS:             t.WS,
 		JudgmentReason: t.JudgmentReason,
+		ResultSummary:  t.ResultSummary,
+		Reflection:     t.Reflection,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
 	}
 	if !t.StartedAt.IsZero() {
 		task.StartedAt = &t.StartedAt
@@ -73,7 +85,20 @@ func toTaskAPITask(t store.Task) taskAPITask {
 	return task
 }
 
-const defaultTaskListLimit = 100
+const (
+	defaultTaskListLimit = 100
+	maxTaskListLimit     = 1000
+)
+
+// validTaskStatuses mirrors store.validStatuses for handler-level input validation.
+var validTaskStatuses = map[string]struct{}{
+	store.StatusPending:      {},
+	store.StatusRunning:      {},
+	store.StatusDone:         {},
+	store.StatusFailed:       {},
+	store.StatusSkipped:      {},
+	store.StatusWaitingHuman: {},
+}
 
 func newTaskListAPIHandler(provider TaskListProvider) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,14 +107,22 @@ func newTaskListAPIHandler(provider TaskListProvider) http.Handler {
 		filter := TaskListFilter{Limit: defaultTaskListLimit}
 
 		if s := r.URL.Query().Get("status"); s != "" {
-			filter.Statuses = strings.Split(s, ",")
+			statuses := strings.Split(s, ",")
+			for _, sv := range statuses {
+				sv = strings.TrimSpace(sv)
+				if _, ok := validTaskStatuses[sv]; !ok {
+					writeJSONError(w, http.StatusBadRequest, "invalid status value: "+sv)
+					return
+				}
+			}
+			filter.Statuses = statuses
 		}
 		if s := r.URL.Query().Get("source"); s != "" {
 			filter.Source = s
 		}
 		if l := r.URL.Query().Get("limit"); l != "" {
 			if n, err := strconv.Atoi(l); err == nil && n > 0 {
-				filter.Limit = n
+				filter.Limit = min(n, maxTaskListLimit)
 			}
 		}
 
@@ -102,9 +135,6 @@ func newTaskListAPIHandler(provider TaskListProvider) http.Handler {
 		out := make([]taskAPITask, len(tasks))
 		for i, t := range tasks {
 			out[i] = toTaskAPITask(t)
-		}
-		if out == nil {
-			out = []taskAPITask{}
 		}
 
 		writeJSON(w, http.StatusOK, taskListAPIResponse{

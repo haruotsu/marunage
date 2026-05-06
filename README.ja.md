@@ -104,20 +104,38 @@ allowed_cwd_prefixes = ["~/works", "~/src"]
 
 ## Development
 
-必要なもの: Go 1.25+、`make`、
+必要なもの: Go 1.25+、Node.js 22+、`make`、
 [`golangci-lint`](https://golangci-lint.run/welcome/install/)。
 
 ```sh
 git clone https://github.com/haruotsu/marunage
 cd marunage
 
-make build      # ./bin/marunage
+make build      # ./bin/marunage（Go のみ、Web UI なし）
 make test       # go test ./...
 make lint       # golangci-lint run ./...
 make fmt-check  # gofmt 差分があれば fail
 ```
 
-CI は push / PR ごとに `make fmt-check vet lint test build` 相当を実行します。
+### Web UI 付きビルド
+
+Web UI は Next.js の静的エクスポートを `go:embed` でバイナリに組み込みます。
+`nextjs` ビルドタグを指定して Go をビルドする前に、Web UI を別途ビルドしてください。
+
+```sh
+make web-install    # web/ で npm ci を実行
+make web-build      # npm run build → web/out/ を生成
+make build-nextjs   # go build -tags nextjs → Web UI 付き ./bin/marunage
+```
+
+Next.js 開発サーバを起動する場合（ホットリロード、API は :7777 へプロキシ）:
+
+```sh
+make web-install
+make web-dev        # http://localhost:3000
+```
+
+CI は push / PR ごとに Go と Web UI（lint・型チェック・ビルド）の両方を検証します。
 
 ## Community
 

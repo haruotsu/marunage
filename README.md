@@ -106,20 +106,38 @@ Secrets are never written to `config.toml`.
 
 ## Development
 
-Requirements: Go 1.25+, `make`,
+Requirements: Go 1.25+, Node.js 22+, `make`,
 [`golangci-lint`](https://golangci-lint.run/welcome/install/).
 
 ```sh
 git clone https://github.com/haruotsu/marunage
 cd marunage
 
-make build      # ./bin/marunage
+make build      # ./bin/marunage (Go only, no web UI)
 make test       # go test ./...
 make lint       # golangci-lint run ./...
 make fmt-check  # fail on gofmt diffs
 ```
 
-CI runs the equivalent of `make fmt-check vet lint test build` on every
+### Building with the Web UI
+
+The web UI is a Next.js static export embedded in the binary at build time
+via `go:embed`. Build it separately before compiling Go with the `nextjs` tag:
+
+```sh
+make web-install    # npm ci in web/
+make web-build      # npm run build → web/out/
+make build-nextjs   # go build -tags nextjs → ./bin/marunage with web UI
+```
+
+To run the Next.js dev server (hot-reload, proxies API calls to :7777):
+
+```sh
+make web-install
+make web-dev        # http://localhost:3000
+```
+
+CI runs lint, type-check, and build for both Go and the web UI on every
 push and pull request.
 
 ## Community
