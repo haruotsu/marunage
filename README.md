@@ -61,9 +61,27 @@ Run `marunage doctor` after install to verify your setup.
 
 ## Quickstart
 
-```sh
-go install github.com/haruotsu/marunage/cmd/marunage@latest
+**Recommended — pre-built release binary** (includes the full Next.js web UI):
 
+```sh
+# Download the latest release binary for your OS from:
+# https://github.com/haruotsu/marunage/releases
+```
+
+**Or build from source** (requires Node.js 22+ for the web UI):
+
+```sh
+git clone https://github.com/haruotsu/marunage
+cd marunage
+make build           # builds web UI + Go binary in one step
+./bin/marunage init  # then proceed as below
+```
+
+> `go install github.com/haruotsu/marunage/cmd/marunage@latest` works for the CLI,
+> but the web UI will be the built-in HTML template version (no Next.js).
+> Use a release binary or `make build` for the full experience.
+
+```sh
 marunage init              # ~/.marunage/, SQLite, pick a permission mode
 marunage doctor            # check claude / cmux / sqlite3 / gh / gws / jq
 marunage setup             # install skills, authenticate sources
@@ -106,20 +124,36 @@ Secrets are never written to `config.toml`.
 
 ## Development
 
-Requirements: Go 1.25+, `make`,
+Requirements: Go 1.25+, Node.js 22+, `make`,
 [`golangci-lint`](https://golangci-lint.run/welcome/install/).
 
 ```sh
 git clone https://github.com/haruotsu/marunage
 cd marunage
 
-make build      # ./bin/marunage
+make build      # web UI + Go binary → ./bin/marunage (requires Node.js 22+)
 make test       # go test ./...
 make lint       # golangci-lint run ./...
 make fmt-check  # fail on gofmt diffs
 ```
 
-CI runs the equivalent of `make fmt-check vet lint test build` on every
+`make build` embeds the Next.js static export into the binary at compile time,
+so `./bin/marunage web` serves the full web UI with no extra steps.
+
+> **Go-only build** (no web UI, no Node.js required): `make build-go`
+
+### Hot-reload dev mode
+
+For frontend development with instant refresh:
+
+```sh
+make web-install       # npm ci (once)
+make web-dev           # Next.js dev server → http://localhost:3000
+# In another terminal:
+./bin/marunage web     # Go API → http://localhost:7777
+```
+
+CI runs lint, type-check, and build for both Go and the web UI on every
 push and pull request.
 
 ## Community

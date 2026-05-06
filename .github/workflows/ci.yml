@@ -39,4 +39,55 @@ jobs:
       - name: test
         run: make test
       - name: build
-        run: make build
+        run: make build-go
+
+  web:
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+      - name: install
+        working-directory: web
+        run: npm ci
+      - name: lint
+        working-directory: web
+        run: npm run lint
+      - name: type-check
+        working-directory: web
+        run: npm run type-check
+      - name: build
+        working-directory: web
+        run: npm run build
+
+  build-with-nextjs:
+    runs-on: ubuntu-latest
+    needs: [web]
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+      - name: install web deps
+        working-directory: web
+        run: npm ci
+      - name: build web
+        working-directory: web
+        run: npm run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: copy web out for embed
+        run: rm -rf internal/web/out && cp -r web/out internal/web/out
+      - name: build with nextjs
+        run: go build -tags nextjs ./...

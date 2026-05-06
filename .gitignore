@@ -30,6 +30,8 @@ go.work.sum
 # Build output
 /bin/
 /dist/
+/web/out/
+/web/node_modules/
 
 # Editor/IDE
 # .idea/
@@ -55,3 +57,12 @@ CLAUDE.local.md
 TASK.md
 .claude-task.md
 .test-list*.md
+
+# Next.js frontend
+web/out/
+web/node_modules/
+web/.next/
+web/.env.local
+
+# Embedded Next.js static export (copied from web/out by build-nextjs / CI)
+internal/web/out/

@@ -66,7 +66,10 @@ const (
 	StatusWaitingHuman = "waiting_human"
 )
 
-var validStatuses = map[string]struct{}{
+// ValidStatuses is the canonical set of allowed task statuses. Handlers that
+// need to validate user-supplied status values should reference this map rather
+// than duplicating the list.
+var ValidStatuses = map[string]struct{}{
 	StatusPending:      {},
 	StatusRunning:      {},
 	StatusDone:         {},
@@ -74,6 +77,8 @@ var validStatuses = map[string]struct{}{
 	StatusSkipped:      {},
 	StatusWaitingHuman: {},
 }
+
+var validStatuses = ValidStatuses
 
 // Typed errors so PR-20 (CLI) and PR-42 (dispatch) can pattern-match
 // without parsing strings.

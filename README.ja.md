@@ -57,11 +57,29 @@ flowchart LR
 
 インストール後に `marunage doctor` を実行すると、セットアップ状況を一括確認できます。
 
-## Quickstart
+## クイックスタート
+
+**推奨 — ビルド済みリリースバイナリ**（Next.js Web UI 付き）:
 
 ```sh
-go install github.com/haruotsu/marunage/cmd/marunage@latest
+# 以下から OS に合ったバイナリをダウンロード:
+# https://github.com/haruotsu/marunage/releases
+```
 
+**ソースからビルド**（Web UI には Node.js 22+ が必要）:
+
+```sh
+git clone https://github.com/haruotsu/marunage
+cd marunage
+make build           # Web UI + Go バイナリを一括ビルド
+./bin/marunage init  # 以下に続く
+```
+
+> `go install github.com/haruotsu/marunage/cmd/marunage@latest` でも CLI は動きますが、
+> Web UI は HTML テンプレート版になります（Next.js なし）。
+> フルの体験にはリリースバイナリか `make build` を使ってください。
+
+```sh
 marunage init              # ~/.marunage/ 初期化、SQLite、permission mode 選択
 marunage doctor            # claude / cmux / sqlite3 / gh / gws / jq の確認
 marunage setup             # skills 導入、source 認証
@@ -104,20 +122,34 @@ allowed_cwd_prefixes = ["~/works", "~/src"]
 
 ## Development
 
-必要なもの: Go 1.25+、`make`、
+必要なもの: Go 1.25+、Node.js 22+、`make`、
 [`golangci-lint`](https://golangci-lint.run/welcome/install/)。
 
 ```sh
 git clone https://github.com/haruotsu/marunage
 cd marunage
 
-make build      # ./bin/marunage
+make build      # Web UI + Go バイナリ → ./bin/marunage（Node.js 22+ が必要）
 make test       # go test ./...
 make lint       # golangci-lint run ./...
 make fmt-check  # gofmt 差分があれば fail
 ```
 
-CI は push / PR ごとに `make fmt-check vet lint test build` 相当を実行します。
+`make build` はコンパイル時に Next.js の静的エクスポートをバイナリに埋め込みます。
+そのため `./bin/marunage web` を実行するだけで Web UI が表示されます。追加の手順は不要です。
+
+> **Go のみのビルド**（Web UI なし・Node.js 不要）：`make build-go`
+
+### フロントエンド開発（ホットリロードあり）
+
+```sh
+make web-install       # npm ci（初回のみ）
+make web-dev           # Next.js dev server → http://localhost:3000
+# 別ターミナルで：
+./bin/marunage web     # Go API → http://localhost:7777
+```
+
+CI は push / PR ごとに Go と Web UI（lint・型チェック・ビルド）の両方を検証します。
 
 ## Community
 

@@ -11,8 +11,7 @@ import (
 
 // shutdownGracePeriod caps how long Server.Serve waits for in-flight
 // requests to finish after the parent context is cancelled.  Aligns
-// with the brief's "5 秒タイムアウト" requirement so PR-62 can
-// integrate cleanly with the daemon supervisor's SIGTERM behaviour.
+// with the daemon supervisor's SIGTERM behaviour.
 const shutdownGracePeriod = 5 * time.Second
 
 // HTTP timeout defaults harden the server against slow-loris and
@@ -49,21 +48,16 @@ type Options struct {
 
 	// Dashboard supplies the read-side aggregation the index +
 	// /partials/dashboard handlers render.  Nil falls back to a
-	// noop provider that emits an empty snapshot — handler tests
-	// from PR-62 (TestRoutes_IndexHTML, etc.) keep passing without
-	// having to wire a fake store, while the production CLI plugs
-	// in a real sqlDashboardStore-backed provider via the
-	// dashboard factory.
+	// noop provider that emits an empty snapshot so tests can omit
+	// the store; the production CLI wires a real store-backed provider.
 	Dashboard DashboardProvider
 
-	// Skills wires the read-only PR-203 skill registry surface.
-	// The zero value disables /skills and /api/skills/* so PR-62's
-	// minimal index page keeps working.
+	// Skills wires the read-only skill registry surface.
+	// The zero value disables /skills and /api/skills/*.
 	Skills SkillsConfig
 
 	// TaskDetail wires the task detail page provider. Nil falls back to
-	// a noop that returns 404 for all IDs so PR-62's handler tests keep
-	// passing without having to supply a fake store.
+	// a noop that returns 404 for all IDs.
 	TaskDetail TaskDetailProvider
 
 	// AuditLog wires the audit log reader for the task detail page.
@@ -94,6 +88,10 @@ type Options struct {
 	// Nil falls back to a noop provider that returns empty phases.
 	Project ProjectProvider
 
+	// TaskList wires the read-only task list endpoint for GET /api/tasks.
+	// Nil disables GET /api/tasks so servers without a store never expose it.
+	TaskList TaskListProvider
+
 	// LiveStream wires the live terminal stream endpoints:
 	//   GET  /api/tasks/{id}/stream  — SSE feed of cmux pane output
 	//   POST /api/tasks/{id}/send    — forward text to the workspace
@@ -113,6 +111,7 @@ type Server struct {
 	taskDetail TaskDetailProvider
 	auditLog   AuditReader
 	taskOps    TaskOpsStore
+	taskList   TaskListProvider
 	review     ReviewProvider
 	metrics    MetricsProvider
 	journal    JournalProvider
@@ -123,8 +122,7 @@ type Server struct {
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
 // the assembled struct (rather than a bare http.Handler) lets the CLI
-// layer reach into Hub for the global /events SSE feed. PR-91 live
-// stream uses its own per-task polling loop, not the shared Hub.
+// layer reach into Hub for the global /events SSE feed.
 func NewServer(opts Options) (*Server, error) {
 	if opts.TokenSource == nil {
 		opts.TokenSource = DefaultTokenSource
@@ -176,6 +174,7 @@ func NewServer(opts Options) (*Server, error) {
 		taskDetail: taskDetail,
 		auditLog:   auditLog,
 		taskOps:    opts.TaskOps,
+		taskList:   opts.TaskList,
 		review:     opts.Review,
 		metrics:    metrics,
 		journal:    journal,
@@ -196,47 +195,57 @@ func (s *Server) Hub() *Hub { return s.hub }
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", newHealthzHandler())
-	mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf, s.dashboard))
-	mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
 	mux.Handle("GET /events", NewSSEHandler(s.hub, SSEOptions{HeartbeatInterval: s.opts.HeartbeatInterval}))
 	mux.Handle("GET /static/", newStaticHandler())
-	mux.Handle("GET /tasks/{id}", newTaskDetailHandler(s.renderer, s.taskDetail, s.auditLog))
-	mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
+
+	// API routes — always registered regardless of frontend mode.
 	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
-
+	mux.Handle("GET /api/dashboard", newDashboardAPIHandler(s.dashboard))
+	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
+	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
+	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
+	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+	// GET /api/tasks/{id} uses the noop provider (returns 404 for all IDs)
+	// when TaskDetail is not wired. GET /api/tasks requires explicit TaskList wiring
+	// so servers without a store do not expose a list endpoint that returns nothing useful.
+	mux.Handle("GET /api/tasks/{id}", newTaskDetailAPIHandler(s.taskDetail, s.auditLog))
+	if s.taskList != nil {
+		mux.Handle("GET /api/tasks", newTaskListAPIHandler(s.taskList))
+	}
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
 	}
-
-	// Review endpoints registered only when a ReviewProvider is wired.
 	if s.review != nil {
-		mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
 		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
 	}
 
-	// Metrics, Journal, Project endpoints (PR-105, PR-202). Always registered: unlike
-	// Review (which has no meaningful empty state), these three pages provide
-	// useful UI even when no real provider is wired — the noop fallback renders
-	// an empty-but-valid dashboard so a fresh install looks functional rather
-	// than missing pages. Review stays nil-gated because an empty skipped-tasks
-	// page would be misleading without a real store.
-	mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
-	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
-	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
-	mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
-	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
-	mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
-	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+	// Frontend routes: Next.js static export when available, otherwise HTML templates.
+	if njs, ok := nextjsFS(); ok {
+		// Next.js catches all non-API routes with SPA fallback.
+		mux.Handle("GET /", newNextJSHandler(njs))
+	} else {
+		// HTML template routes (legacy fallback without Next.js build).
+		mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf, s.dashboard))
+		mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
+		mux.Handle("GET /tasks/{id}", newTaskDetailHandler(s.renderer, s.taskDetail, s.auditLog))
+		mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
+		mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
+		mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
+		mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
+		if s.review != nil {
+			mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
+		}
+	}
 
-	// Live-stream endpoints (PR-91). Always registered with noop fallback so
+	// Live-stream endpoints. Always registered with noop fallback so
 	// the route exists even when no real streamer/provider is wired — the noop
 	// provider returns 404 for every task, which is the correct behaviour for a
 	// server that has no cmux integration.
 	mux.Handle("GET /api/tasks/{id}/stream", newLiveStreamHandler(s.liveStream.Streamer, s.liveStream.Provider))
 	mux.Handle("POST /api/tasks/{id}/send", newSendToWorkspaceHandler(s.liveStream.Streamer, s.liveStream.Provider))
 
-	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
+	// Task operation endpoints. Registered only when a TaskOpsStore
 	// has been wired so servers without a store never expose /api/tasks/*.
 	if s.taskOps != nil {
 		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(s.taskOps))
