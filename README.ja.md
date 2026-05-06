@@ -44,6 +44,20 @@ flowchart LR
 1 task = 1 cmux ワークスペース = 1 対話型 Claude セッション。`claude -p` の
 ワンショットは使わないので、完了後に attach して会話を続けられます。
 
+## 必要なツール
+
+| ツール | 必須条件 | インストール |
+|--------|----------|-------------|
+| [Claude Code](https://claude.ai/download) (`claude`) | 常に必須 | claude.ai からダウンロード または `npm i -g @anthropic-ai/claude-code` |
+| [cmux](https://github.com/manaflow-ai/cmux) | 常に必須 | cmux README の手順を参照 |
+| Go 1.25+ | ソースからビルドする場合 | [go.dev/dl](https://go.dev/dl/) |
+| `sqlite3` | 常に必須 | 多くの環境にプリインストール済み。`brew install sqlite` / `apt install sqlite3` |
+| `gh`（GitHub CLI） | GitHub ソース使用時のみ | `brew install gh` / [cli.github.com](https://cli.github.com) |
+| `gws`（Google Workspace CLI） | Gmail / Calendar / Tasks 使用時のみ | [gws README](https://github.com/haruotsu/gws) 参照 |
+| `jq` | 推奨 | `brew install jq` / `apt install jq` |
+
+インストール後に `marunage doctor` を実行すると、セットアップ状況を一括確認できます。
+
 ## Quickstart
 
 ```sh
