@@ -58,8 +58,10 @@ web-lint:
 	cd web && npm run lint
 
 # Build Go binary with embedded Next.js static export (recommended for production).
+# Copies web/out to internal/web/out so //go:embed out is reachable without ".." traversal.
 build-nextjs: web-install web-build
 	@mkdir -p $(BIN_DIR)
+	rm -rf internal/web/out && cp -r web/out internal/web/out
 	go build -tags nextjs -ldflags '-X $(PKG)/internal/version.version=$(VERSION)' -o $(BIN) $(CMD_PKG)
 
 # Full production build: install web deps, build web, embed in Go binary.

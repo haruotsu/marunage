@@ -14,9 +14,9 @@ import (
 )
 
 type staticTaskListProvider struct {
-	tasks []store.Task
-	total int
-	err   error
+	tasks     []store.Task
+	total     int
+	err       error
 	gotFilter TaskListFilter
 }
 

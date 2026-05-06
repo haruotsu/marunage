@@ -87,5 +87,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: copy web out for embed
+        run: rm -rf internal/web/out && cp -r web/out internal/web/out
       - name: build with nextjs
         run: go build -tags nextjs ./...

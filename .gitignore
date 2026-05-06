@@ -63,3 +63,6 @@ web/out/
 web/node_modules/
 web/.next/
 web/.env.local
+
+# Embedded Next.js static export (copied from web/out by build-nextjs / CI)
+internal/web/out/

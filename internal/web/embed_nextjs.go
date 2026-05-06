@@ -7,11 +7,11 @@ import (
 	"io/fs"
 )
 
-//go:embed ../../web/out
+//go:embed out
 var nextjsAssets embed.FS
 
 func nextjsFS() (fs.FS, bool) {
-	sub, err := fs.Sub(nextjsAssets, "web/out")
+	sub, err := fs.Sub(nextjsAssets, "out")
 	if err != nil {
 		return nil, false
 	}
