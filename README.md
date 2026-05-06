@@ -113,28 +113,26 @@ Requirements: Go 1.25+, Node.js 22+, `make`,
 git clone https://github.com/haruotsu/marunage
 cd marunage
 
-make build      # ./bin/marunage (Go only, no web UI)
+make build      # web UI + Go binary → ./bin/marunage (requires Node.js 22+)
 make test       # go test ./...
 make lint       # golangci-lint run ./...
 make fmt-check  # fail on gofmt diffs
 ```
 
-### Building with the Web UI
+`make build` embeds the Next.js static export into the binary at compile time,
+so `./bin/marunage web` serves the full web UI with no extra steps.
 
-The web UI is a Next.js static export embedded in the binary at build time
-via `go:embed`. Build it separately before compiling Go with the `nextjs` tag:
+> **Go-only build** (no web UI, no Node.js required): `make build-go`
 
-```sh
-make web-install    # npm ci in web/
-make web-build      # npm run build → web/out/
-make build-nextjs   # go build -tags nextjs → ./bin/marunage with web UI
-```
+### Hot-reload dev mode
 
-To run the Next.js dev server (hot-reload, proxies API calls to :7777):
+For frontend development with instant refresh:
 
 ```sh
-make web-install
-make web-dev        # http://localhost:3000
+make web-install       # npm ci (once)
+make web-dev           # Next.js dev server → http://localhost:3000
+# In another terminal:
+./bin/marunage web     # Go API → http://localhost:7777
 ```
 
 CI runs lint, type-check, and build for both Go and the web UI on every

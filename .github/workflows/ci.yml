@@ -39,7 +39,7 @@ jobs:
       - name: test
         run: make test
       - name: build
-        run: make build
+        run: make build-go
 
   web:
     runs-on: ubuntu-latest
