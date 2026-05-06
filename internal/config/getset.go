@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -153,13 +154,25 @@ func assignFromString(v reflect.Value, raw string) error {
 		if v.Type().Elem().Kind() != reflect.String {
 			return fmt.Errorf("unsupported slice element type %s", v.Type().Elem().Kind())
 		}
-		// CSV split, trimming whitespace around each entry. Empty input
-		// resolves to an empty slice rather than ["",].
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			v.Set(reflect.MakeSlice(v.Type(), 0, 0))
 			return nil
 		}
+		// JSON array input: parse as JSON to preserve commas inside elements.
+		if strings.HasPrefix(raw, "[") {
+			var elems []string
+			if err := json.Unmarshal([]byte(raw), &elems); err != nil {
+				return fmt.Errorf("expected JSON array of strings: %w", err)
+			}
+			out := reflect.MakeSlice(v.Type(), len(elems), len(elems))
+			for i, e := range elems {
+				out.Index(i).SetString(e)
+			}
+			v.Set(out)
+			return nil
+		}
+		// CSV fallback: comma-separated list, whitespace trimmed.
 		parts := strings.Split(raw, ",")
 		out := reflect.MakeSlice(v.Type(), len(parts), len(parts))
 		for i, p := range parts {

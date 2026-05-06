@@ -137,6 +137,38 @@ func TestSet(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:  "string slice (JSON array)",
+			key:   "execution.auto_accept_tools",
+			value: `["Read","Bash(git status:*)","Bash(git diff:*)"]`,
+			check: func(t *testing.T, c Config) {
+				want := []string{"Read", "Bash(git status:*)", "Bash(git diff:*)"}
+				if !equalStringSlices(c.Execution.AutoAcceptTools, want) {
+					t.Errorf("AutoAcceptTools = %v; want %v", c.Execution.AutoAcceptTools, want)
+				}
+			},
+		},
+		{
+			name:  "string slice (JSON array with spaces)",
+			key:   "execution.auto_accept_tools",
+			value: `["Read", "Grep", "Glob"]`,
+			check: func(t *testing.T, c Config) {
+				want := []string{"Read", "Grep", "Glob"}
+				if !equalStringSlices(c.Execution.AutoAcceptTools, want) {
+					t.Errorf("AutoAcceptTools = %v; want %v", c.Execution.AutoAcceptTools, want)
+				}
+			},
+		},
+		{
+			name:  "string slice (empty JSON array)",
+			key:   "execution.auto_accept_tools",
+			value: `[]`,
+			check: func(t *testing.T, c Config) {
+				if len(c.Execution.AutoAcceptTools) != 0 {
+					t.Errorf("AutoAcceptTools = %v; want empty", c.Execution.AutoAcceptTools)
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -231,6 +263,9 @@ func TestSetRejectsInvalidValues(t *testing.T) {
 		{"bool parse error", "reflection.enabled", "kinda"},
 		{"permission_mode out of range", "execution.permission_mode", "yolo"},
 		{"log_level out of range", "core.log_level", "trace"},
+		{"string slice invalid JSON syntax", "execution.auto_accept_tools", "[invalid"},
+		{"string slice non-string JSON array", "execution.auto_accept_tools", "[1, 2, 3]"},
+		{"string slice nested JSON array", "execution.auto_accept_tools", `[["a"]]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
