@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 
 	"github.com/haruotsu/marunage/internal/source"
 )
@@ -87,7 +88,7 @@ func NewGWSClient(opts ...GWSOption) *GWSClient {
 // labels, and from. The N+1 is bounded by maxResults (default 50).
 func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 	q := query
-	if c.newerThanDays > 0 {
+	if c.newerThanDays > 0 && !strings.Contains(q, "newer_than:") {
 		if q == "" {
 			q = fmt.Sprintf("newer_than:%dd", c.newerThanDays)
 		} else {
@@ -174,6 +175,9 @@ func (c *GWSClient) ModifyLabels(ctx context.Context, id string, req ModifyLabel
 // AuthStatus runs a cheap probe to verify gws credentials are valid.
 // Any runner error is treated as AuthNotConfigured rather than a hard
 // error; callers that need the raw failure should use Authenticate.
+// Note: shell-out via gws provides no structured exit codes that distinguish
+// "binary missing" from "token expired/revoked", so all failure modes map to
+// AuthNotConfigured. Use `gws auth status` (or Authenticate) for diagnostics.
 func (c *GWSClient) AuthStatus(ctx context.Context) (source.AuthStatus, error) {
 	if err := c.probe(ctx); err != nil {
 		return source.AuthNotConfigured, nil
@@ -195,13 +199,14 @@ func (c *GWSClient) Authenticate(ctx context.Context, opts source.SetupOptions) 
 	return nil
 }
 
+// probeParams is the fixed JSON body for users.getProfile.
+const probeParams = `{"userId":"me"}`
+
 // probe calls users.getProfile — the cheapest authenticated Gmail
 // endpoint — and returns the runner error verbatim.
 func (c *GWSClient) probe(ctx context.Context) error {
-	// map[string]any with string primitives cannot fail to marshal.
-	paramsJSON, _ := json.Marshal(map[string]any{"userId": "me"})
 	_, err := c.runner(ctx, c.binary, "gmail", "users", "getProfile",
-		"--params", string(paramsJSON), "--format", "json")
+		"--params", probeParams, "--format", "json")
 	return err
 }
 

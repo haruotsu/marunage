@@ -404,6 +404,28 @@ func TestGWSListNewerThanNoLeadingSpaceOnEmptyQuery(t *testing.T) {
 	}
 }
 
+func TestGWSListNewerThanSkippedWhenQueryAlreadyContainsIt(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{messageListJSON(t, nil)},
+		outErrs: []error{nil},
+	}
+	c := NewGWSClient(WithRunner(runner.run), WithNewerThan(7))
+	if _, err := c.List(context.Background(), "is:unread newer_than:30d"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	params := findArg(runner.calls[0].args, "--params")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(params), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	q, _ := got["q"].(string)
+	if strings.Count(q, "newer_than:") != 1 {
+		t.Errorf("q = %q, want exactly one newer_than: token (no double-append)", q)
+	}
+}
+
 // --- G6: Error propagation ---------------------------------------------------
 
 func TestGWSListWrapsListRunnerError(t *testing.T) {
