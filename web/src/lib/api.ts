@@ -6,6 +6,7 @@ import type {
   ProjectResponse,
   Task,
   TaskDetail,
+  TaskDetailAPIResponse,
   SkillInfo,
   SkillRegistryEntry,
   TaskListResponse,
@@ -75,7 +76,9 @@ export async function getTasks(): Promise<TaskListResponse> {
 
 export async function getTask(id: number): Promise<TaskDetail> {
   if (USE_MOCK) return mockTaskDetail
-  return apiFetch<TaskDetail>(`/api/tasks/${id}`)
+  // Go returns { task: {...}, audit_entries: [...] }; flatten into TaskDetail.
+  const resp = await apiFetch<TaskDetailAPIResponse>(`/api/tasks/${id}`)
+  return { ...resp.task, audit_entries: resp.audit_entries }
 }
 
 export async function getSkippedTasks(): Promise<Task[]> {

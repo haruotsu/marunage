@@ -40,6 +40,13 @@ export interface TaskDetail extends Task {
   audit_entries: AuditEntry[]
 }
 
+// TaskDetailAPIResponse mirrors the Go taskDetailAPIResponse JSON shape.
+// The Go handler wraps the task and audit_entries in a top-level object.
+export interface TaskDetailAPIResponse {
+  task: Task
+  audit_entries: AuditEntry[]
+}
+
 export interface RunningTask {
   id: number
   source: string
