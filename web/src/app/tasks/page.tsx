@@ -23,7 +23,7 @@ function TaskDetailContent() {
   const id = idStr ? parseInt(idStr, 10) : null
 
   const [task, setTask] = useState<TaskDetail | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
@@ -31,7 +31,11 @@ function TaskDetailContent() {
   const refetch = useCallback(() => setTick((n) => n + 1), [])
 
   useEffect(() => {
-    if (!id) return
+    if (!id) {
+      setLoading(false)
+      return
+    }
+    setLoading(true)
     getTask(id)
       .then((t) => {
         setTask(t)

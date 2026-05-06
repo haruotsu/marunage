@@ -194,6 +194,31 @@ func TestTaskDetailAPIHandler_ZeroIDReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestTaskDetailAPIHandler_AuditReaderError_ReturnsEmptyEntries(t *testing.T) {
+	prov := staticTaskDetailAPIProvider{task: sampleDetailTask()}
+	audits := staticAuditAPIReader{err: errors.New("audit store unavailable")}
+	srv := newTaskDetailAPIServer(t, prov, audits)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200 even when audit reader fails", w.Code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("JSON decode: %v", err)
+	}
+	entries, ok := got["audit_entries"].([]any)
+	if !ok {
+		t.Fatalf("audit_entries missing or wrong type: %T", got["audit_entries"])
+	}
+	if len(entries) != 0 {
+		t.Errorf("audit_entries len=%d; want 0 when reader errors", len(entries))
+	}
+}
+
 func TestTaskDetailAPIHandler_ProviderError(t *testing.T) {
 	prov := staticTaskDetailAPIProvider{err: errTaskDetailAPITestFailed}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})

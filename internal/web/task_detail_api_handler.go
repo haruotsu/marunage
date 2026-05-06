@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -36,6 +37,7 @@ func newTaskDetailAPIHandler(provider TaskDetailProvider, audits AuditReader) ht
 
 		entries, err := audits.EntriesForTask(r.Context(), id)
 		if err != nil {
+			slog.WarnContext(r.Context(), "audit entries unavailable", "task_id", id, "err", err)
 			entries = nil
 		}
 		if entries == nil {

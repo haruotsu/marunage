@@ -1,11 +1,8 @@
 // Package web hosts the `marunage web` HTTP server: chi-style router (built
 // on net/http with Go 1.22 pattern matching), html/template-driven SSR
 // pages, an SSE hub, and the CSRF + security-header middlewares.
-//
-// The package is read-only in PR-62: real dashboard data, task detail, and
-// mutating endpoints land in PR-63 / PR-64 / PR-65. The Renderer interface
-// is in place so the templating layer can be swapped from html/template to
-// templ without a churny redesign.
+// The Renderer interface allows the templating layer to be swapped from
+// html/template to templ without a churny redesign.
 package web
 
 import (
@@ -152,8 +149,8 @@ func newCSRFCookie(value string, secure bool) *http.Cookie {
 		Name:     CSRFCookieName,
 		Value:    value,
 		Path:     "/",
-		HttpOnly: false, // readable by JS so HTMX/fetch can echo it
-		SameSite: http.SameSiteLaxMode,
+		HttpOnly: false, // readable by JS so fetch() can echo it as X-CSRF-Token
+		SameSite: http.SameSiteStrictMode,
 		Secure:   secure,
 	}
 }

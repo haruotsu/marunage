@@ -39,8 +39,8 @@ type taskAPITask struct {
 	Notes          string     `json:"notes"`
 	Status         string     `json:"status"`
 	Priority       int        `json:"priority"`
-	LockKey        string     `json:"lock_key"`
-	CWD            string     `json:"cwd"`
+	LockKey        string     `json:"-"`
+	CWD            string     `json:"-"`
 	WS             string     `json:"ws"`
 	JudgmentReason string     `json:"judgment_reason"`
 	ResultSummary  string     `json:"result_summary"`

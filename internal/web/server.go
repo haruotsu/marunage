@@ -11,8 +11,7 @@ import (
 
 // shutdownGracePeriod caps how long Server.Serve waits for in-flight
 // requests to finish after the parent context is cancelled.  Aligns
-// with the brief's "5 秒タイムアウト" requirement so PR-62 can
-// integrate cleanly with the daemon supervisor's SIGTERM behaviour.
+// with the daemon supervisor's SIGTERM behaviour.
 const shutdownGracePeriod = 5 * time.Second
 
 // HTTP timeout defaults harden the server against slow-loris and
@@ -49,21 +48,16 @@ type Options struct {
 
 	// Dashboard supplies the read-side aggregation the index +
 	// /partials/dashboard handlers render.  Nil falls back to a
-	// noop provider that emits an empty snapshot — handler tests
-	// from PR-62 (TestRoutes_IndexHTML, etc.) keep passing without
-	// having to wire a fake store, while the production CLI plugs
-	// in a real sqlDashboardStore-backed provider via the
-	// dashboard factory.
+	// noop provider that emits an empty snapshot so tests can omit
+	// the store; the production CLI wires a real store-backed provider.
 	Dashboard DashboardProvider
 
-	// Skills wires the read-only PR-203 skill registry surface.
-	// The zero value disables /skills and /api/skills/* so PR-62's
-	// minimal index page keeps working.
+	// Skills wires the read-only skill registry surface.
+	// The zero value disables /skills and /api/skills/*.
 	Skills SkillsConfig
 
 	// TaskDetail wires the task detail page provider. Nil falls back to
-	// a noop that returns 404 for all IDs so PR-62's handler tests keep
-	// passing without having to supply a fake store.
+	// a noop that returns 404 for all IDs.
 	TaskDetail TaskDetailProvider
 
 	// AuditLog wires the audit log reader for the task detail page.
@@ -128,8 +122,7 @@ type Server struct {
 
 // NewServer wires the renderer, CSRF middleware, and hub.  Returning
 // the assembled struct (rather than a bare http.Handler) lets the CLI
-// layer reach into Hub for the global /events SSE feed. PR-91 live
-// stream uses its own per-task polling loop, not the shared Hub.
+// layer reach into Hub for the global /events SSE feed.
 func NewServer(opts Options) (*Server, error) {
 	if opts.TokenSource == nil {
 		opts.TokenSource = DefaultTokenSource
@@ -245,14 +238,14 @@ func (s *Server) Routes() http.Handler {
 		}
 	}
 
-	// Live-stream endpoints (PR-91). Always registered with noop fallback so
+	// Live-stream endpoints. Always registered with noop fallback so
 	// the route exists even when no real streamer/provider is wired — the noop
 	// provider returns 404 for every task, which is the correct behaviour for a
 	// server that has no cmux integration.
 	mux.Handle("GET /api/tasks/{id}/stream", newLiveStreamHandler(s.liveStream.Streamer, s.liveStream.Provider))
 	mux.Handle("POST /api/tasks/{id}/send", newSendToWorkspaceHandler(s.liveStream.Streamer, s.liveStream.Provider))
 
-	// Task operation endpoints (PR-65). Registered only when a TaskOpsStore
+	// Task operation endpoints. Registered only when a TaskOpsStore
 	// has been wired so servers without a store never expose /api/tasks/*.
 	if s.taskOps != nil {
 		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(s.taskOps))

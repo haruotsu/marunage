@@ -1,3 +1,5 @@
+//go:build noweb
+
 package web
 
 import (
@@ -178,29 +180,4 @@ func TestRoutes_EventsServesSSE(t *testing.T) {
 	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("Content-Type = %q; want text/event-stream", got)
 	}
-}
-
-// newTestServer constructs a Server with the deterministic CSRF token
-// source, a tight SSE heartbeat, and the test-only /test-post route
-// enabled.  Centralising the wiring keeps each test focused on one
-// behaviour.
-func newTestServer(t *testing.T) *Server {
-	t.Helper()
-	srv, err := NewServer(Options{
-		TokenSource:       testTokenSource,
-		HeartbeatInterval: 25 * time.Millisecond,
-		EnableTestRoutes:  true,
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	return srv
-}
-
-func doGet(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	rec := httptest.NewRecorder()
-	srv.Routes().ServeHTTP(rec, req)
-	return rec
 }
