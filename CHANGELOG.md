@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.3](https://github.com/haruotsu/marunage/compare/v0.0.2...v0.0.3) - 2026-05-06
+- docs: OSS polish — README rewrite, README.ja.md, CODE_OF_CONDUCT, SECURITY, issue templates by @haruotsu in https://github.com/haruotsu/marunage/pull/63
+
 ## [v0.0.2](https://github.com/haruotsu/marunage/compare/v0.0.1...v0.0.2) - 2026-05-04
 
 ## [v0.0.1](https://github.com/haruotsu/marunage/commits/v0.0.1) - 2026-05-04
