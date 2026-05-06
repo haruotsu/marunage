@@ -202,46 +202,46 @@ func (s *Server) Hub() *Hub { return s.hub }
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", newHealthzHandler())
-	mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf, s.dashboard))
-	mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
 	mux.Handle("GET /events", NewSSEHandler(s.hub, SSEOptions{HeartbeatInterval: s.opts.HeartbeatInterval}))
 	mux.Handle("GET /static/", newStaticHandler())
-	mux.Handle("GET /tasks/{id}", newTaskDetailHandler(s.renderer, s.taskDetail, s.auditLog))
-	mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
+
+	// API routes — always registered regardless of frontend mode.
 	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/dashboard", newDashboardAPIHandler(s.dashboard))
+	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
+	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
+	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
+	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+	mux.Handle("GET /api/tasks/{id}", newTaskDetailAPIHandler(s.taskDetail, s.auditLog))
 
-	// Task list and task detail JSON endpoints.
-	// List is nil-gated; detail reuses existing providers (always wired with noop fallback).
 	if s.taskList != nil {
 		mux.Handle("GET /api/tasks", newTaskListAPIHandler(s.taskList))
 	}
-	mux.Handle("GET /api/tasks/{id}", newTaskDetailAPIHandler(s.taskDetail, s.auditLog))
-
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
 	}
-
-	// Review endpoints registered only when a ReviewProvider is wired.
 	if s.review != nil {
-		mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
 		mux.Handle("GET /api/review/skipped", newReviewAPIHandler(s.review))
 	}
 
-	// Metrics, Journal, Project endpoints (PR-105, PR-202). Always registered: unlike
-	// Review (which has no meaningful empty state), these three pages provide
-	// useful UI even when no real provider is wired — the noop fallback renders
-	// an empty-but-valid dashboard so a fresh install looks functional rather
-	// than missing pages. Review stays nil-gated because an empty skipped-tasks
-	// page would be misleading without a real store.
-	mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
-	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
-	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
-	mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
-	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
-	mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
-	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
+	// Frontend routes: Next.js static export when available, otherwise HTML templates.
+	if njs, ok := nextjsFS(); ok {
+		// Next.js catches all non-API routes with SPA fallback.
+		mux.Handle("GET /", newNextJSHandler(njs))
+	} else {
+		// HTML template routes (legacy fallback without Next.js build).
+		mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf, s.dashboard))
+		mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
+		mux.Handle("GET /tasks/{id}", newTaskDetailHandler(s.renderer, s.taskDetail, s.auditLog))
+		mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
+		mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
+		mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
+		mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
+		if s.review != nil {
+			mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
+		}
+	}
 
 	// Live-stream endpoints (PR-91). Always registered with noop fallback so
 	// the route exists even when no real streamer/provider is wired — the noop

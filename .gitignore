@@ -30,6 +30,8 @@ go.work.sum
 # Build output
 /bin/
 /dist/
+/web/out/
+/web/node_modules/
 
 # Editor/IDE
 # .idea/
