@@ -57,7 +57,15 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			return fmt.Errorf("register slack:reaction: %w", err)
 		}
 	case "gmail":
+		var gwsOpts []gmail.GWSOption
+		if cfg.Discovery.Gmail.NewerThanDays > 0 {
+			gwsOpts = append(gwsOpts, gmail.WithNewerThan(cfg.Discovery.Gmail.NewerThanDays))
+		}
+		if cfg.Discovery.Gmail.MaxResults > 0 {
+			gwsOpts = append(gwsOpts, gmail.WithMaxResults(cfg.Discovery.Gmail.MaxResults))
+		}
 		var opts []gmail.Option
+		opts = append(opts, gmail.WithClient(gmail.NewGWSClient(gwsOpts...)))
 		if cfg.Discovery.Gmail.Query != "" {
 			opts = append(opts, gmail.WithQuery(cfg.Discovery.Gmail.Query))
 		}

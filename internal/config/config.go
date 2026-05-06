@@ -48,6 +48,13 @@ type DiscoveryConfig struct {
 type DiscoveryGmail struct {
 	Query         string `toml:"query"`
 	CheckpointKey string `toml:"checkpoint_key"`
+	// NewerThanDays limits discovery to messages received within the past N days.
+	// 0 means no time filter. Appended to Query as "newer_than:Nd".
+	NewerThanDays int `toml:"newer_than_days"`
+	// MaxResults caps the number of messages fetched per discovery run.
+	// 0 uses the GWSClient default (50). Each result costs one messages.get
+	// subprocess, so keeping this small bounds the N+1 subprocess count.
+	MaxResults int `toml:"max_results"`
 }
 
 type DiscoverySlack struct {
@@ -173,6 +180,7 @@ func Default() Config {
 			Gmail: DiscoveryGmail{
 				Query:         "is:unread to:me -label:auto-archived",
 				CheckpointKey: "gmail_last_id",
+				NewerThanDays: 7,
 			},
 			Slack: DiscoverySlack{
 				MCPServer:       "slack",
@@ -290,6 +298,12 @@ func (c Config) Validate() error {
 		if d <= 0 {
 			return fmt.Errorf("journal.interval: must be > 0 (got %v)", d)
 		}
+	}
+	if c.Discovery.Gmail.NewerThanDays < 0 {
+		return fmt.Errorf("discovery.gmail.newer_than_days: must be >= 0 (got %d)", c.Discovery.Gmail.NewerThanDays)
+	}
+	if c.Discovery.Gmail.MaxResults < 0 {
+		return fmt.Errorf("discovery.gmail.max_results: must be >= 0 (got %d)", c.Discovery.Gmail.MaxResults)
 	}
 	rt := c.Discovery.Slack.ReactionTrigger
 	if rt.Enabled && len(rt.Reactions) == 0 {
