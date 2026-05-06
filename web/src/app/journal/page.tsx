@@ -73,7 +73,7 @@ export default function JournalPage() {
               <div key={i} className="flex gap-6">
                 <div className="w-20 shrink-0 text-right">
                   <span className="text-xs text-zinc-400 font-mono">
-                    {new Date(entry.timestamp).toLocaleTimeString([], {
+                    {new Date(entry.time).toLocaleTimeString([], {
                       hour: '2-digit',
                       minute: '2-digit',
                     })}
@@ -86,14 +86,6 @@ export default function JournalPage() {
                       <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
                         {entry.source}
                       </span>
-                      {entry.task_id && (
-                        <Link
-                          href={`/tasks?id=${entry.task_id}`}
-                          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                        >
-                          #{entry.task_id}
-                        </Link>
-                      )}
                     </div>
                     <p className="text-sm text-zinc-800 dark:text-zinc-200">{entry.summary}</p>
                   </div>

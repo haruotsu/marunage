@@ -68,11 +68,11 @@ export default function ProjectPage() {
               </h2>
               <StatusBadge status={phase.status} />
             </div>
-            {phase.tasks.length === 0 ? (
+            {phase.items.length === 0 ? (
               <p className="text-xs text-zinc-400">No tasks in this phase</p>
             ) : (
               <ul className="space-y-1.5">
-                {phase.tasks.map((task) => (
+                {phase.items.map((task) => (
                   <li
                     key={task.id}
                     className="flex items-center justify-between rounded-md px-3 py-2 bg-zinc-50 dark:bg-zinc-800/50"
