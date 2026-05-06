@@ -180,6 +180,22 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 		AuditLog:     auditReader,
 		Review:       reviewProvider,
 		TaskOps:      taskOps,
+		TaskList: web.TaskListProviderFunc(func(ctx context.Context, f web.TaskListFilter) ([]store.Task, int, error) {
+			var statuses []string
+			if len(f.Statuses) > 0 {
+				statuses = f.Statuses
+			}
+			var sources []string
+			if f.Source != "" {
+				sources = []string{f.Source}
+			}
+			tasks, err := taskRepo.List(ctx, store.ListFilter{
+				Statuses: statuses,
+				Sources:  sources,
+				Limit:    f.Limit,
+			})
+			return tasks, len(tasks), err
+		}),
 		LiveStream: web.LiveStreamConfig{
 			Streamer: liveStreamer,
 			Provider: liveProvider,
