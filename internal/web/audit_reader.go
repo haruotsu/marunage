@@ -16,17 +16,17 @@ import (
 // omitted to keep the view layer slim.
 type AuditEntry struct {
 	// Time is the RFC3339Nano timestamp string from the audit record.
-	Time string
+	Time string `json:"time"`
 	// Action is the audit action verb (e.g. "dispatch.start",
 	// "dispatch.fail", "reaper.warn").
-	Action string
+	Action string `json:"action"`
 	// TaskID is the task id extracted from the Key field ("task:NNN").
 	// Zero means the entry did not carry a task reference (should not
 	// appear in filtered results but is kept for safety).
-	TaskID int64
+	TaskID int64 `json:"task_id"`
 	// Value is the raw value field from the audit record (ws reference,
 	// failure reason, etc.). May be empty.
-	Value string
+	Value string `json:"value"`
 }
 
 // AuditReader is the seam the task detail handler consumes.

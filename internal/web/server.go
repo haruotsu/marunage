@@ -212,10 +212,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/dashboard", newDashboardAPIHandler(s.dashboard))
 
-	// Task list endpoint. Registered only when a TaskListProvider is wired.
+	// Task list and task detail JSON endpoints.
+	// List is nil-gated; detail reuses existing providers (always wired with noop fallback).
 	if s.taskList != nil {
 		mux.Handle("GET /api/tasks", newTaskListAPIHandler(s.taskList))
 	}
+	mux.Handle("GET /api/tasks/{id}", newTaskDetailAPIHandler(s.taskDetail, s.auditLog))
 
 	if s.opts.EnableTestRoutes {
 		mux.Handle("POST /test-post", newTestPostHandler())
