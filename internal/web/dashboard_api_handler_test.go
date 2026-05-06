@@ -133,6 +133,9 @@ func TestDashboardAPIHandler_ReturnsPendingAndRecent(t *testing.T) {
 	if recent["failed_count"] != float64(1) {
 		t.Errorf("recent_24h.failed_count=%v; want 1", recent["failed_count"])
 	}
+	if recent["skipped_count"] != float64(2) {
+		t.Errorf("recent_24h.skipped_count=%v; want 2", recent["skipped_count"])
+	}
 	sources, ok := got["sources"].([]any)
 	if !ok {
 		t.Fatalf("sources missing or wrong type: %T", got["sources"])

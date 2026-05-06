@@ -266,6 +266,29 @@ func TestTaskListAPIHandler_InvalidStatusReturns400(t *testing.T) {
 	}
 }
 
+func TestTaskListAPIHandler_EmptyTasksReturnsArray(t *testing.T) {
+	prov := &staticTaskListProvider{tasks: nil, total: 0}
+	srv := newTaskListAPIServer(t, prov)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200; body=%q", w.Code, w.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON decode: %v", err)
+	}
+	if string(raw["tasks"]) != "[]" {
+		t.Errorf("tasks=%s; want [] (not null) for empty list", string(raw["tasks"]))
+	}
+	if string(raw["total"]) != "0" {
+		t.Errorf("total=%s; want 0", string(raw["total"]))
+	}
+}
+
 func TestTaskListAPIHandler_StatusTrimmingPassesTrimmedValues(t *testing.T) {
 	prov := &staticTaskListProvider{tasks: sampleTaskListTasks()[:1], total: 1}
 	srv := newTaskListAPIServer(t, prov)

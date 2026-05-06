@@ -95,13 +95,11 @@ export const mockMetrics: MetricsSnapshot = {
   success_rate: 0.857,
   avg_duration_seconds: 320,
   daily_counts: Array.from({ length: 30 }, (_, i) => {
-    const d = new Date()
-    d.setDate(d.getDate() - (29 - i))
-    return {
-      date: d.toISOString().slice(0, 10),
-      done: Math.floor(Math.random() * 8) + 1,
-      failed: Math.floor(Math.random() * 2),
-    }
+    const d = new Date('2026-01-01')
+    d.setDate(d.getDate() + i)
+    const done = (i % 7) + 1
+    const failed = i % 3 === 0 ? 1 : 0
+    return { date: d.toISOString().slice(0, 10), done, failed }
   }),
 }
 

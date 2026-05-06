@@ -69,7 +69,13 @@ func newDashboardAPIHandler(provider DashboardProvider) http.Handler {
 
 		pending := make([]dashboardAPIPending, len(snap.Pending))
 		for i, p := range snap.Pending {
-			pending[i] = dashboardAPIPending(p)
+			pending[i] = dashboardAPIPending{
+				ID:        p.ID,
+				Source:    p.Source,
+				Title:     p.Title,
+				Priority:  p.Priority,
+				CreatedAt: p.CreatedAt,
+			}
 		}
 
 		sources := make([]dashboardAPISource, len(snap.Sources))
