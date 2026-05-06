@@ -144,7 +144,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	}
 	logger := logging.NewLogger(rot, logging.LevelInfo)
 
-	registry := buildWebSourceRegistry(cfg.Discovery.SourcesEnabled)
+	registry := buildWebSourceRegistry(cfg.Discovery.SourcesEnabled, cfg)
 	// NewSQLDashboardStore returns the *sqlDashboardStore concrete type
 	// wrapped in a DashboardStore interface.  The same concrete value also
 	// implements TaskDetailStore (it has a TaskDetail method), so we
@@ -221,10 +221,13 @@ func daemonLogPathFor(configPath string) string {
 // dashboard can show its auth status. Unknown names are skipped
 // silently (lenient=true): the operator-facing surface for that error
 // is the discover command, not the dashboard.
-func buildWebSourceRegistry(enabled []string) *source.Registry {
+// cfg is passed through so sources that read options from config (e.g.
+// slack:reaction Reactions list) reflect the actual operator settings
+// rather than zero-value defaults.
+func buildWebSourceRegistry(enabled []string, cfg config.Config) *source.Registry {
 	r := source.NewRegistry()
 	for _, name := range enabled {
-		_ = registerBuiltin(r, name, config.Config{}, nil, true)
+		_ = registerBuiltin(r, name, cfg, nil, true)
 	}
 	return r
 }
