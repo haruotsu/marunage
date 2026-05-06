@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible problem in marunage.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug.
+        Please include enough detail for us to reproduce it quickly.
+  - type: input
+    id: version
+    attributes:
+      label: marunage version
+      description: Output of `marunage --version`
+      placeholder: v0.0.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, shell, and install method
+      placeholder: macOS 15, zsh, go install
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Please provide numbered steps and expected vs actual behavior.
+      placeholder: |
+        1. Run ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Paste relevant snippets from `~/.marunage/logs/audit.log` or `daemon.log`.
+        Redact secrets before posting.
+      render: shell
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, related issues, workaround, etc.

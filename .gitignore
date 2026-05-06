@@ -39,14 +39,19 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
-# review-fix-loop の作業ディレクトリ（中間レビュー / サマリー / 最終レポート）
+# review-fix-loop working directory (intermediate reviews / summaries / final report)
 .marunage-review/
 
-# 設計ドキュメント (ローカル管理 - git管理外)
-docs/
+# Internal design documents kept local-only.
+# Public, user-facing docs under docs/ ARE tracked in git — only the internal
+# planning artifacts below are ignored.
+docs/requirement.md
+docs/requirement.review.md
+docs/pr_split_plan.md
+docs/pr_*_design.md
+docs/pr_*_design.review.md
 
 CLAUDE.local.md
-.marunage-review/
 TASK.md
 .claude-task.md
 .test-list*.md

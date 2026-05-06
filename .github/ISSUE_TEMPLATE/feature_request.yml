@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose an improvement to marunage.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the proposal.
+        We prioritise requests with concrete user impact and clear invariants.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What pain are you experiencing today?
+      placeholder: As a ..., I struggle with ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like marunage to do?
+      placeholder: Add/Change ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you evaluated.
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariant impact
+      description: |
+        Does this impact any core invariants?
+        - No silent loss
+        - No silent run
+        - Reversibility
+        - Idempotency
+        - Crash safety
+      placeholder: No impact / Impacts ... because ...
+    validations:
+      required: true
+  - type: textarea
+    id: testability
+    attributes:
+      label: Suggested test plan
+      description: How should we verify this works?

@@ -1,84 +1,121 @@
 # marunage
 
-> An autonomous task-execution OSS that lets you "丸投げ" (delegate completely)
-> the steady stream of tasks arriving from Slack, email, GitHub, calendars, and
-> custom sources — while keeping observation, intervention, and rollback always
-> within reach.
+Japanese version: [README.ja.md](./README.ja.md)
 
-`marunage` runs an OODA loop on top of Claude Code sessions managed by
-[`cmux`](https://github.com/manaflow-ai/cmux): a Discovery layer polls each
-configured source, an Orient/Decide layer triages and prioritises tasks in a
-local SQLite queue, and an Execution layer launches one interactive Claude
-session per task in an isolated cmux workspace.
+> Delegate, don't abandon. Hand off Slack pings, GitHub issues, calendar
+> nudges, and emails to autonomous Claude Code sessions — while keeping
+> observation, intervention, and rollback one keystroke away.
 
-## Status
+[![CI](https://github.com/haruotsu/marunage/actions/workflows/ci.yml/badge.svg)](https://github.com/haruotsu/marunage/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/haruotsu/marunage.svg)](https://pkg.go.dev/github.com/haruotsu/marunage)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-The CLI skeleton is in place: every Phase 1 subcommand from
-[`docs/requirement.md`](./docs/requirement.md) (`init`, `doctor`, `setup`,
-`add`, `dispatch`, `web`, `config`, `daemon`, …) is wired through cobra and
-listed in `marunage --help`. Implemented commands so far:
+`marunage` (Japanese for "to delegate completely") is a single-binary,
+OSS OODA-loop runner for
+[Claude Code](https://www.anthropic.com/claude-code). It polls your inboxes
+(Gmail / Calendar / Slack / GitHub / Google Tasks / Notion / Markdown TODOs),
+triages each item with a customisable skill, and dispatches survivors into
+isolated interactive [`cmux`](https://github.com/manaflow-ai/cmux)
+workspaces — one Claude session per task, left alive after completion so
+you can step in at any time.
 
-- `marunage config get|set` — read / write `~/.marunage/config.toml`
-  (override the path with `--config`) with schema validation, a
-  timestamped `.bak` snapshot before each write, and rollback on
-  validation failure. Each successful `set` appends `config.set` +
-  `config.save` audit entries.
-- `marunage init`, `doctor`, `setup`, `add`, `list`, `show`, `done`,
-  `fail`, `promote`, `reopen`, `rm`, `render`, `export`, `clean`,
-  `status`, `discover`, `dispatch`, `reaper`, `web` — see
-  `docs/pr_split_plan.md` for the per-PR landing log.
-- `marunage loop --once | --interval D` — drives one OODA tick
-  (discover → dispatch → render) or a recurring ticker until
-  SIGINT/SIGTERM. With no flag the interval defaults to
-  `discovery.interval` from config (10m default).
-- `marunage daemon start|stop|status` — pidfile-backed background loop
-  control under `~/.marunage/daemon.pid`. `start` spawns a detached
-  `marunage loop` and redirects stdout/stderr to
-  `~/.marunage/logs/daemon.log`; `stop` sends SIGTERM and escalates to
-  SIGKILL after 10s; `status` distinguishes running / stale-pidfile /
-  no-pidfile.
+## Invariants
 
-Stubs that still print `not yet implemented` and exit non-zero:
-`run-all`, `open`, `notify`, `review`. Their implementations land in
-later PRs along the
-[PR split plan](./docs/pr_split_plan.md).
+| Invariant         | What it means                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| No silent loss    | Every discovered item lands in SQLite; skipped tasks stay until you `promote` them.    |
+| No silent run     | Every dispatch writes to `audit.log` and stores a `judgment_reason`.                   |
+| Reversibility     | Every state transition is reversible (`done` → `pending`, `skipped` → `pending`, …).   |
+| Idempotency       | Re-running discovery never duplicates tasks: `(source, external_id)` is UNIQUE.        |
+| Crash safety      | SQLite WAL + atomic sentinel for completion detection.                                 |
 
-## Build
+## How it works
 
-```sh
-make build              # produce ./bin/marunage
-./bin/marunage --version
+```mermaid
+flowchart LR
+    D["Discovery (Observe)"]
+    Q["Queue (Orient + Decide)<br/>SQLite · triage"]
+    E["Execution (Act)<br/>cmux + Claude"]
+    O["Observation<br/>Web UI · audit.log"]
+
+    D --> Q --> E --> O
+    O -.->|promote · reopen · stop| Q
 ```
 
-The version string is taken from `git describe --tags --always --dirty` at
-build time and injected into `internal/version`.
+1 task = 1 cmux workspace = 1 interactive Claude session. The runtime never
+uses `claude -p` one-shots, so you can attach and continue the conversation
+after the task completes.
+
+## Quickstart
+
+```sh
+go install github.com/haruotsu/marunage/cmd/marunage@latest
+
+marunage init              # ~/.marunage/, SQLite, pick a permission mode
+marunage doctor            # check claude / cmux / sqlite3 / gh / gws / jq
+marunage setup             # install skills, authenticate sources
+marunage loop              # discover → dispatch → render on a timer
+marunage web               # http://127.0.0.1:7777
+```
+
+Run as a daemon:
+
+```sh
+marunage daemon install    # LaunchAgent (macOS) or systemd-user unit (Linux)
+marunage daemon start
+marunage daemon logs -f
+```
+
+## Configuration
+
+`~/.marunage/config.toml` is the source of truth. Edit by hand, via
+`marunage config set | edit | wizard`, or from the Web UI — every write is
+schema-validated and atomically swapped.
+
+```toml
+[core]
+max_parallel = 3
+default_cwd = "~/works"
+
+[secrets]
+backend = "auto"   # keyring → pass → age → 0600 file → env
+
+[discovery]
+interval = "10m"
+sources_enabled = ["markdown", "github"]
+
+[execution]
+permission_mode = "bypass"   # bypass | default | acceptEdits | plan | custom
+allowed_cwd_prefixes = ["~/works", "~/src"]
+```
+
+Secrets are never written to `config.toml`.
 
 ## Development
 
+Requirements: Go 1.25+, `make`,
+[`golangci-lint`](https://golangci-lint.run/welcome/install/).
+
 ```sh
-make test         # go test ./...
-make fmt-check    # gofmt -l fails on diffs
-make vet          # go vet ./...
-make lint         # golangci-lint run ./...
+git clone https://github.com/haruotsu/marunage
+cd marunage
+
+make build      # ./bin/marunage
+make test       # go test ./...
+make lint       # golangci-lint run ./...
+make fmt-check  # fail on gofmt diffs
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same set on every push to `main`
-and on every pull request.
+CI runs the equivalent of `make fmt-check vet lint test build` on every
+push and pull request.
 
-## Layout
+## Community
 
-```
-cmd/marunage/       CLI entrypoint (the marunage binary)
-internal/cli/       cobra command tree
-internal/config/    typed config schema, Load/Save, Get/Set primitives
-internal/dispatch/  Dispatcher.Run — pending → cmux workspace + Claude session
-internal/loop/      RunOnce / Run — discover → dispatch → render orchestrator
-internal/logging/   JSON-Lines logger, rotating daemon.log writer, append-only audit.log
-internal/version/   build-time version string
-pkg/                public library packages (reserved for future phases)
-web/                Web UI assets (reserved for PR-62 onwards)
-```
+- Security reports → [SECURITY.md](./SECURITY.md) (do not open public issues)
+- Behaviour → [Code of Conduct](./CODE_OF_CONDUCT.md)
+- Bug reports & feature requests → [issue templates](./.github/ISSUE_TEMPLATE)
+- Release history → [CHANGELOG.md](./CHANGELOG.md)
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+[MIT](./LICENSE) © Haruto Yokoyama and contributors.
