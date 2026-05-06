@@ -1,5 +1,3 @@
-//go:build noweb
-
 package web
 
 import (

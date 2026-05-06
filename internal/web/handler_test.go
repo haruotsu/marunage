@@ -1,5 +1,3 @@
-//go:build noweb
-
 package web
 
 import (
@@ -7,7 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestRoutes_Healthz pins the contract for the docs/operability check
