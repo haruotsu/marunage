@@ -61,9 +61,27 @@ Run `marunage doctor` after install to verify your setup.
 
 ## Quickstart
 
-```sh
-go install github.com/haruotsu/marunage/cmd/marunage@latest
+**Recommended — pre-built release binary** (includes the full Next.js web UI):
 
+```sh
+# Download the latest release binary for your OS from:
+# https://github.com/haruotsu/marunage/releases
+```
+
+**Or build from source** (requires Node.js 22+ for the web UI):
+
+```sh
+git clone https://github.com/haruotsu/marunage
+cd marunage
+make build           # builds web UI + Go binary in one step
+./bin/marunage init  # then proceed as below
+```
+
+> `go install github.com/haruotsu/marunage/cmd/marunage@latest` works for the CLI,
+> but the web UI will be the built-in HTML template version (no Next.js).
+> Use a release binary or `make build` for the full experience.
+
+```sh
 marunage init              # ~/.marunage/, SQLite, pick a permission mode
 marunage doctor            # check claude / cmux / sqlite3 / gh / gws / jq
 marunage setup             # install skills, authenticate sources

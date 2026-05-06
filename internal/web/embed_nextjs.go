@@ -1,4 +1,4 @@
-//go:build !noweb
+//go:build nextjs
 
 package web
 

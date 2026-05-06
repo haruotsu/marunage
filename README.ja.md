@@ -57,11 +57,29 @@ flowchart LR
 
 インストール後に `marunage doctor` を実行すると、セットアップ状況を一括確認できます。
 
-## Quickstart
+## クイックスタート
+
+**推奨 — ビルド済みリリースバイナリ**（Next.js Web UI 付き）:
 
 ```sh
-go install github.com/haruotsu/marunage/cmd/marunage@latest
+# 以下から OS に合ったバイナリをダウンロード:
+# https://github.com/haruotsu/marunage/releases
+```
 
+**ソースからビルド**（Web UI には Node.js 22+ が必要）:
+
+```sh
+git clone https://github.com/haruotsu/marunage
+cd marunage
+make build           # Web UI + Go バイナリを一括ビルド
+./bin/marunage init  # 以下に続く
+```
+
+> `go install github.com/haruotsu/marunage/cmd/marunage@latest` でも CLI は動きますが、
+> Web UI は HTML テンプレート版になります（Next.js なし）。
+> フルの体験にはリリースバイナリか `make build` を使ってください。
+
+```sh
 marunage init              # ~/.marunage/ 初期化、SQLite、permission mode 選択
 marunage doctor            # claude / cmux / sqlite3 / gh / gws / jq の確認
 marunage setup             # skills 導入、source 認証
