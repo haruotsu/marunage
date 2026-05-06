@@ -1,5 +1,7 @@
 package secrets
 
+import "io"
+
 // Test-only re-exports keep the public API minimal while still letting
 // internal/secrets/*_test.go (external _test package) drive the
 // auto-select algorithm with fake backends.
@@ -82,4 +84,23 @@ func SetTTYHooksForTest(
 // makes the no-TTY and mismatch branches awkward to isolate.
 func ReadPassphraseFromTTYForTest(needConfirm bool) (string, error) {
 	return readPassphraseFromTTY(needConfirm)
+}
+
+// ProbePassAvailableForTest exposes probePassAvailable so tests can drive
+// the "binary present" / "binary missing" branches without a real pass install.
+func ProbePassAvailableForTest() error {
+	return probePassAvailable()
+}
+
+// NewPassBackendForTest creates a passBackend with injectable storeDir and
+// cmdRunner so tests can drive all Store methods without spawning a real
+// pass(1) process.
+func NewPassBackendForTest(
+	storeDir string,
+	runner func(stdin io.Reader, name string, args ...string) ([]byte, error),
+) Store {
+	return &passBackend{
+		storeDir: storeDir,
+		runCmd:   runner,
+	}
 }
