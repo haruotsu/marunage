@@ -46,6 +46,20 @@ flowchart LR
 uses `claude -p` one-shots, so you can attach and continue the conversation
 after the task completes.
 
+## Prerequisites
+
+| Tool | Required | Install |
+|------|----------|---------|
+| [Claude Code](https://claude.ai/download) (`claude`) | Always | Download from claude.ai or `npm i -g @anthropic-ai/claude-code` |
+| [cmux](https://github.com/manaflow-ai/cmux) | Always | See cmux README for install instructions |
+| Go 1.25+ | To build from source | [go.dev/dl](https://go.dev/dl/) |
+| `sqlite3` | Always | Usually pre-installed; `brew install sqlite` / `apt install sqlite3` |
+| `gh` (GitHub CLI) | GitHub source only | `brew install gh` / [cli.github.com](https://cli.github.com) |
+| `gws` (Google Workspace CLI) | Gmail / Calendar / Tasks only | See [gws README](https://github.com/haruotsu/gws) |
+| `jq` | Recommended | `brew install jq` / `apt install jq` |
+
+Run `marunage doctor` after install to verify your setup.
+
 ## Quickstart
 
 ```sh
