@@ -107,28 +107,24 @@ export const mockMetrics: MetricsSnapshot = {
 
 export const mockJournalEntries: JournalEntry[] = [
   {
-    timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    time: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
     source: 'github',
     summary: 'Dispatched task: Fix authentication bug in login flow',
-    task_id: 1,
   },
   {
-    timestamp: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+    time: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
     source: 'system',
     summary: 'Task completed: Update README with new examples',
-    task_id: 6,
   },
   {
-    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    time: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
     source: 'slack',
     summary: 'New task discovered: Add dark mode support',
-    task_id: 2,
   },
   {
-    timestamp: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    time: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
     source: 'github',
     summary: 'Task skipped: Low priority cleanup task',
-    task_id: 7,
   },
 ]
 
@@ -137,27 +133,27 @@ export const mockProject: ProjectResponse = {
     {
       name: 'Phase 1: Foundation',
       status: 'done',
-      tasks: [
-        { id: 10, title: 'Set up project structure', status: 'done' },
-        { id: 11, title: 'Configure CI/CD pipeline', status: 'done' },
-        { id: 12, title: 'Implement core data models', status: 'done' },
+      items: [
+        { id: '10', title: 'Set up project structure', status: 'done' },
+        { id: '11', title: 'Configure CI/CD pipeline', status: 'done' },
+        { id: '12', title: 'Implement core data models', status: 'done' },
       ],
     },
     {
       name: 'Phase 2: Core Features',
       status: 'running',
-      tasks: [
-        { id: 13, title: 'Build task discovery engine', status: 'done' },
-        { id: 14, title: 'Implement task execution', status: 'running' },
-        { id: 15, title: 'Add metrics collection', status: 'pending' },
+      items: [
+        { id: '13', title: 'Build task discovery engine', status: 'done' },
+        { id: '14', title: 'Implement task execution', status: 'running' },
+        { id: '15', title: 'Add metrics collection', status: 'pending' },
       ],
     },
     {
       name: 'Phase 3: UI & Polish',
       status: 'pending',
-      tasks: [
-        { id: 16, title: 'Build web dashboard', status: 'running' },
-        { id: 17, title: 'Add notifications', status: 'pending' },
+      items: [
+        { id: '16', title: 'Build web dashboard', status: 'running' },
+        { id: '17', title: 'Add notifications', status: 'pending' },
       ],
     },
   ],

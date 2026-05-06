@@ -8,7 +8,7 @@ CMD_PKG := ./cmd/marunage
 # Inject git describe as version when available; fall back to "dev".
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build test lint fmt fmt-check vet tidy clean web-install web-dev web-build web-lint build-nextjs build-all dev
+.PHONY: build test lint fmt fmt-check vet tidy clean web-install web-dev web-build web-lint build-nextjs build-all dev serve
 
 # Single-quote the -ldflags value so shell metacharacters that may appear in an
 # unexpected git tag name (backticks, dollar-paren command substitution, etc.)
@@ -72,3 +72,7 @@ build-all: build-nextjs
 # Run `marunage web` in a separate terminal first.
 dev: web-install
 	cd web && npm run dev
+
+# Build and immediately serve with the embedded web UI (single command for local preview).
+serve: build-nextjs
+	$(BIN) web

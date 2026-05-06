@@ -99,22 +99,36 @@ export interface MetricsSnapshot {
 }
 
 export interface JournalEntry {
-  timestamp: string
+  time: string
   source: string
   summary: string
-  task_id?: number
+}
+
+// JournalAPIResponse mirrors the Go journalAPIResponse JSON shape.
+export interface JournalAPIResponse {
+  entries: JournalEntry[]
+}
+
+export interface ProjectItem {
+  id: string
+  title: string
+  status: string
 }
 
 export interface ProjectPhase {
   name: string
   status: string
-  tasks: ProjectPhaseTask[]
+  items: ProjectItem[]
 }
 
-export interface ProjectPhaseTask {
-  id: number
-  title: string
-  status: string
+// InstalledSkillsResponse mirrors the Go installedSkillsResponse JSON shape.
+export interface InstalledSkillsResponse {
+  skills: SkillInfo[]
+}
+
+// SkillRegistryResponse mirrors the Go registryResponse JSON shape.
+export interface SkillRegistryResponse {
+  skills: SkillRegistryEntry[]
 }
 
 export interface ProjectResponse {
