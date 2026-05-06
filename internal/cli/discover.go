@@ -3,16 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/source"
-	"github.com/haruotsu/marunage/internal/source/markdown"
-	"github.com/haruotsu/marunage/internal/source/slack"
-	"github.com/haruotsu/marunage/internal/source/slack/reaction"
 )
 
 // newDiscoverCmd builds the `marunage discover` command. PR-70 ships only
@@ -59,79 +55,27 @@ func newDiscoverCmd() *cobra.Command {
 	return cmd
 }
 
-// builtinRegistrar is the registration-side knowledge for one built-in
-// plugin: how to attach it to a Registry given the user's CLI flags.
-// Returning a registrar (rather than calling Register inline) keeps the
-// (name, register, --file requirement) triple in one table, which is the
-// only way the "unknown source" error message and the actual built-in set
-// stay in lockstep when PR-80+ adds Gmail / Slack / etc.
-type builtinRegistrar func(r *source.Registry, files []string) error
-
-// builtins is the single source of truth for "which Discovery sources can
-// `marunage discover --once --source X` resolve right now". Adding a new
-// built-in (PR-80 Gmail, PR-82 Slack, ...) means appending one entry here
-// and nothing else; the unknown-source error and the registration switch
-// derive their behaviour from this map.
-var builtins = map[string]builtinRegistrar{
-	"markdown": func(r *source.Registry, files []string) error {
-		if len(files) == 0 {
-			return fmt.Errorf("source markdown: --file is required (at least one path)")
-		}
-		if err := markdown.RegisterBuiltin(r, markdown.WithFiles(files...)); err != nil {
-			return fmt.Errorf("register markdown: %w", err)
-		}
-		return nil
-	},
-	// PR-82: register the Slack source with no Client wired. Discover-once
-	// then surfaces ErrClientNotConfigured at List time, which is the
-	// documented "user has not run `marunage setup slack` yet" signal.
-	// The runtime daemon (PR-71+) supplies the real Client via dependency
-	// injection at startup; until then `--source slack` is reachable but
-	// inert, so the unknown-source error message stays correct as soon as
-	// PR-82 lands.
-	"slack": func(r *source.Registry, _ []string) error {
-		if err := slack.RegisterBuiltin(r); err != nil {
-			return fmt.Errorf("register slack: %w", err)
-		}
-		return nil
-	},
-	// PR-100: register the Slack Reaction Trigger source with no Client wired.
-	// Discover-once surfaces ErrClientNotConfigured at List time, signalling
-	// that the user has not configured the reaction client yet. The daemon
-	// loop supplies options (WithReactions / WithDMOnComplete) from config
-	// when discovery.slack.reaction_trigger.enabled is true.
-	"slack:reaction": func(r *source.Registry, _ []string) error {
-		if err := reaction.RegisterBuiltin(r); err != nil {
-			return fmt.Errorf("register slack:reaction: %w", err)
-		}
-		return nil
-	},
-}
-
 // runDiscoverOnce wires the registry lookup, source-specific configuration,
 // and JSON serialisation. Pulled out of the cobra closure so tests could in
 // principle swap the registry constructor without touching cobra; today
 // they exercise it through Execute(...) end-to-end.
 func runDiscoverOnce(cmd *cobra.Command, sourceName string, files []string) error {
+	// markdown requires at least one --file in discover mode; the plugin
+	// can register without files but List would return zero tasks silently.
+	if sourceName == "markdown" && len(files) == 0 {
+		return fmt.Errorf("source markdown: --file is required (at least one path)")
+	}
 	r := source.NewRegistry()
 	// Built-ins register at command time rather than at package init so a
 	// test importing this package does not get a global side effect — and
 	// so failures (e.g. embedded manifest drift) attach to the user-
 	// visible command, not to a TestMain we do not own.
-	if reg, ok := builtins[sourceName]; ok {
-		if err := reg(r, files); err != nil {
-			return err
-		}
+	if err := registerBuiltin(r, sourceName, config.Config{}, files, false); err != nil {
+		return err
 	}
-	// An unknown source falls through with no registration; r.Get below
-	// returns ErrPluginNotFound, which we translate into a user-friendly
-	// message listing the built-ins this binary knows about.
 
 	plugin, err := r.Get(sourceName)
 	if err != nil {
-		if errors.Is(err, source.ErrPluginNotFound) {
-			return fmt.Errorf("unknown source %q (built-in plugins: %v)", sourceName, builtinNames())
-		}
 		return err
 	}
 
@@ -143,20 +87,6 @@ func runDiscoverOnce(cmd *cobra.Command, sourceName string, files []string) erro
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(tasksToJSON(tasks))
-}
-
-// builtinNames returns the sorted list of built-in plugin names derived
-// from the builtins table. Sorting keeps the user-facing error message
-// stable across runs (Go's map iteration is randomised); deriving from
-// the same map the registration switch uses prevents the two from
-// drifting when PR-80+ lands.
-func builtinNames() []string {
-	names := make([]string, 0, len(builtins))
-	for n := range builtins {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // tasksToJSON converts source.Task values into snake_case-keyed JSON
