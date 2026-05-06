@@ -7,7 +7,6 @@ English version: [README.md](./README.md)
 > 常にワンアクションで可能にしておきます。
 
 [![CI](https://github.com/haruotsu/marunage/actions/workflows/ci.yml/badge.svg)](https://github.com/haruotsu/marunage/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/haruotsu/marunage.svg)](https://pkg.go.dev/github.com/haruotsu/marunage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 `marunage`（「丸投げ」由来）は、[Claude Code](https://www.anthropic.com/claude-code)
