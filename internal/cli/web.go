@@ -15,7 +15,6 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/source"
-	"github.com/haruotsu/marunage/internal/source/markdown"
 	"github.com/haruotsu/marunage/internal/store"
 	"github.com/haruotsu/marunage/internal/web"
 )
@@ -145,7 +144,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	}
 	logger := logging.NewLogger(rot, logging.LevelInfo)
 
-	registry := buildWebSourceRegistry(cfg.Discovery.SourcesEnabled)
+	registry := buildWebSourceRegistry(cfg.Discovery.SourcesEnabled, cfg)
 	// NewSQLDashboardStore returns the *sqlDashboardStore concrete type
 	// wrapped in a DashboardStore interface.  The same concrete value also
 	// implements TaskDetailStore (it has a TaskDetail method), so we
@@ -217,34 +216,18 @@ func daemonLogPathFor(configPath string) string {
 }
 
 // buildWebSourceRegistry assembles the source.Registry the web
-// dashboard's source-status panel reads from.  We register every
-// known built-in whose name appears in discovery.sources_enabled so
-// the dashboard can show its auth status — Markdown's AuthStatus is
-// constant ("authenticated") regardless of the configured file list,
-// so registering the plugin with no files is fine for read-side
-// display.  Unknown names are skipped silently: the dashboard panel
-// would otherwise emit a noisy "registration failed" row, but the
-// operator-facing surface for that error is the discover command.
-//
-// FIXME(pr-70): the switch below duplicates the
-// `cli/discover.go::builtins` table.  When PR-70 lands the source
-// pluggability rework, both call sites should converge on a single
-// `source.RegisterEnabledBuiltins(r, enabled)` so adding a new
-// built-in is a one-file change again (the design-review pluggability
-// agent flagged this).  Keeping the duplication in PR-63 because the
-// discover-side builtins map carries Markdown-specific
-// `WithFiles(...)` plumbing that the dashboard does not need.
-func buildWebSourceRegistry(enabled []string) *source.Registry {
+// dashboard's source-status panel reads from. Every known built-in
+// whose name appears in discovery.sources_enabled is registered so the
+// dashboard can show its auth status. Unknown names are skipped
+// silently (lenient=true): the operator-facing surface for that error
+// is the discover command, not the dashboard.
+// cfg is passed through so sources that read options from config (e.g.
+// slack:reaction Reactions list) reflect the actual operator settings
+// rather than zero-value defaults.
+func buildWebSourceRegistry(enabled []string, cfg config.Config) *source.Registry {
 	r := source.NewRegistry()
 	for _, name := range enabled {
-		switch name {
-		case "markdown":
-			// Ignore the registration error: a duplicate or
-			// manifest-self-check failure here would taint
-			// the dashboard but should not stop `marunage web`
-			// from serving the rest of the panels.
-			_ = markdown.RegisterBuiltin(r)
-		}
+		_ = registerBuiltin(r, name, cfg, nil, true)
 	}
 	return r
 }

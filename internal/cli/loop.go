@@ -20,8 +20,6 @@ import (
 	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/render"
 	"github.com/haruotsu/marunage/internal/source"
-	"github.com/haruotsu/marunage/internal/source/markdown"
-	"github.com/haruotsu/marunage/internal/source/slack/reaction"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -155,30 +153,14 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 }
 
 // registerEnabledSources walks discovery.sources_enabled and attaches
-// every built-in plugin the user opted into. Markdown is the only built-
-// in today; PR-80+ will append Gmail / Slack / GitHub via the same
-// registrar table the discover CLI uses.
-//
-// An enabled source with no built-in registrar is treated as a config
-// error rather than a silent skip — typoing "markdwn" should fail loud
-// instead of producing an empty discover phase.
+// every built-in plugin the user opted into. An enabled source with no
+// built-in registrar is treated as a config error rather than a silent
+// skip — typoing "markdwn" should fail loud instead of producing an
+// empty discover phase.
 func registerEnabledSources(r *source.Registry, cfg config.Config) error {
 	for _, name := range cfg.Discovery.SourcesEnabled {
-		switch name {
-		case "markdown":
-			if err := markdown.RegisterBuiltin(r); err != nil {
-				return fmt.Errorf("register markdown: %w", err)
-			}
-		case "slack:reaction":
-			opts := []reaction.Option{
-				reaction.WithReactions(cfg.Discovery.Slack.ReactionTrigger.Reactions),
-				reaction.WithDMOnComplete(cfg.Discovery.Slack.ReactionTrigger.DMOnComplete),
-			}
-			if err := reaction.RegisterBuiltin(r, opts...); err != nil {
-				return fmt.Errorf("register slack:reaction: %w", err)
-			}
-		default:
-			return fmt.Errorf("loop: unknown discovery.sources_enabled entry %q (built-in plugins: markdown, slack:reaction)", name)
+		if err := registerBuiltin(r, name, cfg, nil, false); err != nil {
+			return fmt.Errorf("loop: %w", err)
 		}
 	}
 	return nil
