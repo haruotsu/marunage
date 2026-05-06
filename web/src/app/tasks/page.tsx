@@ -23,7 +23,7 @@ function TaskDetailContent() {
   const id = idStr ? parseInt(idStr, 10) : null
 
   const [task, setTask] = useState<TaskDetail | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(id !== null)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
@@ -31,21 +31,21 @@ function TaskDetailContent() {
   const refetch = useCallback(() => setTick((n) => n + 1), [])
 
   useEffect(() => {
-    if (!id) {
-      setLoading(false)
-      return
-    }
-    setLoading(true)
+    if (!id) return
+    let active = true
     getTask(id)
       .then((t) => {
+        if (!active) return
         setTask(t)
         setError(null)
         setLoading(false)
       })
       .catch((e: unknown) => {
+        if (!active) return
         setError(e instanceof Error ? e.message : 'Failed to load task')
         setLoading(false)
       })
+    return () => { active = false }
   }, [id, tick])
 
   function doAction(fn: () => Promise<void>) {
