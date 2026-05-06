@@ -190,6 +190,16 @@ func TestValidate(t *testing.T) {
 			},
 			wantErr: "",
 		},
+		{
+			name:    "discovery.gmail.newer_than_days rejects negative",
+			mutate:  func(c *Config) { c.Discovery.Gmail.NewerThanDays = -1 },
+			wantErr: "discovery.gmail.newer_than_days",
+		},
+		{
+			name:    "discovery.gmail.max_results rejects negative",
+			mutate:  func(c *Config) { c.Discovery.Gmail.MaxResults = -1 },
+			wantErr: "discovery.gmail.max_results",
+		},
 	}
 
 	for _, tc := range cases {

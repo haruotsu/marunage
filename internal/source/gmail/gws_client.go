@@ -14,13 +14,13 @@ import (
 const defaultMaxResults = 50
 
 // Runner is the shell-out function shape. Tests inject a scripted
-// runner; production wires DefaultRunner via exec.CommandContext.
+// runner; production wires defaultRunner via exec.CommandContext.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// DefaultRunner executes the binary via os/exec and returns stdout.
+// defaultRunner executes the binary via os/exec and returns stdout.
 // Stderr is discarded to prevent OAuth tokens or PII from leaking into
 // logs via (*exec.ExitError).Stderr.
-func DefaultRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
+func defaultRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = io.Discard
 	out, err := cmd.Output()
@@ -74,7 +74,7 @@ func NewGWSClient(opts ...GWSOption) *GWSClient {
 	c := &GWSClient{
 		binary:     "gws",
 		maxResults: defaultMaxResults,
-		runner:     DefaultRunner,
+		runner:     defaultRunner,
 	}
 	for _, o := range opts {
 		o(c)
@@ -88,7 +88,11 @@ func NewGWSClient(opts ...GWSOption) *GWSClient {
 func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 	q := query
 	if c.newerThanDays > 0 {
-		q = fmt.Sprintf("%s newer_than:%dd", q, c.newerThanDays)
+		if q == "" {
+			q = fmt.Sprintf("newer_than:%dd", c.newerThanDays)
+		} else {
+			q = fmt.Sprintf("%s newer_than:%dd", q, c.newerThanDays)
+		}
 	}
 
 	listParams := map[string]any{
@@ -111,7 +115,7 @@ func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 		return nil, fmt.Errorf("gmail gws: decode messages.list: %w", err)
 	}
 	if len(listResp.Messages) == 0 {
-		return nil, nil
+		return []Message{}, nil
 	}
 
 	msgs := make([]Message, 0, len(listResp.Messages))

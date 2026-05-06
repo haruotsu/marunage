@@ -220,6 +220,52 @@ func TestGWSListBuildsGetCommandPerMessage(t *testing.T) {
 	}
 }
 
+func TestGWSListMultipleMessagesAllReturned(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{
+			messageListJSON(t, []string{"a", "b", "c"}),
+			messageGetJSON(t, "a", "ta", "snip-a", []string{"INBOX"}, "Subj A", ""),
+			messageGetJSON(t, "b", "tb", "snip-b", []string{"INBOX"}, "Subj B", ""),
+			messageGetJSON(t, "c", "tc", "snip-c", []string{"INBOX"}, "Subj C", ""),
+		},
+		outErrs: []error{nil, nil, nil, nil},
+	}
+	c := NewGWSClient(WithRunner(runner.run))
+	msgs, err := c.List(context.Background(), "is:unread")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d, want 3", len(msgs))
+	}
+	if len(runner.calls) != 4 {
+		t.Errorf("calls = %d, want 4 (1 list + 3 get)", len(runner.calls))
+	}
+	for i, wantID := range []string{"a", "b", "c"} {
+		if msgs[i].ID != wantID {
+			t.Errorf("msgs[%d].ID = %q, want %q", i, msgs[i].ID, wantID)
+		}
+	}
+}
+
+func TestGWSListWithBinaryOption(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{messageListJSON(t, nil)},
+		outErrs: []error{nil},
+	}
+	c := NewGWSClient(WithRunner(runner.run), WithBinary("/custom/gws"))
+	if _, err := c.List(context.Background(), "is:unread"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if runner.calls[0].name != "/custom/gws" {
+		t.Errorf("binary = %q, want /custom/gws", runner.calls[0].name)
+	}
+}
+
 // --- G3: Parse message fields -------------------------------------------------
 
 func TestGWSListParsesSubjectSnippetAndLabels(t *testing.T) {
@@ -276,6 +322,9 @@ func TestGWSListEmptyReturnsEmptySlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
+	if msgs == nil {
+		t.Errorf("want non-nil empty slice, got nil")
+	}
 	if len(msgs) != 0 {
 		t.Errorf("len = %d, want 0", len(msgs))
 	}
@@ -327,6 +376,31 @@ func TestGWSListZeroNewerThanDoesNotAppend(t *testing.T) {
 	q, _ := got["q"].(string)
 	if strings.Contains(q, "newer_than") {
 		t.Errorf("q = %q, want no newer_than when days=0", q)
+	}
+}
+
+func TestGWSListNewerThanNoLeadingSpaceOnEmptyQuery(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{messageListJSON(t, nil)},
+		outErrs: []error{nil},
+	}
+	c := NewGWSClient(WithRunner(runner.run), WithNewerThan(3))
+	if _, err := c.List(context.Background(), ""); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	params := findArg(runner.calls[0].args, "--params")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(params), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	q, _ := got["q"].(string)
+	if strings.HasPrefix(q, " ") {
+		t.Errorf("q = %q, want no leading space", q)
+	}
+	if q != "newer_than:3d" {
+		t.Errorf("q = %q, want newer_than:3d", q)
 	}
 }
 
@@ -536,6 +610,15 @@ func TestGWSAuthenticateInteractiveRunsProbe(t *testing.T) {
 	err := c.Authenticate(context.Background(), source.SetupOptions{NonInteractive: false})
 	if !errors.Is(err, upstream) {
 		t.Errorf("err = %v, want wrap of upstream", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %d, want 1 (probe only)", len(runner.calls))
+	}
+	wantSubcmd := []string{"gmail", "users", "getProfile"}
+	for i, w := range wantSubcmd {
+		if i >= len(runner.calls[0].args) || runner.calls[0].args[i] != w {
+			t.Errorf("probe args[%d] = %q, want %q", i, runner.calls[0].args[i], w)
+		}
 	}
 }
 

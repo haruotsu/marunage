@@ -299,6 +299,12 @@ func (c Config) Validate() error {
 			return fmt.Errorf("journal.interval: must be > 0 (got %v)", d)
 		}
 	}
+	if c.Discovery.Gmail.NewerThanDays < 0 {
+		return fmt.Errorf("discovery.gmail.newer_than_days: must be >= 0 (got %d)", c.Discovery.Gmail.NewerThanDays)
+	}
+	if c.Discovery.Gmail.MaxResults < 0 {
+		return fmt.Errorf("discovery.gmail.max_results: must be >= 0 (got %d)", c.Discovery.Gmail.MaxResults)
+	}
 	rt := c.Discovery.Slack.ReactionTrigger
 	if rt.Enabled && len(rt.Reactions) == 0 {
 		return fmt.Errorf("discovery.slack.reaction_trigger.reactions: must be non-empty when enabled = true")
