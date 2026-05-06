@@ -82,6 +82,10 @@ type Config struct {
 	// site-specific secret name does not have to rename its env at
 	// runtime.
 	AgePassphraseEnv string
+	// PassStoreDir overrides the pass password-store directory used by the
+	// pass backend. Empty means "use $PASSWORD_STORE_DIR or ~/.password-store".
+	// Tests pass a t.TempDir() here so they never touch ~/.password-store.
+	PassStoreDir string
 }
 
 // ErrUnsupported is returned by backends that are recognised by name but
