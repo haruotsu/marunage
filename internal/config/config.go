@@ -51,6 +51,10 @@ type DiscoveryGmail struct {
 	// NewerThanDays limits discovery to messages received within the past N days.
 	// 0 means no time filter. Appended to Query as "newer_than:Nd".
 	NewerThanDays int `toml:"newer_than_days"`
+	// MaxResults caps the number of messages fetched per discovery run.
+	// 0 uses the GWSClient default (50). Each result costs one messages.get
+	// subprocess, so keeping this small bounds the N+1 subprocess count.
+	MaxResults int `toml:"max_results"`
 }
 
 type DiscoverySlack struct {

@@ -11,6 +11,8 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 )
 
+const defaultMaxResults = 50
+
 // Runner is the shell-out function shape. Tests inject a scripted
 // runner; production wires DefaultRunner via exec.CommandContext.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
@@ -35,6 +37,7 @@ func DefaultRunner(ctx context.Context, name string, args ...string) ([]byte, er
 // GWSClient implements Client by shelling out to the `gws` binary.
 type GWSClient struct {
 	binary        string
+	maxResults    int
 	newerThanDays int
 	runner        Runner
 }
@@ -42,9 +45,17 @@ type GWSClient struct {
 // GWSOption is the functional-option shape NewGWSClient accepts.
 type GWSOption func(*GWSClient)
 
-// WithGWSBinary overrides the path to the gws binary. Defaults to "gws".
-func WithGWSBinary(path string) GWSOption {
+// WithBinary overrides the path to the gws binary. Defaults to "gws".
+func WithBinary(path string) GWSOption {
 	return func(c *GWSClient) { c.binary = path }
+}
+
+// WithMaxResults limits the number of messages fetched per List call.
+// Defaults to defaultMaxResults (50). Bounding this is critical because
+// List issues one messages.get per result (N+1), so an unbounded fetch
+// spawns up to Gmail-API-max (500) subprocesses per discovery tick.
+func WithMaxResults(n int) GWSOption {
+	return func(c *GWSClient) { c.maxResults = n }
 }
 
 // WithNewerThan limits discovery to messages newer than n days by
@@ -53,16 +64,17 @@ func WithNewerThan(days int) GWSOption {
 	return func(c *GWSClient) { c.newerThanDays = days }
 }
 
-// WithGWSRunner overrides the binary executor for testing.
-func WithGWSRunner(r Runner) GWSOption {
+// WithRunner overrides the binary executor for testing.
+func WithRunner(r Runner) GWSOption {
 	return func(c *GWSClient) { c.runner = r }
 }
 
 // NewGWSClient constructs a GWSClient with sensible defaults.
 func NewGWSClient(opts ...GWSOption) *GWSClient {
 	c := &GWSClient{
-		binary: "gws",
-		runner: DefaultRunner,
+		binary:     "gws",
+		maxResults: defaultMaxResults,
+		runner:     DefaultRunner,
 	}
 	for _, o := range opts {
 		o(c)
@@ -72,8 +84,7 @@ func NewGWSClient(opts ...GWSOption) *GWSClient {
 
 // List implements Client.List. It calls messages.list to get IDs then
 // messages.get (format=metadata) for each to fetch subject, snippet,
-// labels, and from. The N+1 is bounded by maxResults in the list call
-// and is acceptable given the narrow unread-mail query.
+// labels, and from. The N+1 is bounded by maxResults (default 50).
 func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 	q := query
 	if c.newerThanDays > 0 {
@@ -81,10 +92,14 @@ func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 	}
 
 	listParams := map[string]any{
-		"userId": "me",
-		"q":      q,
+		"userId":     "me",
+		"q":          q,
+		"maxResults": c.maxResults,
 	}
-	listJSON, _ := json.Marshal(listParams)
+	listJSON, err := json.Marshal(listParams)
+	if err != nil {
+		return nil, fmt.Errorf("gmail gws: encode list params: %w", err)
+	}
 	out, err := c.runner(ctx, c.binary, "gmail", "users", "messages", "list",
 		"--params", string(listJSON), "--format", "json")
 	if err != nil {
@@ -107,7 +122,10 @@ func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 			"format":          "metadata",
 			"metadataHeaders": []string{"Subject", "From"},
 		}
-		getJSON, _ := json.Marshal(getParams)
+		getJSON, err := json.Marshal(getParams)
+		if err != nil {
+			return nil, fmt.Errorf("gmail gws: encode get params %s: %w", stub.ID, err)
+		}
 		out, err := c.runner(ctx, c.binary, "gmail", "users", "messages", "get",
 			"--params", string(getJSON), "--format", "json")
 		if err != nil {
@@ -125,15 +143,21 @@ func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 // ModifyLabels implements Client.ModifyLabels via messages.modify.
 func (c *GWSClient) ModifyLabels(ctx context.Context, id string, req ModifyLabelsRequest) error {
 	params := map[string]any{"userId": "me", "id": id}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("gmail gws: encode modify params: %w", err)
+	}
 
 	body := map[string]any{
 		"addLabelIds":    req.AddLabels,
 		"removeLabelIds": req.RemoveLabels,
 	}
-	bodyJSON, _ := json.Marshal(body)
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("gmail gws: encode modify body: %w", err)
+	}
 
-	_, err := c.runner(ctx, c.binary, "gmail", "users", "messages", "modify",
+	_, err = c.runner(ctx, c.binary, "gmail", "users", "messages", "modify",
 		"--params", string(paramsJSON),
 		"--json", string(bodyJSON),
 		"--format", "json")
@@ -168,12 +192,10 @@ func (c *GWSClient) Authenticate(ctx context.Context, opts source.SetupOptions) 
 }
 
 // probe calls users.getProfile — the cheapest authenticated Gmail
-// endpoint — and returns the runner error verbatim. Shared between
-// AuthStatus (which downgrades errors to AuthNotConfigured) and
-// Authenticate (which surfaces them).
+// endpoint — and returns the runner error verbatim.
 func (c *GWSClient) probe(ctx context.Context) error {
-	params := map[string]any{"userId": "me"}
-	paramsJSON, _ := json.Marshal(params)
+	// map[string]any with string primitives cannot fail to marshal.
+	paramsJSON, _ := json.Marshal(map[string]any{"userId": "me"})
 	_, err := c.runner(ctx, c.binary, "gmail", "users", "getProfile",
 		"--params", string(paramsJSON), "--format", "json")
 	return err

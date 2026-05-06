@@ -95,7 +95,7 @@ func TestGWSListBuildsListCommand(t *testing.T) {
 		outputs: [][]byte{messageListJSON(t, nil)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	if _, err := c.List(context.Background(), "is:unread"); err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -129,6 +129,53 @@ func TestGWSListBuildsListCommand(t *testing.T) {
 	if findArg(call.args, "--format") != "json" {
 		t.Errorf("--format missing or wrong: %v", call.args)
 	}
+	// maxResults must be set to bound the N+1 get calls.
+	if got["maxResults"] == nil {
+		t.Errorf("maxResults missing from params: %v", got)
+	}
+}
+
+func TestGWSListDefaultMaxResults(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{messageListJSON(t, nil)},
+		outErrs: []error{nil},
+	}
+	c := NewGWSClient(WithRunner(runner.run))
+	if _, err := c.List(context.Background(), "is:unread"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	params := findArg(runner.calls[0].args, "--params")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(params), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	maxResults, ok := got["maxResults"].(float64)
+	if !ok || maxResults <= 0 {
+		t.Errorf("maxResults = %v, want positive number", got["maxResults"])
+	}
+}
+
+func TestGWSListWithMaxResultsOption(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		outputs: [][]byte{messageListJSON(t, nil)},
+		outErrs: []error{nil},
+	}
+	c := NewGWSClient(WithRunner(runner.run), WithMaxResults(10))
+	if _, err := c.List(context.Background(), "is:unread"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	params := findArg(runner.calls[0].args, "--params")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(params), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["maxResults"] != float64(10) {
+		t.Errorf("maxResults = %v, want 10", got["maxResults"])
+	}
 }
 
 // --- G2: List issues get per message -----------------------------------------
@@ -143,7 +190,7 @@ func TestGWSListBuildsGetCommandPerMessage(t *testing.T) {
 		},
 		outErrs: []error{nil, nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	if _, err := c.List(context.Background(), "is:unread"); err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -185,7 +232,7 @@ func TestGWSListParsesSubjectSnippetAndLabels(t *testing.T) {
 		},
 		outErrs: []error{nil, nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	msgs, err := c.List(context.Background(), "is:unread")
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -224,7 +271,7 @@ func TestGWSListEmptyReturnsEmptySlice(t *testing.T) {
 		outputs: [][]byte{[]byte(`{}`)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	msgs, err := c.List(context.Background(), "is:unread")
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -246,7 +293,7 @@ func TestGWSListAppendsNewerThanToQuery(t *testing.T) {
 		outputs: [][]byte{messageListJSON(t, nil)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run), WithNewerThan(7))
+	c := NewGWSClient(WithRunner(runner.run), WithNewerThan(7))
 	if _, err := c.List(context.Background(), "is:unread"); err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -268,7 +315,7 @@ func TestGWSListZeroNewerThanDoesNotAppend(t *testing.T) {
 		outputs: [][]byte{messageListJSON(t, nil)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run)) // default newerThanDays = 0
+	c := NewGWSClient(WithRunner(runner.run)) // default newerThanDays = 0
 	if _, err := c.List(context.Background(), "is:unread"); err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -293,7 +340,7 @@ func TestGWSListWrapsListRunnerError(t *testing.T) {
 		outputs: [][]byte{nil},
 		outErrs: []error{upstream},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	_, err := c.List(context.Background(), "is:unread")
 	if !errors.Is(err, upstream) {
 		t.Errorf("err = %v, want wrap of upstream", err)
@@ -308,7 +355,7 @@ func TestGWSListWrapsGetRunnerError(t *testing.T) {
 		outputs: [][]byte{messageListJSON(t, []string{"m1"}), nil},
 		outErrs: []error{nil, upstream},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	_, err := c.List(context.Background(), "is:unread")
 	if !errors.Is(err, upstream) {
 		t.Errorf("err = %v, want wrap of upstream", err)
@@ -325,7 +372,7 @@ func TestGWSListWrapsMalformedListJSON(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"messages": [`)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	_, err := c.List(context.Background(), "is:unread")
 	if err == nil {
 		t.Fatalf("want non-nil error for malformed JSON")
@@ -342,7 +389,7 @@ func TestGWSListWrapsMalformedGetJSON(t *testing.T) {
 		outputs: [][]byte{messageListJSON(t, []string{"m1"}), []byte(`{bad json`)},
 		outErrs: []error{nil, nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	_, err := c.List(context.Background(), "is:unread")
 	if err == nil {
 		t.Fatalf("want non-nil error for malformed get JSON")
@@ -358,7 +405,7 @@ func TestGWSModifyLabelsBuildsCommand(t *testing.T) {
 		outputs: [][]byte{[]byte(`{}`)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	err := c.ModifyLabels(context.Background(), "msg123", ModifyLabelsRequest{
 		AddLabels:    []string{"auto-archived"},
 		RemoveLabels: []string{"UNREAD"},
@@ -410,7 +457,7 @@ func TestGWSModifyLabelsWrapsRunnerError(t *testing.T) {
 		outputs: [][]byte{nil},
 		outErrs: []error{upstream},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	err := c.ModifyLabels(context.Background(), "ghost", ModifyLabelsRequest{})
 	if !errors.Is(err, upstream) {
 		t.Errorf("err = %v, want wrap of upstream", err)
@@ -426,7 +473,7 @@ func TestGWSAuthStatusAuthenticated(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"emailAddress":"me@example.com"}`)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	got, err := c.AuthStatus(context.Background())
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
@@ -449,7 +496,7 @@ func TestGWSAuthStatusNotConfiguredOnRunnerFailure(t *testing.T) {
 		outputs: [][]byte{nil},
 		outErrs: []error{errors.New("gws: auth error")},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	got, err := c.AuthStatus(context.Background())
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
@@ -464,7 +511,7 @@ func TestGWSAuthStatusNotConfiguredOnRunnerFailure(t *testing.T) {
 func TestGWSAuthenticateNonInteractiveReturnsError(t *testing.T) {
 	t.Parallel()
 
-	c := NewGWSClient(WithGWSRunner(func(context.Context, string, ...string) ([]byte, error) {
+	c := NewGWSClient(WithRunner(func(context.Context, string, ...string) ([]byte, error) {
 		t.Fatalf("runner must not be called in non-interactive mode")
 		return nil, nil
 	}))
@@ -485,7 +532,7 @@ func TestGWSAuthenticateInteractiveRunsProbe(t *testing.T) {
 		outputs: [][]byte{nil},
 		outErrs: []error{upstream},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	err := c.Authenticate(context.Background(), source.SetupOptions{NonInteractive: false})
 	if !errors.Is(err, upstream) {
 		t.Errorf("err = %v, want wrap of upstream", err)
@@ -499,7 +546,7 @@ func TestGWSAuthenticateInteractiveSucceedsWhenProbeOK(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"emailAddress":"me@example.com"}`)},
 		outErrs: []error{nil},
 	}
-	c := NewGWSClient(WithGWSRunner(runner.run))
+	c := NewGWSClient(WithRunner(runner.run))
 	if err := c.Authenticate(context.Background(), source.SetupOptions{}); err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
