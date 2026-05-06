@@ -216,3 +216,71 @@ func TestTaskListAPIHandler_ProviderError(t *testing.T) {
 		t.Errorf("response leaks raw error detail: %q", w.Body.String())
 	}
 }
+
+func TestTaskListAPIHandler_LimitCap(t *testing.T) {
+	prov := &staticTaskListProvider{tasks: sampleTaskListTasks(), total: 2}
+	srv := newTaskListAPIServer(t, prov)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?limit=9999999", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200", w.Code)
+	}
+	if prov.gotFilter.Limit != maxTaskListLimit {
+		t.Errorf("Limit=%d; want %d (capped)", prov.gotFilter.Limit, maxTaskListLimit)
+	}
+}
+
+func TestTaskListAPIHandler_InvalidLimitUsesDefault(t *testing.T) {
+	for _, q := range []string{"limit=0", "limit=-5", "limit=abc"} {
+		t.Run(q, func(t *testing.T) {
+			prov := &staticTaskListProvider{tasks: sampleTaskListTasks(), total: 2}
+			srv := newTaskListAPIServer(t, prov)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/tasks?"+q, nil)
+			w := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d; want 200", w.Code)
+			}
+			if prov.gotFilter.Limit != defaultTaskListLimit {
+				t.Errorf("Limit=%d; want %d (default) for query %q", prov.gotFilter.Limit, defaultTaskListLimit, q)
+			}
+		})
+	}
+}
+
+func TestTaskListAPIHandler_InvalidStatusReturns400(t *testing.T) {
+	prov := &staticTaskListProvider{tasks: sampleTaskListTasks(), total: 2}
+	srv := newTaskListAPIServer(t, prov)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?status=invalid_status", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d; want 400 for invalid status", w.Code)
+	}
+}
+
+func TestTaskListAPIHandler_StatusTrimmingPassesTrimmedValues(t *testing.T) {
+	prov := &staticTaskListProvider{tasks: sampleTaskListTasks()[:1], total: 1}
+	srv := newTaskListAPIServer(t, prov)
+
+	// Spaces around status values should be trimmed before passing to provider.
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?status=pending%2C+running", nil)
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d; want 200; body=%q", w.Code, w.Body.String())
+	}
+	for _, s := range prov.gotFilter.Statuses {
+		if s != strings.TrimSpace(s) {
+			t.Errorf("filter.Statuses contains untrimmed value %q", s)
+		}
+	}
+}

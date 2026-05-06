@@ -8,7 +8,7 @@ CMD_PKG := ./cmd/marunage
 # Inject git describe as version when available; fall back to "dev".
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build test lint fmt fmt-check vet tidy clean web-install web-dev web-build web-lint build-nextjs build-all
+.PHONY: build test lint fmt fmt-check vet tidy clean web-install web-dev web-build web-lint build-nextjs build-all dev
 
 # Single-quote the -ldflags value so shell metacharacters that may appear in an
 # unexpected git tag name (backticks, dollar-paren command substitution, etc.)
@@ -57,10 +57,16 @@ web-build:
 web-lint:
 	cd web && npm run lint
 
-# Build Go binary with embedded Next.js static export.
-build-nextjs: web-build
+# Build Go binary with embedded Next.js static export (recommended for production).
+build-nextjs: web-install web-build
 	@mkdir -p $(BIN_DIR)
 	go build -tags nextjs -ldflags '-X $(PKG)/internal/version.version=$(VERSION)' -o $(BIN) $(CMD_PKG)
 
-# Full build: web assets + Go binary (without embed).
-build-all: web-build build
+# Full production build: install web deps, build web, embed in Go binary.
+# This is the single command to get a production-ready binary with web UI.
+build-all: build-nextjs
+
+# Start the Next.js dev server (hot-reload) alongside the Go backend.
+# Run `marunage web` in a separate terminal first.
+dev: web-install
+	cd web && npm run dev

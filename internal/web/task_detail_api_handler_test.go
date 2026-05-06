@@ -177,6 +177,23 @@ func TestTaskDetailAPIHandler_SetsCacheControlNoStore(t *testing.T) {
 	}
 }
 
+func TestTaskDetailAPIHandler_ZeroIDReturnsBadRequest(t *testing.T) {
+	prov := staticTaskDetailAPIProvider{}
+	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})
+
+	for _, path := range []string{"/api/tasks/0", "/api/tasks/-1"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status=%d; want 400 for %s", w.Code, path)
+			}
+		})
+	}
+}
+
 func TestTaskDetailAPIHandler_ProviderError(t *testing.T) {
 	prov := staticTaskDetailAPIProvider{err: errTaskDetailAPITestFailed}
 	srv := newTaskDetailAPIServer(t, prov, noopAuditReader{})

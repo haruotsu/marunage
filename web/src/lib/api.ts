@@ -8,6 +8,7 @@ import type {
   TaskDetail,
   SkillInfo,
   SkillRegistryEntry,
+  TaskListResponse,
 } from './types'
 import {
   mockDashboard,
@@ -34,7 +35,8 @@ async function apiFetch<T>(
     },
   })
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${await res.text()}`)
+    // Do not expose response body: it may contain server-internal details.
+    throw new Error(`API error ${res.status}`)
   }
   return res.json() as Promise<T>
 }
@@ -58,7 +60,7 @@ export async function getMetrics(): Promise<MetricsSnapshot> {
 
 export async function getJournal(date: string): Promise<JournalEntry[]> {
   if (USE_MOCK) return mockJournalEntries
-  return apiFetch<JournalEntry[]>(`/api/journal?date=${date}`)
+  return apiFetch<JournalEntry[]>(`/api/journal?date=${encodeURIComponent(date)}`)
 }
 
 export async function getProject(): Promise<ProjectResponse> {
@@ -66,9 +68,9 @@ export async function getProject(): Promise<ProjectResponse> {
   return apiFetch<ProjectResponse>('/api/project')
 }
 
-export async function getTasks(): Promise<Task[]> {
-  if (USE_MOCK) return mockTasks
-  return apiFetch<Task[]>('/api/tasks')
+export async function getTasks(): Promise<TaskListResponse> {
+  if (USE_MOCK) return { tasks: mockTasks, total: mockTasks.length }
+  return apiFetch<TaskListResponse>('/api/tasks')
 }
 
 export async function getTask(id: number): Promise<TaskDetail> {

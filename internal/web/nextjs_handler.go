@@ -16,13 +16,14 @@ func newNextJSHandler(njs fs.FS) http.Handler {
 			path = "index.html"
 		}
 		// Only serve the path if it resolves to a regular file.
-		// Directories and missing entries both fall back to index.html so that
+		// Missing entries and directories both fall back to index.html so that
 		// Next.js client-side routing handles the request.
-		if fi, err := fs.Stat(njs, path); err != nil || fi.IsDir() {
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
+		fi, err := fs.Stat(njs, path)
+		switch {
+		case err != nil && !errors.Is(err, fs.ErrNotExist):
+			writeJSONError(w, http.StatusInternalServerError, "internal error")
+			return
+		case err != nil || fi.IsDir():
 			path = "index.html"
 		}
 		http.ServeFileFS(w, r, njs, path)

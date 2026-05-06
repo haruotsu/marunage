@@ -28,11 +28,13 @@ export interface Task {
   completed_at: string | null
 }
 
+// AuditEntry mirrors the Go web.AuditEntry JSON shape.
 export interface AuditEntry {
-  timestamp: string
+  time: string
   action: string
-  actor: string
-  detail: string
+  task_id?: number
+  key?: string
+  value?: string
 }
 
 export interface TaskDetail extends Task {
@@ -44,7 +46,7 @@ export interface RunningTask {
   source: string
   title: string
   ws: string
-  started_at: string
+  started_at: string | null
   output_preview: string
 }
 
@@ -125,4 +127,10 @@ export interface SkillRegistryEntry {
   description: string
   version: string
   author: string
+}
+
+// TaskListResponse mirrors the Go taskListAPIResponse JSON shape.
+export interface TaskListResponse {
+  tasks: Task[]
+  total: number
 }

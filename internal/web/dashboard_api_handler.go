@@ -53,16 +53,16 @@ func newDashboardAPIHandler(provider DashboardProvider) http.Handler {
 		}
 
 		running := make([]dashboardAPIRunning, len(snap.Running))
-		for i, r := range snap.Running {
+		for i, run := range snap.Running {
 			ar := dashboardAPIRunning{
-				ID:            r.ID,
-				Source:        r.Source,
-				Title:         r.Title,
-				WS:            r.WS,
-				OutputPreview: r.OutputPreview,
+				ID:            run.ID,
+				Source:        run.Source,
+				Title:         run.Title,
+				WS:            run.WS,
+				OutputPreview: run.OutputPreview,
 			}
-			if !r.StartedAt.IsZero() {
-				ar.StartedAt = &r.StartedAt
+			if !run.StartedAt.IsZero() {
+				ar.StartedAt = &run.StartedAt
 			}
 			running[i] = ar
 		}

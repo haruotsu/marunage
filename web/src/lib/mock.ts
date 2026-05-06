@@ -212,16 +212,16 @@ export const mockTaskDetail: TaskDetail = {
   ...mockTasks[0],
   audit_entries: [
     {
-      timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-      action: 'created',
-      actor: 'github-source',
-      detail: 'Task discovered from issue #123',
+      time: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      action: 'task.created',
+      task_id: 1,
+      value: 'github-source',
     },
     {
-      timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-      action: 'dispatched',
-      actor: 'scheduler',
-      detail: 'Dispatched to workspace:101',
+      time: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      action: 'dispatch.start',
+      task_id: 1,
+      value: 'workspace:101',
     },
   ],
 }

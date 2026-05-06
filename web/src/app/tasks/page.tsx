@@ -219,13 +219,14 @@ function TaskDetailContent() {
             {task.audit_entries.map((entry, i) => (
               <div key={i} className="flex gap-3 text-xs">
                 <span className="shrink-0 text-zinc-400 font-mono w-32">
-                  {formatRelativeTime(entry.timestamp)}
+                  {formatRelativeTime(entry.time)}
                 </span>
                 <span className="shrink-0 font-medium text-zinc-600 dark:text-zinc-400 w-20">
                   {entry.action}
                 </span>
-                <span className="shrink-0 text-zinc-500 w-24">{entry.actor}</span>
-                <span className="text-zinc-600 dark:text-zinc-400 break-all">{entry.detail}</span>
+                <span className="text-zinc-600 dark:text-zinc-400 break-all">
+                  {entry.key ? `${entry.key}=${entry.value}` : entry.value}
+                </span>
               </div>
             ))}
           </div>

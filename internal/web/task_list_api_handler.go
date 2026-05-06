@@ -108,10 +108,10 @@ func newTaskListAPIHandler(provider TaskListProvider) http.Handler {
 
 		if s := r.URL.Query().Get("status"); s != "" {
 			statuses := strings.Split(s, ",")
-			for _, sv := range statuses {
-				sv = strings.TrimSpace(sv)
-				if _, ok := validTaskStatuses[sv]; !ok {
-					writeJSONError(w, http.StatusBadRequest, "invalid status value: "+sv)
+			for i, sv := range statuses {
+				statuses[i] = strings.TrimSpace(sv)
+				if _, ok := validTaskStatuses[statuses[i]]; !ok {
+					writeJSONError(w, http.StatusBadRequest, "invalid status value: "+statuses[i])
 					return
 				}
 			}
