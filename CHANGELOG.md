@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.0.5](https://github.com/haruotsu/marunage/compare/v0.0.4...v0.0.5) - 2026-05-06
+- fix(config): accept JSON array syntax for string-slice keys in config set by @haruotsu in https://github.com/haruotsu/marunage/pull/73
+- feat(gmail): implement GWSClient via gws CLI shell-out by @haruotsu in https://github.com/haruotsu/marunage/pull/75
+
 ## [v0.0.4](https://github.com/haruotsu/marunage/compare/v0.0.3...v0.0.4) - 2026-05-06
 - chore: enable blank issues for all contributors by @haruotsu in https://github.com/haruotsu/marunage/pull/65
 - docs: add Prerequisites table to README (en/ja) by @haruotsu in https://github.com/haruotsu/marunage/pull/67
