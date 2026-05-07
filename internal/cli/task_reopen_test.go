@@ -114,3 +114,18 @@ func TestTaskReopen_RequiresIDArg(t *testing.T) {
 		t.Fatalf("expected non-zero exit when id missing")
 	}
 }
+
+// reopen clears the ws field so the next dispatch can call ClaimWorkspace.
+func TestTaskReopen_ClearsWorkspaceReference(t *testing.T) {
+	repo := installFakeRepo(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusFailed, WS: "workspace:9"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"reopen", "1"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("reopen exit=%d; stderr=%q", code, stderr.String())
+	}
+	if got := repo.rows[1].WS; got != "" {
+		t.Errorf("WS = %q; want empty after reopen", got)
+	}
+}

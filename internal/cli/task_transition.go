@@ -109,6 +109,14 @@ func transitionRunner(
 		return translateRepoError(err)
 	}
 
+	// When a row returns to pending (reopen / promote), clear the stale
+	// workspace reference so the next dispatch can call ClaimWorkspace.
+	// ClaimWorkspace requires ws IS NULL or '', so leaving workspace:NNN
+	// here would silently block every subsequent dispatch attempt.
+	if target == store.StatusPending {
+		_ = repo.SetWorkspace(cmd.Context(), id, "")
+	}
+
 	task, err := repo.Get(cmd.Context(), id)
 	if err != nil {
 		return translateRepoError(err)

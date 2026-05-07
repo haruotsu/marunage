@@ -197,7 +197,8 @@ func TestNewWorkspaceUnparseableOutput(t *testing.T) {
 // 6: Send forwards verbatim text to `cmux send`.
 func TestSendForwardsArgs(t *testing.T) {
 	r := &fakeRunner{}
-	r.queue(runResult{})
+	// send text, then send-key enter
+	r.queue(runResult{}, runResult{})
 
 	c := cmux.NewClient(cmux.WithRunner(r))
 	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "hello world")
@@ -205,19 +206,23 @@ func TestSendForwardsArgs(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	calls := r.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("Calls len = %d; want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("Calls len = %d; want 2 (send + send-key)", len(calls))
 	}
-	want := []string{"send", "workspace:7", "hello world"}
-	if !equalArgs(calls[0].Args, want) {
-		t.Errorf("Args = %v; want %v", calls[0].Args, want)
+	wantSend := []string{"send", "--workspace", "workspace:7", "hello world"}
+	if !equalArgs(calls[0].Args, wantSend) {
+		t.Errorf("send Args = %v; want %v", calls[0].Args, wantSend)
+	}
+	wantKey := []string{"send-key", "--workspace", "workspace:7", "enter"}
+	if !equalArgs(calls[1].Args, wantKey) {
+		t.Errorf("send-key Args = %v; want %v", calls[1].Args, wantKey)
 	}
 }
 
-// 7: newline runs collapse to a single space before being handed off.
+// 7: newline runs collapse to a single space; Enter is sent separately via send-key.
 func TestSendReplacesNewlinesWithSpaces(t *testing.T) {
 	r := &fakeRunner{}
-	r.queue(runResult{})
+	r.queue(runResult{}, runResult{})
 
 	c := cmux.NewClient(cmux.WithRunner(r))
 	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "line1\nline2\r\nline3")
@@ -225,8 +230,8 @@ func TestSendReplacesNewlinesWithSpaces(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	calls := r.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("Calls len = %d; want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("Calls len = %d; want 2 (send + send-key)", len(calls))
 	}
 	got := calls[0].Args[len(calls[0].Args)-1]
 	want := "line1 line2 line3"
@@ -515,7 +520,7 @@ func TestListWorkspacesWrapsExitErrorWithStderr(t *testing.T) {
 	}
 }
 
-// 19 + 20: ReadOutput shells out to `cmux pane-text <ws>` and returns trimmed stdout.
+// 19 + 20: ReadOutput shells out to `cmux read-screen --workspace <ws>` and returns trimmed stdout.
 func TestReadOutputShellsOutAndReturnsTrimmedOutput(t *testing.T) {
 	r := &fakeRunner{}
 	r.queue(runResult{Stdout: "terminal output here\n"})
@@ -535,7 +540,7 @@ func TestReadOutputShellsOutAndReturnsTrimmedOutput(t *testing.T) {
 	if calls[0].Name != "cmux" {
 		t.Errorf("Calls()[0].Name = %q; want %q", calls[0].Name, "cmux")
 	}
-	want := []string{"pane-text", "workspace:7"}
+	want := []string{"read-screen", "--workspace", "workspace:7"}
 	if !equalArgs(calls[0].Args, want) {
 		t.Errorf("Args = %v; want %v", calls[0].Args, want)
 	}
