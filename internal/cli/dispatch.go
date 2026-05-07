@@ -87,7 +87,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient()
+	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
 
 	// Open the audit log alongside the SQLite store so requirement.md
 	// invariant #2 "No silent execution" is honoured for every dispatch.
@@ -118,13 +118,23 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		return nil, nil, fmt.Errorf("permission.New: %w", err)
 	}
 
+	expandedCwdPrefixes := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
+	for _, p := range cfg.Execution.AllowedCwdPrefixes {
+		exp, expErr := expandHome(p)
+		if expErr != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("resolve allowed_cwd_prefix %q: %w", p, expErr)
+		}
+		expandedCwdPrefixes = append(expandedCwdPrefixes, exp)
+	}
+
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
 		dispatch.WithBaseSkill(baseExecutionSkill),
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
-		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
+		dispatch.WithAllowedCwdPrefixes(expandedCwdPrefixes),
 		dispatch.WithAuditor(auditor),
 		dispatch.WithWorkspaceDirs(dirs),
 		dispatch.WithPermissionMatcher(matcher),

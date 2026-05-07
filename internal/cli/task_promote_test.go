@@ -101,3 +101,19 @@ func TestTaskPromote_RequiresIDArg(t *testing.T) {
 		t.Fatalf("expected non-zero exit when id missing")
 	}
 }
+
+// promote clears the ws field so the next dispatch can call ClaimWorkspace
+// (symmetric with TestTaskReopen_ClearsWorkspaceReference).
+func TestTaskPromote_ClearsWorkspaceReference(t *testing.T) {
+	repo := installFakeRepo(t)
+	repo.rows[1] = store.Task{ID: 1, Source: "manual", Title: "x", Status: store.StatusSkipped, WS: "workspace:9"}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"promote", "1"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("promote exit=%d; stderr=%q", code, stderr.String())
+	}
+	if got := repo.rows[1].WS; got != "" {
+		t.Errorf("WS = %q; want empty after promote", got)
+	}
+}

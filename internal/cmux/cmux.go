@@ -264,10 +264,17 @@ func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
 	if ws.ID == "" {
 		return ErrInvalidWorkspace
 	}
-	payload := newlineCollapser.ReplaceAllString(text, " ")
+	// Collapse real newlines to spaces (requirement.md step 2.e).
+	collapsed := newlineCollapser.ReplaceAllString(text, " ")
 
-	_, stderr, err := c.runner.Run(ctx, "cmux", "send", ws.ID, payload)
+	_, stderr, err := c.runner.Run(ctx, "cmux", "send", "--workspace", ws.ID, collapsed)
 	if err == nil {
+		// Claude's paste-detection intercepts large text blocks and waits
+		// for an explicit Enter before submitting. Send it separately so
+		// the prompt is submitted regardless of whether paste-mode fires.
+		if _, _, keyErr := c.runner.Run(ctx, "cmux", "send-key", "--workspace", ws.ID, "enter"); keyErr != nil {
+			return fmt.Errorf("send-key enter: %w", keyErr)
+		}
 		return nil
 	}
 	// A missing cmux binary is not something `ws-send` can rescue, so
@@ -276,12 +283,13 @@ func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
 		return ErrCmuxNotFound
 	}
 	// Primary failed for some other reason; try the Enter-appending
-	// fallback before surfacing the error so a transient cmux send
-	// glitch does not abort dispatch (requirement.md step 2.f).
+	// fallback (ws-send is an Enter-appending wrapper per requirement.md
+	// step 2.f).
 	primaryErr := err
 	primaryStderr := strings.TrimSpace(string(stderr))
 
-	_, fbStderr, fbErr := c.runner.Run(ctx, c.fallbackBinary, ws.ID, payload)
+	// ws-send appends Enter itself (requirement.md step 2.f); no send-key needed.
+	_, fbStderr, fbErr := c.runner.Run(ctx, c.fallbackBinary, ws.ID, collapsed)
 	if fbErr == nil {
 		return nil
 	}
@@ -315,19 +323,19 @@ func (c *client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 	return out, nil
 }
 
-// ReadOutput shells out to `cmux pane-text <ws.ID>` and returns the trimmed
-// stdout. Returns ErrInvalidWorkspace for an empty ID so callers cannot
-// accidentally read pane text for an unset workspace.
+// ReadOutput shells out to `cmux read-screen --workspace <ws.ID>` and returns
+// the trimmed stdout. Returns ErrInvalidWorkspace for an empty ID so callers
+// cannot accidentally read pane text for an unset workspace.
 func (c *client) ReadOutput(ctx context.Context, ws Workspace) (string, error) {
 	if ws.ID == "" {
 		return "", ErrInvalidWorkspace
 	}
-	stdout, stderr, err := c.runner.Run(ctx, "cmux", "pane-text", ws.ID)
+	stdout, stderr, err := c.runner.Run(ctx, "cmux", "read-screen", "--workspace", ws.ID)
 	if err != nil {
 		if isBinaryNotFound(err) {
 			return "", ErrCmuxNotFound
 		}
-		return "", fmt.Errorf("cmux pane-text: %w (stderr=%s)", err, strings.TrimSpace(string(stderr)))
+		return "", fmt.Errorf("cmux read-screen: %w (stderr=%s)", err, strings.TrimSpace(string(stderr)))
 	}
 	return strings.TrimSpace(string(stdout)), nil
 }

@@ -77,7 +77,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	repo := store.NewTaskRepo(db)
 	kv := store.NewKVStateRepo(db)
-	cm := cmux.NewClient()
+	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
 
 	auditPath := filepath.Join(filepath.Dir(dbPath), "logs", "audit.log")
 	var auditor config.Auditor = config.NopAuditor{}
@@ -97,13 +97,23 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		return nil, nil, fmt.Errorf("permission.New: %w", err)
 	}
 
+	expandedCwdPrefixes := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
+	for _, p := range cfg.Execution.AllowedCwdPrefixes {
+		exp, expErr := expandHome(p)
+		if expErr != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("resolve allowed_cwd_prefix %q: %w", p, expErr)
+		}
+		expandedCwdPrefixes = append(expandedCwdPrefixes, exp)
+	}
+
 	disp, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
 		dispatch.WithBaseSkill(baseExecutionSkill),
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
-		dispatch.WithAllowedCwdPrefixes(cfg.Execution.AllowedCwdPrefixes),
+		dispatch.WithAllowedCwdPrefixes(expandedCwdPrefixes),
 		dispatch.WithAuditor(auditor),
 		dispatch.WithWorkspaceDirs(dirs),
 		dispatch.WithPermissionMatcher(matcher),
