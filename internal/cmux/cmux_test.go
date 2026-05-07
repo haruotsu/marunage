@@ -244,7 +244,7 @@ func TestSendReplacesNewlinesWithSpaces(t *testing.T) {
 func TestSendReturnsErrorWhenSendKeyFails(t *testing.T) {
 	r := &fakeRunner{}
 	r.queue(
-		runResult{},                                   // cmux send succeeds
+		runResult{}, // cmux send succeeds
 		runResult{Err: errors.New("send-key: exit 1")}, // send-key fails
 	)
 
