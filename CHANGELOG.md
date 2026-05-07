@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.7](https://github.com/haruotsu/marunage/compare/v0.0.6...v0.0.7) - 2026-05-07
+- fix(dispatch): fix 5 bugs that prevented e2e prompt delivery by @haruotsu in https://github.com/haruotsu/marunage/pull/81
+
 ## [v0.0.6](https://github.com/haruotsu/marunage/compare/v0.0.5...v0.0.6) - 2026-05-06
 - docs: remove Go Reference badge from READMEs by @haruotsu in https://github.com/haruotsu/marunage/pull/76
 - feat(web): replace HTML templates with Next.js 15 frontend + JSON APIs by @haruotsu in https://github.com/haruotsu/marunage/pull/78
