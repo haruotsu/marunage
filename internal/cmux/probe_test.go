@@ -67,6 +67,21 @@ func TestClaudeReadinessProbe_NotReadyOnError(t *testing.T) {
 	}
 }
 
+// NewClaudeReadinessProbeWithRunner wires up a custom runner so tests can
+// use the public constructor without reaching into the unexported struct.
+func TestNewClaudeReadinessProbeWithRunner(t *testing.T) {
+	probe := NewClaudeReadinessProbeWithRunner(scriptedRunner{
+		stdout: []byte("Claude Code v1.0\n❯ hello"),
+	})
+	ready, err := probe.IsReady(context.Background(), Workspace{ID: "workspace:9"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ready {
+		t.Fatal("want ready=true when Claude banner + ❯ are visible")
+	}
+}
+
 // Fatal errors (binary not found) must be propagated so WaitReady stops
 // polling immediately instead of burning until timeout.
 func TestClaudeReadinessProbe_PropagatesBinaryNotFoundError(t *testing.T) {

@@ -21,6 +21,12 @@ func NewClaudeReadinessProbe() ReadinessProbe {
 	return &claudeReadinessProbe{runner: ExecRunner{}}
 }
 
+// NewClaudeReadinessProbeWithRunner returns a ClaudeReadinessProbe that uses
+// the supplied Runner. Intended for tests that inject a scripted runner.
+func NewClaudeReadinessProbeWithRunner(r Runner) ReadinessProbe {
+	return &claudeReadinessProbe{runner: r}
+}
+
 func (p *claudeReadinessProbe) IsReady(ctx context.Context, ws Workspace) (bool, error) {
 	stdout, _, err := p.runner.Run(ctx, "cmux", "read-screen", "--workspace", ws.ID)
 	if err != nil {

@@ -270,6 +270,8 @@ func TestSendFallsBackToWsSendOnFailure(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	calls := r.Calls()
+	// 2 calls: primary (cmux send) + fallback (ws-send). No send-key because
+	// ws-send appends Enter itself (requirement.md step 2.f).
 	if len(calls) != 2 {
 		t.Fatalf("Calls len = %d; want 2 (primary + fallback)", len(calls))
 	}

@@ -288,6 +288,7 @@ func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
 	primaryErr := err
 	primaryStderr := strings.TrimSpace(string(stderr))
 
+	// ws-send appends Enter itself (requirement.md step 2.f); no send-key needed.
 	_, fbStderr, fbErr := c.runner.Run(ctx, c.fallbackBinary, ws.ID, collapsed)
 	if fbErr == nil {
 		return nil
