@@ -3,13 +3,9 @@ package cmux
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"testing"
 )
-
-// Test list for ClaudeReadinessProbe:
-//   P1. Returns true when read-screen output contains the "❯" prompt.
-//   P2. Returns false when read-screen output lacks the "❯" prompt.
-//   P3. Returns false (not error) when read-screen fails so WaitReady keeps polling.
 
 // P1
 func TestClaudeReadinessProbe_ReadyWhenPromptPresent(t *testing.T) {
@@ -68,6 +64,22 @@ func TestClaudeReadinessProbe_NotReadyOnError(t *testing.T) {
 	}
 	if ready {
 		t.Fatal("want ready=false on read-screen error")
+	}
+}
+
+// Fatal errors (binary not found) must be propagated so WaitReady stops
+// polling immediately instead of burning until timeout.
+func TestClaudeReadinessProbe_PropagatesBinaryNotFoundError(t *testing.T) {
+	probe := &claudeReadinessProbe{runner: scriptedRunner{
+		stdout: nil,
+		err:    &exec.Error{Name: "cmux", Err: exec.ErrNotFound},
+	}}
+	ready, err := probe.IsReady(context.Background(), Workspace{ID: "workspace:9"})
+	if err == nil {
+		t.Fatal("want error when cmux binary is not found, not (false, nil)")
+	}
+	if ready {
+		t.Fatal("want ready=false when binary is not found")
 	}
 }
 

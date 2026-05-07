@@ -24,6 +24,9 @@ func NewClaudeReadinessProbe() ReadinessProbe {
 func (p *claudeReadinessProbe) IsReady(ctx context.Context, ws Workspace) (bool, error) {
 	stdout, _, err := p.runner.Run(ctx, "cmux", "read-screen", "--workspace", ws.ID)
 	if err != nil {
+		if isBinaryNotFound(err) {
+			return false, ErrCmuxNotFound
+		}
 		return false, nil
 	}
 	out := string(stdout)
