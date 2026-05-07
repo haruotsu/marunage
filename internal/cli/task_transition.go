@@ -114,7 +114,9 @@ func transitionRunner(
 	// ClaimWorkspace requires ws IS NULL or '', so leaving workspace:NNN
 	// here would silently block every subsequent dispatch attempt.
 	if target == store.StatusPending {
-		_ = repo.SetWorkspace(cmd.Context(), id, "")
+		if err := repo.SetWorkspace(cmd.Context(), id, ""); err != nil {
+			return fmt.Errorf("clear workspace: %w", err)
+		}
 	}
 
 	task, err := repo.Get(cmd.Context(), id)

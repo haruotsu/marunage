@@ -30,6 +30,10 @@ type fakeTaskRepo struct {
 	// projection. Used to drive "the SUT must not write half-state when
 	// the read fails" assertions (PR-60 view.md atomicity).
 	listErr error
+	// setWSErr, when non-nil, is returned from SetWorkspace so tests can
+	// assert that callers propagate DB failures rather than silently
+	// dropping them.
+	setWSErr error
 }
 
 func newFakeTaskRepo() *fakeTaskRepo {
@@ -120,6 +124,9 @@ func (f *fakeTaskRepo) Delete(_ context.Context, id int64) error {
 func (f *fakeTaskRepo) SetWorkspace(_ context.Context, id int64, ws string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.setWSErr != nil {
+		return f.setWSErr
+	}
 	row, ok := f.rows[id]
 	if !ok {
 		return store.ErrNotFound

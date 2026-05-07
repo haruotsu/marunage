@@ -272,7 +272,9 @@ func (c *client) Send(ctx context.Context, ws Workspace, text string) error {
 		// Claude's paste-detection intercepts large text blocks and waits
 		// for an explicit Enter before submitting. Send it separately so
 		// the prompt is submitted regardless of whether paste-mode fires.
-		_, _, _ = c.runner.Run(ctx, "cmux", "send-key", "--workspace", ws.ID, "enter")
+		if _, _, keyErr := c.runner.Run(ctx, "cmux", "send-key", "--workspace", ws.ID, "enter"); keyErr != nil {
+			return fmt.Errorf("send-key enter: %w", keyErr)
+		}
 		return nil
 	}
 	// A missing cmux binary is not something `ws-send` can rescue, so

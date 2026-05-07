@@ -240,6 +240,21 @@ func TestSendReplacesNewlinesWithSpaces(t *testing.T) {
 	}
 }
 
+// 7b: send-key failure after a successful send must be propagated.
+func TestSendReturnsErrorWhenSendKeyFails(t *testing.T) {
+	r := &fakeRunner{}
+	r.queue(
+		runResult{},                                   // cmux send succeeds
+		runResult{Err: errors.New("send-key: exit 1")}, // send-key fails
+	)
+
+	c := cmux.NewClient(cmux.WithRunner(r))
+	err := c.Send(context.Background(), cmux.Workspace{ID: "workspace:7"}, "hello")
+	if err == nil {
+		t.Fatal("Send returned nil; want error when send-key fails")
+	}
+}
+
 // 8: ws-send fallback on primary failure.
 func TestSendFallsBackToWsSendOnFailure(t *testing.T) {
 	r := &fakeRunner{}
