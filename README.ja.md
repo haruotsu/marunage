@@ -73,7 +73,7 @@ flowchart LR
 git clone https://github.com/haruotsu/marunage
 cd marunage
 make build           # Web UI + Go バイナリを一括ビルド
-sudo make install    # /usr/local/bin にインストール（変更する場合: INSTALL_DIR=~/bin make install）
+sudo make install    # バイナリを /usr/local/bin にコピー（変更する場合: INSTALL_DIR=~/bin make install）
 ```
 
 > `go install github.com/haruotsu/marunage/cmd/marunage@latest` でも CLI は動きますが、
