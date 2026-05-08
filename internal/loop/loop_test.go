@@ -794,3 +794,118 @@ type panicDispatcher struct{}
 func (panicDispatcher) Run(context.Context, dispatch.RunOptions) error {
 	panic(fmt.Errorf("dispatch panicked"))
 }
+
+// fakeReaper is the loop.Reaper double. Records each call and can
+// optionally inject an error so tests can assert reaper errors are
+// audited without stopping the loop tick.
+type fakeReaper struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (r *fakeReaper) Run(_ context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return r.err
+}
+
+func (r *fakeReaper) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// RP1: RunOnce calls reaper.Run exactly once when WithReaper is set.
+func TestRunOnce_CallsReaperOnceWhenConfigured(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	reap := &fakeReaper{}
+	l := f.newLoop(t, loop.WithReaper(reap))
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := reap.count(); got != 1 {
+		t.Errorf("reaper.Run called %d times; want 1", got)
+	}
+}
+
+// RP2: RunOnce does not require a reaper (optional); existing loops
+// without WithReaper must still pass.
+func TestRunOnce_NoReaper_StillSucceeds(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	l := f.newLoop(t) // no WithReaper
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce without reaper: %v", err)
+	}
+}
+
+// RP3: a reaper error is audited but does NOT propagate — the tick
+// succeeds and the loop keeps running.
+func TestRunOnce_ReaperError_AuditedButNotPropagated(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	reap := &fakeReaper{err: errors.New("reaper boom")}
+	l := f.newLoop(t, loop.WithReaper(reap))
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce should succeed even when reaper fails; got %v", err)
+	}
+	var sawFail bool
+	for _, e := range f.aud.snapshot() {
+		if e.Action == "loop.reaper.fail" {
+			sawFail = true
+			if e.Value == "" {
+				t.Errorf("audit value should carry reaper error message")
+			}
+		}
+	}
+	if !sawFail {
+		t.Errorf("audit missing loop.reaper.fail; got %v", f.aud.actions())
+	}
+}
+
+// RP4: reaper runs AFTER render so it can reclaim slots for pending
+// tasks already reflected in view.md.
+func TestRunOnce_ReaperRunsAfterRender(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	var order []string
+	var mu sync.Mutex
+	trackRender := &trackingRender{fn: func() { mu.Lock(); order = append(order, "render"); mu.Unlock() }}
+	trackReap := &trackingReaper{fn: func() { mu.Lock(); order = append(order, "reaper"); mu.Unlock() }}
+	l, err := loop.New(
+		loop.WithRegistry(f.reg),
+		loop.WithTaskRepo(f.repo),
+		loop.WithKVStateRepo(f.kv),
+		loop.WithDispatcher(f.disp),
+		loop.WithRender(trackRender),
+		loop.WithReaper(trackReap),
+		loop.WithAuditor(f.aud),
+		loop.WithClock(func() time.Time { return f.now }),
+		loop.WithMaxParallel(1),
+	)
+	if err != nil {
+		t.Fatalf("loop.New: %v", err)
+	}
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "render" || got[1] != "reaper" {
+		t.Errorf("call order = %v; want [render, reaper]", got)
+	}
+}
+
+// trackingRender and trackingReaper are RP4 helpers that record the
+// call sequence for ordering assertions.
+type trackingRender struct{ fn func() }
+
+func (r *trackingRender) Render(_ context.Context) error { r.fn(); return nil }
+
+type trackingReaper struct{ fn func() }
+
+func (r *trackingReaper) Run(_ context.Context) error { r.fn(); return nil }

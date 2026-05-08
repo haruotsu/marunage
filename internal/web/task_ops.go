@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -140,7 +141,10 @@ type addTaskRequest struct {
 
 // newAddTaskHandler returns POST /api/tasks.
 // Creates a new manual task. title is required; body and priority are optional.
-func newAddTaskHandler(store TaskOpsStore) http.Handler {
+// allowedCwdPrefixes mirrors execution.allowed_cwd_prefixes: when non-empty,
+// the task's cwd must start with one of the prefixes (same rule the dispatcher
+// enforces at dispatch time, surfaced here for immediate feedback).
+func newAddTaskHandler(store TaskOpsStore, allowedCwdPrefixes []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req addTaskRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -151,12 +155,32 @@ func newAddTaskHandler(store TaskOpsStore) http.Handler {
 			writeJSONError(w, http.StatusBadRequest, "title is required")
 			return
 		}
+		if !cwdAllowedWeb(req.CWD, allowedCwdPrefixes) {
+			writeJSONError(w, http.StatusBadRequest,
+				fmt.Sprintf("cwd %q is not in allowed_cwd_prefixes; set execution.allowed_cwd_prefixes or use an empty allowlist to allow all paths", req.CWD))
+			return
+		}
 		id, err := store.Add(r.Context(), req.Title, req.Body, req.CWD, req.Priority)
 		if mapOpsError(w, err) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"status": "ok", "id": id})
 	})
+}
+
+// cwdAllowedWeb mirrors dispatch.cwdAllowed: empty prefixes = allow all,
+// otherwise the cwd must start with at least one prefix. Kept unexported
+// and local to the web package to avoid a circular import with dispatch.
+func cwdAllowedWeb(cwd string, prefixes []string) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(cwd, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // updatePriorityRequest is the JSON body for PATCH /api/tasks/{id}/priority.

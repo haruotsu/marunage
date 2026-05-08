@@ -88,6 +88,13 @@ type Render interface {
 	Render(ctx context.Context) error
 }
 
+// Reaper is the orphan-recovery surface the loop needs. *reaper.Reaper
+// satisfies it. Optional: when nil, the reaper phase is skipped.
+// Matches requirement.md "discover → dispatch → render → notify → reaper".
+type Reaper interface {
+	Run(ctx context.Context) error
+}
+
 // Loop is the orchestrator. One instance per process; concurrency
 // guarantees rest on WithLockKey.
 type Loop struct {
@@ -96,6 +103,7 @@ type Loop struct {
 	kv          KVStateRepo
 	dispatcher  Dispatcher
 	render      Render
+	reaper      Reaper
 	auditor     config.Auditor
 	now         func() time.Time
 	maxParallel int
@@ -148,6 +156,11 @@ func WithMaxParallel(n int) Option { return func(l *Loop) { l.maxParallel = n } 
 // panic from one of the inner phases unblocks the next tick. Requires
 // WithKVStateRepo to take effect.
 func WithLockKey(key string) Option { return func(l *Loop) { l.lockKey = key } }
+
+// WithReaper injects the orphan-recovery reaper. Optional: when nil,
+// the reaper phase is skipped. The reaper runs after render so orphaned
+// running rows are reclaimed before the next discover → dispatch cycle.
+func WithReaper(r Reaper) Option { return func(l *Loop) { l.reaper = r } }
 
 // New builds a Loop. Required: WithRegistry, WithTaskRepo,
 // WithDispatcher, WithRender. Returns ErrInvalidConfig naming the
@@ -248,6 +261,16 @@ func (l *Loop) RunOnce(ctx context.Context) (err error) {
 		})
 		return fmt.Errorf("loop: render: %w", err)
 	}
+
+	if l.reaper != nil {
+		if err := l.reaper.Run(ctx); err != nil {
+			l.auditor.Record(config.AuditEvent{
+				Action: "loop.reaper.fail",
+				Value:  logging.Redact(err.Error()),
+			})
+		}
+	}
+
 	return nil
 }
 

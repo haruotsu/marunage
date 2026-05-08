@@ -250,14 +250,26 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		}
 	}
 
+	expandedCwdPrefixes := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
+	for _, p := range cfg.Execution.AllowedCwdPrefixes {
+		exp, expErr := expandHome(p)
+		if expErr != nil {
+			_ = listener.Close()
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("web: resolve allowed_cwd_prefix %q: %w", p, expErr)
+		}
+		expandedCwdPrefixes = append(expandedCwdPrefixes, exp)
+	}
+
 	srv, err := web.NewServer(web.Options{
-		AccessLogger: slogAccessLogger{logger: logger},
-		Dashboard:    dashboardProvider,
-		TaskDetail:   taskDetailProvider,
-		AuditLog:     auditReader,
-		Review:       reviewProvider,
-		TaskOps:      taskOps,
-		Dispatcher:   dispatcher,
+		AccessLogger:       slogAccessLogger{logger: logger},
+		Dashboard:          dashboardProvider,
+		TaskDetail:         taskDetailProvider,
+		AuditLog:           auditReader,
+		Review:             reviewProvider,
+		TaskOps:            taskOps,
+		Dispatcher:         dispatcher,
+		AllowedCwdPrefixes: expandedCwdPrefixes,
 		TaskList: web.TaskListProviderFunc(func(ctx context.Context, f web.TaskListFilter) ([]store.Task, int, error) {
 			var statuses []string
 			if len(f.Statuses) > 0 {

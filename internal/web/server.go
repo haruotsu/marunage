@@ -104,6 +104,11 @@ type Options struct {
 	// Zero-valued fields fall back to noop implementations so servers that
 	// do not care about live streaming keep working without wiring a fake.
 	LiveStream LiveStreamConfig
+
+	// AllowedCwdPrefixes mirrors execution.allowed_cwd_prefixes. When
+	// non-empty, POST /api/tasks rejects CWD values that do not start
+	// with any of the listed prefixes. Empty = all CWDs accepted.
+	AllowedCwdPrefixes []string
 }
 
 // Server is the assembled chi-style router + middlewares + SSE hub.
@@ -265,7 +270,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(disp))
 		mux.Handle("POST /api/tasks/{id}/promote", newPromoteTaskHandler(s.taskOps))
 		mux.Handle("POST /api/tasks/{id}/reopen", newReopenTaskHandler(s.taskOps))
-		mux.Handle("POST /api/tasks", newAddTaskHandler(s.taskOps))
+		mux.Handle("POST /api/tasks", newAddTaskHandler(s.taskOps, s.opts.AllowedCwdPrefixes))
 		mux.Handle("PATCH /api/tasks/{id}/priority", newUpdatePriorityHandler(s.taskOps))
 		mux.Handle("DELETE /api/tasks/{id}", newDeleteTaskHandler(s.taskOps))
 	}
