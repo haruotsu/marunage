@@ -45,7 +45,8 @@ vet:
 tidy:
 	go mod tidy
 
-install: build
+install:
+	@test -f $(BIN) || (echo "Binary not found. Run 'make build' first."; exit 1)
 	install -m 755 $(BIN) $(INSTALL_DIR)/marunage
 
 clean:

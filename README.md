@@ -75,7 +75,7 @@ Run `marunage doctor` after install to verify your setup.
 git clone https://github.com/haruotsu/marunage
 cd marunage
 make build           # builds web UI + Go binary in one step
-sudo make install    # installs to /usr/local/bin (override: INSTALL_DIR=~/bin make install)
+sudo make install    # copies binary to /usr/local/bin (override: INSTALL_DIR=~/bin make install)
 ```
 
 > `go install github.com/haruotsu/marunage/cmd/marunage@latest` works for the CLI,
