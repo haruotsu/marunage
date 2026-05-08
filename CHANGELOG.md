@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.10](https://github.com/haruotsu/marunage/compare/v0.0.9...v0.0.10) - 2026-05-08
+- fix(web): wire real cmux dispatch + persistent dispatch agent by @haruotsu in https://github.com/haruotsu/marunage/pull/87
+
 ## [v0.0.9](https://github.com/haruotsu/marunage/compare/v0.0.8...v0.0.9) - 2026-05-08
 - fix(web): serve _next/ static assets and fix CSP for Next.js by @haruotsu in https://github.com/haruotsu/marunage/pull/85
 
