@@ -17,7 +17,7 @@ type fakeTasks struct {
 	dispatchFn       func(ctx context.Context, id int64) error
 	promoteFn        func(ctx context.Context, id int64) error
 	reopenFn         func(ctx context.Context, id int64) error
-	addFn            func(ctx context.Context, title, body string, priority int) (int64, error)
+	addFn            func(ctx context.Context, title, body, cwd string, priority int) (int64, error)
 	updatePriorityFn func(ctx context.Context, id int64, priority int) error
 	deleteFn         func(ctx context.Context, id int64) error
 }
@@ -43,9 +43,9 @@ func (f *fakeTasks) Reopen(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (f *fakeTasks) Add(ctx context.Context, title, body string, priority int) (int64, error) {
+func (f *fakeTasks) Add(ctx context.Context, title, body, cwd string, priority int) (int64, error) {
 	if f.addFn != nil {
-		return f.addFn(ctx, title, body, priority)
+		return f.addFn(ctx, title, body, cwd, priority)
 	}
 	return 1, nil
 }
@@ -64,7 +64,7 @@ func (f *fakeTasks) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// errTaskOpsNotFound and errTaskOpsInvalidStatus are sentinel errors used in
+// ErrTaskNotFound and errTaskOpsInvalidStatus are sentinel errors used in
 // task_ops.go for distinguishing 404 vs 409 in handler responses.
 // Declare them here for test access (they will be defined in task_ops.go).
 
@@ -134,7 +134,7 @@ func TestTaskOpsHandler_Dispatch_OK(t *testing.T) {
 func TestTaskOpsHandler_Dispatch_NotFound(t *testing.T) {
 	store := &fakeTasks{
 		dispatchFn: func(_ context.Context, _ int64) error {
-			return errTaskOpsNotFound
+			return ErrTaskNotFound
 		},
 	}
 	h := newDispatchTaskHandler(store)
@@ -150,7 +150,7 @@ func TestTaskOpsHandler_Dispatch_NotFound(t *testing.T) {
 func TestTaskOpsHandler_Dispatch_InvalidStatus(t *testing.T) {
 	store := &fakeTasks{
 		dispatchFn: func(_ context.Context, _ int64) error {
-			return errTaskOpsInvalidTransition
+			return ErrTaskInvalidTransition
 		},
 	}
 	h := newDispatchTaskHandler(store)
@@ -214,7 +214,7 @@ func TestTaskOpsHandler_Reopen_OK(t *testing.T) {
 // TestTaskOpsHandler_Add_OK: POST /api/tasks with title -> 201 JSON with id
 func TestTaskOpsHandler_Add_OK(t *testing.T) {
 	store := &fakeTasks{
-		addFn: func(_ context.Context, title, body string, priority int) (int64, error) {
+		addFn: func(_ context.Context, title, body, cwd string, priority int) (int64, error) {
 			return 99, nil
 		},
 	}
@@ -236,6 +236,28 @@ func TestTaskOpsHandler_Add_OK(t *testing.T) {
 	// id comes back as a JSON number (float64 in Go's default decode)
 	if id, ok := resp["id"].(float64); !ok || id != 99 {
 		t.Errorf("response id = %v; want 99", resp["id"])
+	}
+}
+
+// TestTaskOpsHandler_Add_WithCWD: POST /api/tasks with cwd -> cwd is passed to store
+func TestTaskOpsHandler_Add_WithCWD(t *testing.T) {
+	var capturedCWD string
+	store := &fakeTasks{
+		addFn: func(_ context.Context, title, body, cwd string, priority int) (int64, error) {
+			capturedCWD = cwd
+			return 42, nil
+		},
+	}
+	h := newAddTaskHandler(store)
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/my/project"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201", rec.Code)
+	}
+	if capturedCWD != "/my/project" {
+		t.Errorf("cwd = %q; want /my/project", capturedCWD)
 	}
 }
 
@@ -326,7 +348,7 @@ func TestTaskOpsHandler_Dispatch_BadID(t *testing.T) {
 func TestTaskOpsHandler_Promote_NotFound(t *testing.T) {
 	store := &fakeTasks{
 		promoteFn: func(_ context.Context, _ int64) error {
-			return errTaskOpsNotFound
+			return ErrTaskNotFound
 		},
 	}
 	h := newPromoteTaskHandler(store)
@@ -342,7 +364,7 @@ func TestTaskOpsHandler_Promote_NotFound(t *testing.T) {
 func TestTaskOpsHandler_Delete_NotFound(t *testing.T) {
 	store := &fakeTasks{
 		deleteFn: func(_ context.Context, _ int64) error {
-			return errTaskOpsNotFound
+			return ErrTaskNotFound
 		},
 	}
 	h := newDeleteTaskHandler(store)
@@ -358,7 +380,7 @@ func TestTaskOpsHandler_Delete_NotFound(t *testing.T) {
 func TestTaskOpsHandler_UpdatePriority_NotFound(t *testing.T) {
 	store := &fakeTasks{
 		updatePriorityFn: func(_ context.Context, _ int64, _ int) error {
-			return errTaskOpsNotFound
+			return ErrTaskNotFound
 		},
 	}
 	h := newUpdatePriorityHandler(store)

@@ -12,6 +12,7 @@ export function AddTaskModal({ open, onClose, onAdded }: AddTaskModalProps) {
   const [source, setSource] = useState('manual')
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const [cwd, setCwd] = useState('')
   const [priority, setPriority] = useState(5)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -23,9 +24,10 @@ export function AddTaskModal({ open, onClose, onAdded }: AddTaskModalProps) {
     setLoading(true)
     setError(null)
     try {
-      await addTask({ source, title, body, priority })
+      await addTask({ source, title, body, cwd, priority })
       setTitle('')
       setBody('')
+      setCwd('')
       setPriority(5)
       onAdded()
       onClose()
@@ -81,6 +83,18 @@ export function AddTaskModal({ open, onClose, onAdded }: AddTaskModalProps) {
               rows={4}
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-blue-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
               placeholder="Task description"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Working directory
+            </label>
+            <input
+              type="text"
+              value={cwd}
+              onChange={(e) => setCwd(e.target.value)}
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-blue-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+              placeholder="e.g. /home/user/works/my-project"
             />
           </div>
           <div>

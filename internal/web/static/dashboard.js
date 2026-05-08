@@ -256,6 +256,7 @@
       var form = event.target;
       var title = form.querySelector("[name=title]").value.trim();
       var body = form.querySelector("[name=body]").value;
+      var cwd = form.querySelector("[name=cwd]").value.trim();
       var priority = parseInt(form.querySelector("[name=priority]").value, 10) || 0;
       var feedback = document.getElementById("add-form-feedback");
       var submitBtn = form.querySelector("[type=submit]");
@@ -268,7 +269,7 @@
       disableElement(submitBtn, true);
       if (feedback) { feedback.textContent = ""; }
 
-      apiPost("/api/tasks", { title: title, body: body, priority: priority })
+      apiPost("/api/tasks", { title: title, body: body, cwd: cwd, priority: priority })
         .then(function () {
           form.reset();
           if (feedback) { feedback.textContent = "Task added."; }

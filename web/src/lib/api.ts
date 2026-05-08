@@ -107,6 +107,7 @@ export async function addTask(data: {
   source: string
   title: string
   body: string
+  cwd?: string
   priority: number
 }): Promise<{ status: string; id: number }> {
   return apiFetch<{ status: string; id: number }>('/api/tasks', {
