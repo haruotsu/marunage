@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -263,7 +264,10 @@ func (l *Loop) RunOnce(ctx context.Context) (err error) {
 	}
 
 	if l.reaper != nil {
+		// Reaper failure is non-fatal: orphan cleanup is best-effort and
+		// must not stall the next discover → dispatch cycle.
 		if err := l.reaper.Run(ctx); err != nil {
+			slog.WarnContext(ctx, "loop: reaper failed", "err", err)
 			l.auditor.Record(config.AuditEvent{
 				Action: "loop.reaper.fail",
 				Value:  logging.Redact(err.Error()),

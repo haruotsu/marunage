@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/policy"
 )
 
 // Sentinel errors returned by TaskOpsStore / TaskDispatcher implementations
@@ -155,7 +157,7 @@ func newAddTaskHandler(store TaskOpsStore, allowedCwdPrefixes []string) http.Han
 			writeJSONError(w, http.StatusBadRequest, "title is required")
 			return
 		}
-		if !cwdAllowedWeb(req.CWD, allowedCwdPrefixes) {
+		if !policy.CwdAllowed(req.CWD, allowedCwdPrefixes) {
 			writeJSONError(w, http.StatusBadRequest,
 				fmt.Sprintf("cwd %q is not in allowed_cwd_prefixes; set execution.allowed_cwd_prefixes or use an empty allowlist to allow all paths", req.CWD))
 			return
@@ -166,21 +168,6 @@ func newAddTaskHandler(store TaskOpsStore, allowedCwdPrefixes []string) http.Han
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"status": "ok", "id": id})
 	})
-}
-
-// cwdAllowedWeb mirrors dispatch.cwdAllowed: empty prefixes = allow all,
-// otherwise the cwd must start with at least one prefix. Kept unexported
-// and local to the web package to avoid a circular import with dispatch.
-func cwdAllowedWeb(cwd string, prefixes []string) bool {
-	if len(prefixes) == 0 {
-		return true
-	}
-	for _, p := range prefixes {
-		if strings.HasPrefix(cwd, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // updatePriorityRequest is the JSON body for PATCH /api/tasks/{id}/priority.

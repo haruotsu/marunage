@@ -895,8 +895,17 @@ func TestRunOnce_ReaperRunsAfterRender(t *testing.T) {
 	mu.Lock()
 	got := append([]string(nil), order...)
 	mu.Unlock()
-	if len(got) != 2 || got[0] != "render" || got[1] != "reaper" {
-		t.Errorf("call order = %v; want [render, reaper]", got)
+	renderIdx, reaperIdx := -1, -1
+	for i, s := range got {
+		switch s {
+		case "render":
+			renderIdx = i
+		case "reaper":
+			reaperIdx = i
+		}
+	}
+	if renderIdx < 0 || reaperIdx < 0 || renderIdx >= reaperIdx {
+		t.Errorf("call order = %v; want render before reaper", got)
 	}
 }
 

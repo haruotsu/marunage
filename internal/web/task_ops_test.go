@@ -330,6 +330,32 @@ func TestTaskOpsHandler_Add_CWDMatchesAllowlist(t *testing.T) {
 	}
 }
 
+// TestTaskOpsHandler_Add_CWDPrefixBoundary: /home/user/works must NOT match prefix /home/user/work
+func TestTaskOpsHandler_Add_CWDPrefixBoundary(t *testing.T) {
+	store := &fakeTasks{}
+	h := newAddTaskHandler(store, []string{"/home/user/work"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/home/user/works/proj"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (/home/user/works must not match prefix /home/user/work)", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_CWDDotDotTraversal: ../ must not bypass prefix check
+func TestTaskOpsHandler_Add_CWDDotDotTraversal(t *testing.T) {
+	store := &fakeTasks{}
+	h := newAddTaskHandler(store, []string{"/home/user/src"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/home/user/src/../../../etc"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (../ traversal must not bypass prefix check)", rec.Code)
+	}
+}
+
 // TestTaskOpsHandler_Priority_OK: PATCH priority -> 200
 func TestTaskOpsHandler_Priority_OK(t *testing.T) {
 	var calledPriority int
