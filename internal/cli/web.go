@@ -205,10 +205,11 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		if startErr := agent.Start(ctx); startErr == nil {
 			dispatcher = agent
 			logger.Info("web.dispatch_agent", "status", "started")
-		} else if !errors.Is(startErr, cmux.ErrNoCmuxSession) {
-			logger.Info("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
-		} else {
+		} else if errors.Is(startErr, cmux.ErrNoCmuxSession) || errors.Is(startErr, cmux.ErrCmuxNotFound) {
+			// No cmux session or binary: graceful fallback to direct dispatch.
 			logger.Info("web.dispatch_agent", "status", "no_cmux_session_direct_dispatch")
+		} else {
+			logger.Info("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
 		}
 	}
 

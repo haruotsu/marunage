@@ -44,7 +44,6 @@ func (f *fakeAgentRunner) Run(_ context.Context, name string, args ...string) ([
 	return []byte(f.resp), nil, nil
 }
 
-// D1
 func TestDispatchAgent_Enqueue_WritesFile(t *testing.T) {
 	dir := t.TempDir()
 	agent := &DispatchAgent{queueDir: dir}
@@ -60,7 +59,6 @@ func TestDispatchAgent_Enqueue_WritesFile(t *testing.T) {
 	}
 }
 
-// D2
 func TestDispatchAgent_Enqueue_CreatesQueueDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "queue")
 	agent := &DispatchAgent{queueDir: dir}
@@ -72,7 +70,6 @@ func TestDispatchAgent_Enqueue_CreatesQueueDir(t *testing.T) {
 	}
 }
 
-// D3
 func TestDispatchAgent_Start_ErrNoCmux(t *testing.T) {
 	fr := &fakeAgentRunner{err: errors.New("Broken pipe")}
 	agent := &DispatchAgent{
@@ -177,7 +174,6 @@ func TestDispatchAgent_Start_ErrCmuxNotFound_WhenBinaryMissing(t *testing.T) {
 	}
 }
 
-// D5
 func TestDispatchAgent_Dispatch_WritesToQueue(t *testing.T) {
 	dir := t.TempDir()
 	agent := &DispatchAgent{queueDir: dir}

@@ -94,7 +94,7 @@ export function AddTaskModal({ open, onClose, onAdded }: AddTaskModalProps) {
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-blue-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
-              placeholder="e.g. ~/works/my-project"
+              placeholder="e.g. /home/user/works/my-project"
             />
           </div>
           <div>

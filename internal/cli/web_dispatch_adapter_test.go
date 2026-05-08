@@ -11,7 +11,6 @@ import (
 	"github.com/haruotsu/marunage/internal/web"
 )
 
-// A1
 func TestWebDispatchAdapter_Success(t *testing.T) {
 	fd := &fakeDispatcher{runErr: nil}
 	adapter := &webDispatchAdapter{runner: fd}
@@ -20,7 +19,6 @@ func TestWebDispatchAdapter_Success(t *testing.T) {
 	}
 }
 
-// A2
 func TestWebDispatchAdapter_NotFound(t *testing.T) {
 	fd := &fakeDispatcher{runErr: store.ErrNotFound}
 	adapter := &webDispatchAdapter{runner: fd}
@@ -30,7 +28,6 @@ func TestWebDispatchAdapter_NotFound(t *testing.T) {
 	}
 }
 
-// A3
 func TestWebDispatchAdapter_NotPending(t *testing.T) {
 	fd := &fakeDispatcher{runErr: fmt.Errorf("wrapped: %w", dispatch.ErrNotPending)}
 	adapter := &webDispatchAdapter{runner: fd}
@@ -40,7 +37,6 @@ func TestWebDispatchAdapter_NotPending(t *testing.T) {
 	}
 }
 
-// A4
 func TestWebDispatchAdapter_UnknownError(t *testing.T) {
 	sentinel := errors.New("db blew up")
 	fd := &fakeDispatcher{runErr: sentinel}
@@ -51,7 +47,6 @@ func TestWebDispatchAdapter_UnknownError(t *testing.T) {
 	}
 }
 
-// A5
 func TestWebDispatchAdapter_PassesID(t *testing.T) {
 	fd := &fakeDispatcher{}
 	adapter := &webDispatchAdapter{runner: fd}

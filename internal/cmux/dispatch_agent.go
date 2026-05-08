@@ -90,6 +90,11 @@ func (a *DispatchAgent) Start(ctx context.Context) error {
 		if isBinaryNotFound(err) {
 			return fmt.Errorf("%w", ErrCmuxNotFound)
 		}
+		// cmux prints these messages to stderr when invoked outside a live
+		// cmux session (no running daemon / tty mismatch / socket gone).
+		// There is no structured exit code for this condition, so we rely on
+		// substring matching.  If cmux ever adds a dedicated exit code, prefer
+		// that over these string checks.
 		if strings.Contains(string(stderr), "Access denied") ||
 			strings.Contains(string(stderr), "Broken pipe") ||
 			strings.Contains(string(stderr), "no such file") {
