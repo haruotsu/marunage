@@ -254,6 +254,8 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	for _, p := range cfg.Execution.AllowedCwdPrefixes {
 		exp, expErr := expandHome(p)
 		if expErr != nil {
+			watchCancel()
+			_ = dispCloser()
 			_ = listener.Close()
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("web: resolve allowed_cwd_prefix %q: %w", p, expErr)
