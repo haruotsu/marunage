@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -102,6 +103,22 @@ func TestDispatchAgent_Start_CallsNewWorkspace(t *testing.T) {
 	}
 	if string(data) != "workspace:99" {
 		t.Errorf("wsFile = %q; want workspace:99", string(data))
+	}
+}
+
+// D5b: Start returns ErrCmuxNotFound when the cmux binary is missing from PATH.
+func TestDispatchAgent_Start_ErrCmuxNotFound_WhenBinaryMissing(t *testing.T) {
+	fr := &fakeAgentRunner{err: &exec.Error{Name: "cmux", Err: exec.ErrNotFound}}
+	agent := &DispatchAgent{
+		queueDir: t.TempDir(),
+		wsFile:   filepath.Join(t.TempDir(), "agent.ws"),
+		runner:   fr,
+		exePath:  "/usr/local/bin/marunage",
+		cfgPath:  "/etc/marunage/config.toml",
+	}
+	err := agent.Start(context.Background())
+	if !errors.Is(err, ErrCmuxNotFound) {
+		t.Fatalf("Start: err = %v; want ErrCmuxNotFound", err)
 	}
 }
 

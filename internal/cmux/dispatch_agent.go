@@ -87,6 +87,9 @@ func (a *DispatchAgent) Start(ctx context.Context) error {
 		"--name", "marunage-dispatch-agent",
 	)
 	if err != nil {
+		if isBinaryNotFound(err) {
+			return fmt.Errorf("%w", ErrCmuxNotFound)
+		}
 		if strings.Contains(string(stderr), "Access denied") ||
 			strings.Contains(string(stderr), "Broken pipe") ||
 			strings.Contains(string(stderr), "no such file") {
