@@ -145,7 +145,7 @@ func securityHeaders(next http.Handler) http.Handler {
 			"default-src 'self'; "+
 				"img-src 'self' data:; "+
 				"style-src 'self'; "+
-				"script-src 'self'; "+
+				"script-src 'self' 'unsafe-inline'; "+
 				"connect-src 'self'; "+
 				"object-src 'none'; "+
 				"form-action 'self'; "+
