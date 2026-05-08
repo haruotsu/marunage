@@ -4,11 +4,12 @@ BIN_DIR := bin
 BIN := $(BIN_DIR)/marunage
 PKG := github.com/haruotsu/marunage
 CMD_PKG := ./cmd/marunage
+INSTALL_DIR ?= /usr/local/bin
 
 # Inject git describe as version when available; fall back to "dev".
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build build-go test lint fmt fmt-check vet tidy clean web-install web-dev web-build web-lint build-nextjs build-all dev serve
+.PHONY: build build-go install test lint fmt fmt-check vet tidy clean web-install web-dev web-build web-lint build-nextjs build-all dev serve
 
 # Default build: includes the Next.js web UI (requires Node.js 22+).
 # Use `make build-go` when you only want the Go binary without assets (no web UI).
@@ -43,6 +44,9 @@ vet:
 
 tidy:
 	go mod tidy
+
+install: build
+	install -m 755 $(BIN) $(INSTALL_DIR)/marunage
 
 clean:
 	rm -rf $(BIN_DIR)
