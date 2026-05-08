@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
@@ -115,7 +118,7 @@ const (
 // requirement: "各リクエストのログを daemon.log に JSON Lines").
 // The returned closer releases the listener and flushes the log
 // regardless of whether Run completes cleanly.
-func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
+func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunner, func() error, error) {
 	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("web: load %s: %w", opts.ConfigPath, err)
@@ -173,6 +176,42 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 	liveStreamer := &cmuxClientStreamer{client: cmux.NewClient()}
 	liveProvider := &sqlLiveStreamProvider{store: taskDetailStore}
 
+	// Build the real dispatcher so the Dispatch button in the web UI actually
+	// starts a Claude session instead of just updating the DB status.
+	dispRunner, dispCloser, err := productionDispatcherFactory(ctx, opts.ConfigPath)
+	if err != nil {
+		_ = rot.Close()
+		_ = listener.Close()
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("web: build dispatcher: %w", err)
+	}
+
+	// Try to start a persistent dispatch agent workspace so dispatch works even
+	// after the web server's terminal session closes (orphaned process). The agent
+	// runs inside a cmux workspace it created at startup; it polls a queue dir and
+	// calls "marunage dispatch <id>" for each request. If the web server is NOT in
+	// a cmux session (ErrNoCmuxSession), fall back to the direct dispatcher which
+	// works when the process stays inside a cmux session.
+	exePath, exeErr := os.Executable()
+	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
+	if exeErr == nil {
+		stateDir := filepath.Dir(dbPath)
+		agent := cmux.NewDispatchAgent(
+			filepath.Join(stateDir, "dispatch-queue"),
+			filepath.Join(stateDir, "dispatch-agent.ws"),
+			exePath,
+			opts.ConfigPath,
+		)
+		if startErr := agent.Start(ctx); startErr == nil {
+			dispatcher = agent
+			logger.Info("web.dispatch_agent", "status", "started")
+		} else if !errors.Is(startErr, cmux.ErrNoCmuxSession) {
+			logger.Info("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
+		} else {
+			logger.Info("web.dispatch_agent", "status", "no_cmux_session_direct_dispatch")
+		}
+	}
+
 	srv, err := web.NewServer(web.Options{
 		AccessLogger: slogAccessLogger{logger: logger},
 		Dashboard:    dashboardProvider,
@@ -180,6 +219,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 		AuditLog:     auditReader,
 		Review:       reviewProvider,
 		TaskOps:      taskOps,
+		Dispatcher:   dispatcher,
 		TaskList: web.TaskListProviderFunc(func(ctx context.Context, f web.TaskListFilter) ([]store.Task, int, error) {
 			var statuses []string
 			if len(f.Statuses) > 0 {
@@ -205,6 +245,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 		// listing them here would just add noise.
 	})
 	if err != nil {
+		_ = dispCloser()
 		_ = rot.Close()
 		_ = listener.Close()
 		_ = db.Close()
@@ -215,6 +256,7 @@ func productionWebFactory(_ context.Context, opts WebFactoryOptions) (webRunner,
 		// Closing an already-closed listener returns "use of closed
 		// network connection" — swallow it so the cleanup path is
 		// idempotent and safe to call after a normal shutdown.
+		_ = dispCloser()
 		_ = listener.Close()
 		_ = db.Close()
 		return rot.Close()
@@ -246,6 +288,28 @@ func buildWebSourceRegistry(enabled []string, cfg config.Config) *source.Registr
 		_ = registerBuiltin(r, name, cfg, nil, true)
 	}
 	return r
+}
+
+// webDispatchAdapter adapts a dispatchRunner to web.TaskDispatcher so the
+// web server's Dispatch button triggers real cmux-backed dispatch.
+type webDispatchAdapter struct {
+	runner dispatchRunner
+}
+
+// Dispatch calls the real dispatcher for the given task ID and maps errors to
+// the sentinel values web.mapOpsError recognises for HTTP status mapping.
+func (a *webDispatchAdapter) Dispatch(ctx context.Context, id int64) error {
+	err := a.runner.Run(ctx, dispatch.RunOptions{ID: id})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return web.ErrTaskNotFound
+	}
+	if errors.Is(err, dispatch.ErrNotPending) {
+		return web.ErrTaskInvalidTransition
+	}
+	return err
 }
 
 // slogAccessLogger adapts a slog.Logger to web.AccessLogger so

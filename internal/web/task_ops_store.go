@@ -78,12 +78,13 @@ func (s *sqlTaskOpsStore) Reopen(ctx context.Context, id int64) error {
 }
 
 // Add inserts a new manual task with source="manual" and status="pending".
-func (s *sqlTaskOpsStore) Add(ctx context.Context, title, body string, priority int) (int64, error) {
+// cwd is stored as-is; an empty string maps to SQL NULL.
+func (s *sqlTaskOpsStore) Add(ctx context.Context, title, body, cwd string, priority int) (int64, error) {
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	const q = `INSERT INTO tasks
-		(source, title, body, status, priority, created_at, updated_at)
-		VALUES ('manual', ?, ?, 'pending', ?, ?, ?)`
-	res, err := s.db.ExecContext(ctx, q, title, nullableStr(body), priority, now, now)
+		(source, title, body, cwd, status, priority, created_at, updated_at)
+		VALUES ('manual', ?, ?, ?, 'pending', ?, ?, ?)`
+	res, err := s.db.ExecContext(ctx, q, title, nullableStr(body), nullableStr(cwd), priority, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("task ops add: %w", err)
 	}
@@ -91,7 +92,7 @@ func (s *sqlTaskOpsStore) Add(ctx context.Context, title, body string, priority 
 }
 
 // UpdatePriority changes the priority field of an existing task.
-// Returns errTaskOpsNotFound when the row does not exist.
+// Returns ErrTaskNotFound when the row does not exist.
 func (s *sqlTaskOpsStore) UpdatePriority(ctx context.Context, id int64, priority int) error {
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE tasks SET priority = ? WHERE id = ?", priority, id)
@@ -103,13 +104,13 @@ func (s *sqlTaskOpsStore) UpdatePriority(ctx context.Context, id int64, priority
 		return fmt.Errorf("task ops update priority rows: %w", err)
 	}
 	if n == 0 {
-		return errTaskOpsNotFound
+		return ErrTaskNotFound
 	}
 	return nil
 }
 
 // Delete removes a task row regardless of its current status.
-// Returns errTaskOpsNotFound when the row does not exist.
+// Returns ErrTaskNotFound when the row does not exist.
 func (s *sqlTaskOpsStore) Delete(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, "DELETE FROM tasks WHERE id = ?", id)
 	if err != nil {
@@ -120,7 +121,7 @@ func (s *sqlTaskOpsStore) Delete(ctx context.Context, id int64) error {
 		return fmt.Errorf("task ops delete rows: %w", err)
 	}
 	if n == 0 {
-		return errTaskOpsNotFound
+		return ErrTaskNotFound
 	}
 	return nil
 }
@@ -136,9 +137,9 @@ func (s *sqlTaskOpsStore) probeExistence(ctx context.Context, id int64) error {
 		return fmt.Errorf("task ops probe: %w", err)
 	}
 	if count == 0 {
-		return errTaskOpsNotFound
+		return ErrTaskNotFound
 	}
-	return errTaskOpsInvalidTransition
+	return ErrTaskInvalidTransition
 }
 
 // nullableStr converts an empty string to nil so the SQL driver stores NULL

@@ -65,10 +65,16 @@ type Options struct {
 	AuditLog AuditReader
 
 	// TaskOps wires the write-side store for task operation endpoints
-	// (dispatch / promote / reopen / add / update-priority / delete).
+	// (promote / reopen / add / update-priority / delete).
 	// Nil disables all /api/tasks/* mutating routes so existing tests
 	// that do not care about task ops keep passing without wiring a store.
 	TaskOps TaskOpsStore
+
+	// Dispatcher wires the real cmux-backed dispatch for POST /api/tasks/{id}/dispatch.
+	// When set, the dispatch endpoint calls this instead of TaskOps.Dispatch so the
+	// button actually starts a Claude session. Falls back to TaskOps.Dispatch when nil
+	// (DB-only, kept for backward compatibility with tests that don't wire a real dispatcher).
+	Dispatcher TaskDispatcher
 
 	// Review wires the read-side provider for the /review page.
 	// Nil disables GET /review and GET /api/review/skipped so servers
@@ -111,6 +117,7 @@ type Server struct {
 	taskDetail TaskDetailProvider
 	auditLog   AuditReader
 	taskOps    TaskOpsStore
+	dispatcher TaskDispatcher
 	taskList   TaskListProvider
 	review     ReviewProvider
 	metrics    MetricsProvider
@@ -174,6 +181,7 @@ func NewServer(opts Options) (*Server, error) {
 		taskDetail: taskDetail,
 		auditLog:   auditLog,
 		taskOps:    opts.TaskOps,
+		dispatcher: opts.Dispatcher,
 		taskList:   opts.TaskList,
 		review:     opts.Review,
 		metrics:    metrics,
@@ -248,7 +256,13 @@ func (s *Server) Routes() http.Handler {
 	// Task operation endpoints. Registered only when a TaskOpsStore
 	// has been wired so servers without a store never expose /api/tasks/*.
 	if s.taskOps != nil {
-		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(s.taskOps))
+		// Use the real dispatcher when one is wired; fall back to
+		// TaskOps.Dispatch (DB-only) for backward-compat with tests.
+		var disp TaskDispatcher = s.taskOps
+		if s.dispatcher != nil {
+			disp = s.dispatcher
+		}
+		mux.Handle("POST /api/tasks/{id}/dispatch", newDispatchTaskHandler(disp))
 		mux.Handle("POST /api/tasks/{id}/promote", newPromoteTaskHandler(s.taskOps))
 		mux.Handle("POST /api/tasks/{id}/reopen", newReopenTaskHandler(s.taskOps))
 		mux.Handle("POST /api/tasks", newAddTaskHandler(s.taskOps))

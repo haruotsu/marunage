@@ -9,22 +9,29 @@ import (
 	"strings"
 )
 
-// Sentinel errors TaskOpsStore implementations return so handlers can map
-// them to the right HTTP status code without parsing error strings.
+// Sentinel errors returned by TaskOpsStore / TaskDispatcher implementations
+// so handlers can map them to the right HTTP status code.
 var (
-	// errTaskOpsNotFound is returned when the target row does not exist.
-	errTaskOpsNotFound = errors.New("task ops: not found")
-	// errTaskOpsInvalidTransition is returned when a state transition is
-	// not allowed from the current status (e.g. dispatch on a non-pending
-	// row). Maps to 409 Conflict.
-	errTaskOpsInvalidTransition = errors.New("task ops: invalid status transition")
+	// ErrTaskNotFound is returned when the target row does not exist.
+	ErrTaskNotFound = errors.New("task ops: not found")
+	// ErrTaskInvalidTransition is returned when a state transition is not
+	// allowed from the current status (e.g. dispatch on a non-pending row).
+	// Maps to 409 Conflict.
+	ErrTaskInvalidTransition = errors.New("task ops: invalid status transition")
 )
+
+// TaskDispatcher triggers real cmux-backed dispatch for a single task.
+// Production wires a webDispatchAdapter (in internal/cli) that delegates
+// to dispatch.Dispatcher.Run; tests inject a fake via fakeTasks.
+type TaskDispatcher interface {
+	Dispatch(ctx context.Context, id int64) error
+}
 
 // TaskOpsStore is the write-side surface the task operation handlers need.
 // Production wires sqlTaskOpsStore; tests inject a fake via fakeTasks.
 type TaskOpsStore interface {
 	// Dispatch transitions a task from pending -> running and stamps
-	// started_at. Returns errTaskOpsNotFound or errTaskOpsInvalidTransition
+	// started_at. Returns ErrTaskNotFound or ErrTaskInvalidTransition
 	// on the documented failure paths.
 	Dispatch(ctx context.Context, id int64) error
 	// Promote transitions a task from skipped -> pending.
@@ -32,7 +39,8 @@ type TaskOpsStore interface {
 	// Reopen transitions a task from done or failed -> pending.
 	Reopen(ctx context.Context, id int64) error
 	// Add inserts a new manual task and returns its assigned id.
-	Add(ctx context.Context, title, body string, priority int) (int64, error)
+	// cwd is the working directory for dispatch; empty means "unset".
+	Add(ctx context.Context, title, body, cwd string, priority int) (int64, error)
 	// UpdatePriority changes the priority of an existing task.
 	UpdatePriority(ctx context.Context, id int64, priority int) error
 	// Delete removes a task row entirely.
@@ -64,9 +72,9 @@ func mapOpsError(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
-	case errors.Is(err, errTaskOpsNotFound):
+	case errors.Is(err, ErrTaskNotFound):
 		writeJSONError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, errTaskOpsInvalidTransition):
+	case errors.Is(err, ErrTaskInvalidTransition):
 		writeJSONError(w, http.StatusConflict, "invalid status transition")
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
@@ -75,15 +83,15 @@ func mapOpsError(w http.ResponseWriter, err error) bool {
 }
 
 // newDispatchTaskHandler returns POST /api/tasks/{id}/dispatch.
-// Transitions pending -> running and stamps started_at.
-func newDispatchTaskHandler(store TaskOpsStore) http.Handler {
+// Calls disp.Dispatch which triggers real cmux-backed dispatch in production.
+func newDispatchTaskHandler(disp TaskDispatcher) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := parseIDFromRequest(r)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid task id")
 			return
 		}
-		if mapOpsError(w, store.Dispatch(r.Context(), id)) {
+		if mapOpsError(w, disp.Dispatch(r.Context(), id)) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
@@ -126,6 +134,7 @@ func newReopenTaskHandler(store TaskOpsStore) http.Handler {
 type addTaskRequest struct {
 	Title    string `json:"title"`
 	Body     string `json:"body"`
+	CWD      string `json:"cwd"`
 	Priority int    `json:"priority"`
 }
 
@@ -142,7 +151,7 @@ func newAddTaskHandler(store TaskOpsStore) http.Handler {
 			writeJSONError(w, http.StatusBadRequest, "title is required")
 			return
 		}
-		id, err := store.Add(r.Context(), req.Title, req.Body, req.Priority)
+		id, err := store.Add(r.Context(), req.Title, req.Body, req.CWD, req.Priority)
 		if mapOpsError(w, err) {
 			return
 		}
