@@ -50,6 +50,7 @@ flowchart LR
 | [Claude Code](https://claude.ai/download) (`claude`) | 常に必須 | claude.ai からダウンロード または `npm i -g @anthropic-ai/claude-code` |
 | [cmux](https://github.com/manaflow-ai/cmux) | 常に必須 | cmux README の手順を参照 |
 | Go 1.25+ | ソースからビルドする場合 | [go.dev/dl](https://go.dev/dl/) |
+| Python 3.11+ | 常に必須 | 多くの環境にプリインストール済み。`brew install python` / `apt install python3` |
 | `sqlite3` | 常に必須 | 多くの環境にプリインストール済み。`brew install sqlite` / `apt install sqlite3` |
 | `gh`（GitHub CLI） | GitHub ソース使用時のみ | `brew install gh` / [cli.github.com](https://cli.github.com) |
 | `gws`（Google Workspace CLI） | Gmail / Calendar / Tasks 使用時のみ | [gws README](https://github.com/haruotsu/gws) 参照 |
@@ -81,8 +82,8 @@ make build           # Web UI + Go バイナリを一括ビルド
 
 ```sh
 marunage init              # ~/.marunage/ 初期化、SQLite、permission mode 選択
-marunage doctor            # claude / cmux / sqlite3 / gh / gws / jq の確認
-marunage setup             # skills 導入、source 認証
+marunage doctor            # claude / cmux / python / sqlite3 / gh / gws / jq の確認
+marunage setup --skills    # バンドルされた Skills を導入
 marunage loop              # discover → dispatch → render を定期実行
 marunage web               # http://127.0.0.1:7777
 ```

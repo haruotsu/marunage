@@ -52,6 +52,7 @@ after the task completes.
 | [Claude Code](https://claude.ai/download) (`claude`) | Always | Download from claude.ai or `npm i -g @anthropic-ai/claude-code` |
 | [cmux](https://github.com/manaflow-ai/cmux) | Always | See cmux README for install instructions |
 | Go 1.25+ | To build from source | [go.dev/dl](https://go.dev/dl/) |
+| Python 3.11+ | Always | Usually pre-installed; `brew install python` / `apt install python3` |
 | `sqlite3` | Always | Usually pre-installed; `brew install sqlite` / `apt install sqlite3` |
 | `gh` (GitHub CLI) | GitHub source only | `brew install gh` / [cli.github.com](https://cli.github.com) |
 | `gws` (Google Workspace CLI) | Gmail / Calendar / Tasks only | See [gws README](https://github.com/haruotsu/gws) |
@@ -83,8 +84,8 @@ make build           # builds web UI + Go binary in one step
 
 ```sh
 marunage init              # ~/.marunage/, SQLite, pick a permission mode
-marunage doctor            # check claude / cmux / sqlite3 / gh / gws / jq
-marunage setup             # install skills, authenticate sources
+marunage doctor            # check claude / cmux / python / sqlite3 / gh / gws / jq
+marunage setup --skills    # install the bundled Skills
 marunage loop              # discover → dispatch → render on a timer
 marunage web               # http://127.0.0.1:7777
 ```
