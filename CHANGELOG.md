@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.8](https://github.com/haruotsu/marunage/compare/v0.0.7...v0.0.8) - 2026-05-08
+- docs: fix README setup command and add Python 3.11+ prerequisite by @haruotsu in https://github.com/haruotsu/marunage/pull/83
+
 ## [v0.0.7](https://github.com/haruotsu/marunage/compare/v0.0.6...v0.0.7) - 2026-05-07
 - fix(dispatch): fix 5 bugs that prevented e2e prompt delivery by @haruotsu in https://github.com/haruotsu/marunage/pull/81
 
