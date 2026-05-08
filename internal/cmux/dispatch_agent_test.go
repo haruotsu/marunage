@@ -10,15 +10,34 @@ import (
 	"testing"
 )
 
+// fakeResult holds a canned response for a specific subcommand.
+type fakeResult struct {
+	resp string
+	err  error
+}
+
 // fakeAgentRunner records calls and returns configured results.
+// perSubcmd maps the first arg (subcommand) to a specific result;
+// resp/err are the fallback for subcommands not in perSubcmd.
 type fakeAgentRunner struct {
-	calls [][]string
-	resp  string
-	err   error
+	calls     [][]string
+	resp      string
+	err       error
+	perSubcmd map[string]fakeResult
 }
 
 func (f *fakeAgentRunner) Run(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	if r, ok := f.perSubcmd[sub]; ok {
+		if r.err != nil {
+			return nil, []byte(r.err.Error()), r.err
+		}
+		return []byte(r.resp), nil, nil
+	}
 	if f.err != nil {
 		return nil, []byte(f.err.Error()), f.err
 	}
@@ -69,10 +88,15 @@ func TestDispatchAgent_Start_ErrNoCmux(t *testing.T) {
 	}
 }
 
-// D4
+// D4: Start calls new-workspace when no previous workspace file exists.
 func TestDispatchAgent_Start_CallsNewWorkspace(t *testing.T) {
 	wsDir := t.TempDir()
-	fr := &fakeAgentRunner{resp: "OK workspace:99\n"}
+	fr := &fakeAgentRunner{
+		perSubcmd: map[string]fakeResult{
+			"list-workspaces": {resp: ""},
+			"new-workspace":   {resp: "OK workspace:99\n"},
+		},
+	}
 	agent := &DispatchAgent{
 		queueDir: t.TempDir(),
 		wsFile:   filepath.Join(wsDir, "agent.ws"),
@@ -82,9 +106,6 @@ func TestDispatchAgent_Start_CallsNewWorkspace(t *testing.T) {
 	}
 	if err := agent.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
-	}
-	if len(fr.calls) == 0 {
-		t.Fatal("no cmux calls made")
 	}
 	found := false
 	for _, call := range fr.calls {
@@ -96,13 +117,47 @@ func TestDispatchAgent_Start_CallsNewWorkspace(t *testing.T) {
 	if !found {
 		t.Errorf("new-workspace not called; calls = %v", fr.calls)
 	}
-	// workspace ID should be written to wsFile
 	data, err := os.ReadFile(agent.wsFile)
 	if err != nil {
 		t.Fatalf("wsFile not written: %v", err)
 	}
 	if string(data) != "workspace:99" {
 		t.Errorf("wsFile = %q; want workspace:99", string(data))
+	}
+}
+
+// D4b: Start skips new-workspace when the recorded workspace is still alive.
+func TestDispatchAgent_Start_ReusesAliveWorkspace(t *testing.T) {
+	wsDir := t.TempDir()
+	wsFile := filepath.Join(wsDir, "agent.ws")
+	if err := os.WriteFile(wsFile, []byte("workspace:42"), 0o600); err != nil {
+		t.Fatalf("setup wsFile: %v", err)
+	}
+	fr := &fakeAgentRunner{
+		perSubcmd: map[string]fakeResult{
+			"list-workspaces": {resp: "workspace:42\n"},
+			// new-workspace intentionally absent: if called, returns "" which
+			// triggers a parse error and causes the test to fail.
+		},
+	}
+	agent := &DispatchAgent{
+		queueDir: t.TempDir(),
+		wsFile:   wsFile,
+		runner:   fr,
+		exePath:  "/usr/local/bin/marunage",
+		cfgPath:  "/etc/marunage/config.toml",
+	}
+	if err := agent.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for _, call := range fr.calls {
+		if len(call) > 1 && call[1] == "new-workspace" {
+			t.Errorf("new-workspace called unexpectedly when workspace is alive; calls=%v", fr.calls)
+		}
+	}
+	data, _ := os.ReadFile(wsFile)
+	if string(data) != "workspace:42" {
+		t.Errorf("wsFile changed to %q; want workspace:42 (should not overwrite alive workspace)", string(data))
 	}
 }
 
