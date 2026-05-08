@@ -12,6 +12,7 @@ import (
 func newNextJSHandler(njs fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
+		path = strings.TrimSuffix(path, "/")
 		if path == "" {
 			path = "index.html"
 		}

@@ -7,7 +7,7 @@ import (
 	"io/fs"
 )
 
-//go:embed out
+//go:embed all:out
 var nextjsAssets embed.FS
 
 func nextjsFS() (fs.FS, bool) {
