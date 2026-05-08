@@ -218,7 +218,7 @@ func TestTaskOpsHandler_Add_OK(t *testing.T) {
 			return 99, nil
 		},
 	}
-	h := newAddTaskHandler(store)
+	h := newAddTaskHandler(store, nil)
 
 	payload, _ := json.Marshal(map[string]any{"title": "my task", "body": "details", "priority": 5})
 	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
@@ -248,7 +248,7 @@ func TestTaskOpsHandler_Add_WithCWD(t *testing.T) {
 			return 42, nil
 		},
 	}
-	h := newAddTaskHandler(store)
+	h := newAddTaskHandler(store, nil)
 
 	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/my/project"})
 	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
@@ -264,13 +264,95 @@ func TestTaskOpsHandler_Add_WithCWD(t *testing.T) {
 // TestTaskOpsHandler_Add_MissingTitle: missing title -> 400
 func TestTaskOpsHandler_Add_MissingTitle(t *testing.T) {
 	store := &fakeTasks{}
-	h := newAddTaskHandler(store)
+	h := newAddTaskHandler(store, nil)
 
 	payload, _ := json.Marshal(map[string]any{"body": "no title"})
 	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d; want 400", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_CWDNotAllowed: cwd outside allowlist -> 400
+func TestTaskOpsHandler_Add_CWDNotAllowed(t *testing.T) {
+	store := &fakeTasks{}
+	h := newAddTaskHandler(store, []string{"/home/user/works", "/home/user/src"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/tmp/hack"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (cwd not allowed)", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_EmptyCWDWithAllowlist: empty cwd + non-empty allowlist -> 400
+func TestTaskOpsHandler_Add_EmptyCWDWithAllowlist(t *testing.T) {
+	store := &fakeTasks{}
+	h := newAddTaskHandler(store, []string{"/home/user/works"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": ""})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (empty cwd with allowlist)", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_EmptyAllowlist_AllowsAnyCWD: empty allowlist accepts any cwd
+func TestTaskOpsHandler_Add_EmptyAllowlist_AllowsAnyCWD(t *testing.T) {
+	store := &fakeTasks{
+		addFn: func(_ context.Context, _, _, _ string, _ int) (int64, error) { return 1, nil },
+	}
+	h := newAddTaskHandler(store, nil)
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/anything/goes"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201 (no allowlist = allow all)", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_CWDMatchesAllowlist: matching prefix is accepted
+func TestTaskOpsHandler_Add_CWDMatchesAllowlist(t *testing.T) {
+	store := &fakeTasks{
+		addFn: func(_ context.Context, _, _, _ string, _ int) (int64, error) { return 7, nil },
+	}
+	h := newAddTaskHandler(store, []string{"/home/user/works", "/home/user/src"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/home/user/src/myrepo"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201 (cwd matches allowlist)", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_CWDPrefixBoundary: /home/user/works must NOT match prefix /home/user/work
+func TestTaskOpsHandler_Add_CWDPrefixBoundary(t *testing.T) {
+	store := &fakeTasks{}
+	h := newAddTaskHandler(store, []string{"/home/user/work"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/home/user/works/proj"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (/home/user/works must not match prefix /home/user/work)", rec.Code)
+	}
+}
+
+// TestTaskOpsHandler_Add_CWDDotDotTraversal: ../ must not bypass prefix check
+func TestTaskOpsHandler_Add_CWDDotDotTraversal(t *testing.T) {
+	store := &fakeTasks{}
+	h := newAddTaskHandler(store, []string{"/home/user/src"})
+
+	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": "/home/user/src/../../../etc"})
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (../ traversal must not bypass prefix check)", rec.Code)
 	}
 }
 

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/policy"
 )
 
 // Sentinel errors returned by TaskOpsStore / TaskDispatcher implementations
@@ -140,7 +143,10 @@ type addTaskRequest struct {
 
 // newAddTaskHandler returns POST /api/tasks.
 // Creates a new manual task. title is required; body and priority are optional.
-func newAddTaskHandler(store TaskOpsStore) http.Handler {
+// allowedCwdPrefixes mirrors execution.allowed_cwd_prefixes: when non-empty,
+// the task's cwd must start with one of the prefixes (same rule the dispatcher
+// enforces at dispatch time, surfaced here for immediate feedback).
+func newAddTaskHandler(store TaskOpsStore, allowedCwdPrefixes []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req addTaskRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -149,6 +155,11 @@ func newAddTaskHandler(store TaskOpsStore) http.Handler {
 		}
 		if strings.TrimSpace(req.Title) == "" {
 			writeJSONError(w, http.StatusBadRequest, "title is required")
+			return
+		}
+		if !policy.CwdAllowed(req.CWD, allowedCwdPrefixes) {
+			writeJSONError(w, http.StatusBadRequest,
+				fmt.Sprintf("cwd %q is not in allowed_cwd_prefixes; set execution.allowed_cwd_prefixes or use an empty allowlist to allow all paths", req.CWD))
 			return
 		}
 		id, err := store.Add(r.Context(), req.Title, req.Body, req.CWD, req.Priority)

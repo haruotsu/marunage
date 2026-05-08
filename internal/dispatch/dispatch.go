@@ -12,6 +12,7 @@ import (
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/policy"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -505,7 +506,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	// work. requirement.md L687 promises this gate runs "dispatch 前",
 	// so we put it ahead of AcquireLock — no point burning a lock_key
 	// on a row we are about to fail anyway.
-	if !cwdAllowed(task.CWD, d.allowedCwdPrefixes) {
+	if !policy.CwdAllowed(task.CWD, d.allowedCwdPrefixes) {
 		d.markFailed(ctx, task.ID,
 			fmt.Sprintf("dispatch: cwd %q not in allowed_cwd_prefixes", task.CWD))
 		return false, nil
@@ -631,20 +632,6 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		return true, nil
 	}
 	return true, nil
-}
-
-// cwdAllowed returns true when cwd starts with any of prefixes, or
-// when prefixes is empty (the spec's "all paths allowed" mode).
-func cwdAllowed(cwd string, prefixes []string) bool {
-	if len(prefixes) == 0 {
-		return true
-	}
-	for _, p := range prefixes {
-		if strings.HasPrefix(cwd, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // workspaceName renders the cmux dashboard label per requirement.md

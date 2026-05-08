@@ -431,8 +431,15 @@ func TestTaskAdd_SourceFlagOverridesDefault(t *testing.T) {
 func TestTaskAdd_CwdFlagPersists(t *testing.T) {
 	repo := installFakeRepo(t)
 
+	// Use a config with empty allowlist so the test is not sensitive to the
+	// developer's local ~/.marunage/config.toml allowed_cwd_prefixes.
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[execution]\nallowed_cwd_prefixes = []\n"), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"add", "x", "--cwd", "/tmp/work"}, &stdout, &stderr)
+	code := Execute([]string{"add", "--config", cfgPath, "x", "--cwd", "/tmp/work"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("add exit=%d; stderr=%q", code, stderr.String())
 	}
@@ -454,6 +461,49 @@ func TestTaskAdd_PropagatesRepoErrors(t *testing.T) {
 	code := Execute([]string{"add", "x"}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+// TestTaskAdd_RejectsCwdOutsideAllowlist verifies that --cwd outside
+// execution.allowed_cwd_prefixes is rejected before inserting into the DB.
+func TestTaskAdd_RejectsCwdOutsideAllowlist(t *testing.T) {
+	repo := installFakeRepo(t)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[execution]\nallowed_cwd_prefixes = [\"/home/user/src\"]\n"), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"add", "--config", cfgPath, "--cwd", "/tmp/hack", "task"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("expected non-zero exit for cwd outside allowlist")
+	}
+	if len(repo.rows) != 0 {
+		t.Errorf("cwd outside allowlist should not insert a row; got %d rows", len(repo.rows))
+	}
+	if !strings.Contains(stderr.String(), "cwd") {
+		t.Errorf("stderr should mention cwd; got %q", stderr.String())
+	}
+}
+
+// TestTaskAdd_AcceptsCwdInsideAllowlist verifies that --cwd within
+// execution.allowed_cwd_prefixes is accepted normally.
+func TestTaskAdd_AcceptsCwdInsideAllowlist(t *testing.T) {
+	repo := installFakeRepo(t)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[execution]\nallowed_cwd_prefixes = [\"/home/user/src\"]\n"), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"add", "--config", cfgPath, "--cwd", "/home/user/src/myrepo", "task"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("add exit=%d; stderr=%q (cwd inside allowlist should succeed)", code, stderr.String())
+	}
+	if len(repo.rows) != 1 {
+		t.Errorf("expected 1 row; got %d", len(repo.rows))
 	}
 }
 

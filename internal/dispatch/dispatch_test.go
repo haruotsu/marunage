@@ -613,6 +613,52 @@ func TestRunEmptyAllowlistPermitsAnyCwd(t *testing.T) {
 	}
 }
 
+// TestRunRejectsCwdPrefixBoundary: /home/me/src-evil must not match prefix /home/me/src
+func TestRunRejectsCwdPrefixBoundary(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithAllowedCwdPrefixes([]string{"/home/me/src"}),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "boundary", CWD: "/home/me/src-evil/repo",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (/home/me/src-evil must not match prefix /home/me/src)", row.Status, store.StatusFailed)
+	}
+}
+
+// TestRunRejectsCwdDotDotTraversal: ../ must not bypass prefix check
+func TestRunRejectsCwdDotDotTraversal(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithAllowedCwdPrefixes([]string{"/home/me/src"}),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "traversal", CWD: "/home/me/src/../../../etc",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (../ traversal must not bypass prefix check)", row.Status, store.StatusFailed)
+	}
+}
+
 // D3: when dispatch fails AFTER the row already carries a triage /
 // orient judgment_reason (e.g. "phase1: markdown source bypass" set at
 // Insert time, or an EscalateToHuman reason left over from a prior

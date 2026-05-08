@@ -18,6 +18,7 @@ import (
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/loop"
 	"github.com/haruotsu/marunage/internal/permission"
+	"github.com/haruotsu/marunage/internal/reaper"
 	"github.com/haruotsu/marunage/internal/render"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
@@ -138,12 +139,30 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	rend := &fileRenderer{repo: repo, dest: viewPath}
 
+	threshold, err := time.ParseDuration(cfg.Execution.ReaperStuckThreshold)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("parse execution.reaper_stuck_threshold %q: %w",
+			cfg.Execution.ReaperStuckThreshold, err)
+	}
+	reap, err := reaper.New(
+		reaper.WithStore(repo),
+		reaper.WithCmux(cmux.NewClient()),
+		reaper.WithStuckThreshold(threshold),
+		reaper.WithAuditor(auditor),
+	)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("build reaper: %w", err)
+	}
+
 	l, err := loop.New(
 		loop.WithRegistry(registry),
 		loop.WithTaskRepo(repo),
 		loop.WithKVStateRepo(kv),
 		loop.WithDispatcher(disp),
 		loop.WithRender(rend),
+		loop.WithReaper(reap),
 		loop.WithAuditor(auditor),
 		loop.WithMaxParallel(cfg.Core.MaxParallel),
 		loop.WithLockKey("default"),

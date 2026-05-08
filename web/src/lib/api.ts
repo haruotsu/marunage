@@ -29,8 +29,14 @@ async function apiFetch<T>(
     },
   })
   if (!res.ok) {
-    // Do not expose response body: it may contain server-internal details.
-    throw new Error(`API error ${res.status}`)
+    let message = `API error ${res.status}`
+    try {
+      const body = await res.json() as { error?: string }
+      if (body.error) message = body.error
+    } catch {
+      // Non-JSON body: fall through to generic message
+    }
+    throw new Error(message)
   }
   return res.json() as Promise<T>
 }
