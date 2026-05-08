@@ -9,14 +9,6 @@ import (
 	"testing"
 )
 
-// Test list (t_wada TDD):
-//
-//  D1. Enqueue writes a file named <id>.dispatch to the queue dir.
-//  D2. Enqueue creates the queue dir if it does not exist.
-//  D3. Start returns ErrNoCmuxSession when the runner reports no cmux session.
-//  D4. Start calls cmux new-workspace with correct args when runner succeeds.
-//  D5. Dispatch calls Enqueue (write to queue dir), not the runner directly.
-
 // fakeAgentRunner records calls and returns configured results.
 type fakeAgentRunner struct {
 	calls [][]string

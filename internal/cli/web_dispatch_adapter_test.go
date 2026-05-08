@@ -11,14 +11,6 @@ import (
 	"github.com/haruotsu/marunage/internal/web"
 )
 
-// Test list for webDispatchAdapter (t_wada TDD):
-//
-//  A1. Dispatch returns nil when runner.Run returns nil.
-//  A2. Dispatch maps store.ErrNotFound -> web.ErrTaskNotFound.
-//  A3. Dispatch maps dispatch.ErrNotPending -> web.ErrTaskInvalidTransition.
-//  A4. Dispatch passes through unknown errors unchanged.
-//  A5. Dispatch calls runner.Run with RunOptions{ID: id}.
-
 // A1
 func TestWebDispatchAdapter_Success(t *testing.T) {
 	fd := &fakeDispatcher{runErr: nil}
