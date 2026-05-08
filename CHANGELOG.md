@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.9](https://github.com/haruotsu/marunage/compare/v0.0.8...v0.0.9) - 2026-05-08
+- fix(web): serve _next/ static assets and fix CSP for Next.js by @haruotsu in https://github.com/haruotsu/marunage/pull/85
+
 ## [v0.0.8](https://github.com/haruotsu/marunage/compare/v0.0.7...v0.0.8) - 2026-05-08
 - docs: fix README setup command and add Python 3.11+ prerequisite by @haruotsu in https://github.com/haruotsu/marunage/pull/83
 
