@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/policy"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -87,6 +89,27 @@ func newTaskAddCmd(configPath *string) *cobra.Command {
 			// CHECK is the second line of defense.
 			if notes != "" && !json.Valid([]byte(notes)) {
 				return fmt.Errorf("--notes: invalid JSON")
+			}
+
+			// Validate CWD against allowed_cwd_prefixes before opening the DB
+			// so rejected tasks never reach the store (early feedback mirrors
+			// the web layer's POST /api/tasks check).
+			if cwd != "" {
+				cfg, cfgErr := config.Load(*configPath)
+				if cfgErr != nil {
+					return fmt.Errorf("load config: %w", cfgErr)
+				}
+				expanded := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
+				for _, p := range cfg.Execution.AllowedCwdPrefixes {
+					exp, expErr := expandHome(p)
+					if expErr != nil {
+						return fmt.Errorf("resolve allowed_cwd_prefix %q: %w", p, expErr)
+					}
+					expanded = append(expanded, exp)
+				}
+				if !policy.CwdAllowed(cwd, expanded) {
+					return fmt.Errorf("--cwd: %q is not in allowed_cwd_prefixes", cwd)
+				}
 			}
 
 			repo, closer, err := activeTaskRepoFactory()(cmd.Context(), *configPath)
