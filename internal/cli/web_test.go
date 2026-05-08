@@ -9,9 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/haruotsu/marunage/internal/store"
 )
 
 // TestWeb_FactoryReceivesEffectiveAddress pins the flag-precedence
@@ -476,6 +479,101 @@ func (immediateExitWebRunner) Run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// TestWeb_ProductionFactory_CompletionWatcherWired verifies that the
+// completion watcher is started inside productionWebFactory: a task
+// pre-set to running with a sentinel file already written must
+// transition to done without any external nudge.
+func TestWeb_ProductionFactory_CompletionWatcherWired(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, ".marunage", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	dbPath := filepath.Join(tmpDir, "tasks.db")
+	body := fmt.Sprintf(`[core]
+db_path = %q
+max_parallel = 1
+log_level = "info"
+
+[execution]
+permission_mode = "bypass"
+claude_command = "claude"
+startup_timeout = 60
+on_unknown_permission = "escalate"
+human_wait_timeout = "30m"
+reaper_stuck_threshold = "24h"
+
+[discovery]
+interval = "10m"
+
+[web]
+bind = "127.0.0.1"
+port = 7777
+`, dbPath)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Migrate the DB by opening it via store.Open, then insert a running task.
+	db, err := openTestDB(t, dbPath)
+	if err != nil {
+		t.Fatalf("openTestDB: %v", err)
+	}
+	taskID := insertMinimalTask(t, db)
+
+	// Transition the task to running so the watcher will scan it.
+	repo := store.NewTaskRepo(db)
+	ctx := context.Background()
+	if err := repo.UpdateStatus(ctx, taskID, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus running: %v", err)
+	}
+	_ = db.Close()
+
+	// Write the sentinel file the watcher expects.
+	wsDir := filepath.Join(tmpDir, "workspaces", strconv.FormatInt(taskID, 10))
+	if err := os.MkdirAll(wsDir, 0o700); err != nil {
+		t.Fatalf("mkdir wsDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, ".exit_code"), []byte("0\n"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	addr := freeLoopbackAddr(t)
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
+		Addr: addr, ConfigPath: cfgPath,
+	})
+	if err != nil {
+		t.Fatalf("productionWebFactory: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	fctx, fcancel := context.WithCancel(context.Background())
+	t.Cleanup(fcancel)
+	go func() { _ = runner.Run(fctx) }()
+
+	// Re-open DB to poll task status.
+	db2, err := openTestDB(t, dbPath)
+	if err != nil {
+		t.Fatalf("reopen DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	repo2 := store.NewTaskRepo(db2)
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		task, err := repo2.Get(ctx, taskID)
+		if err != nil {
+			t.Fatalf("Get task: %v", err)
+		}
+		if task.Status == store.StatusDone {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	task, _ := repo2.Get(ctx, taskID)
+	t.Fatalf("task status = %q after 8s; want %q — completion watcher not wired", task.Status, store.StatusDone)
 }
 
 // writeMinimalWebConfig writes a config.toml with just enough fields

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/completion"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
@@ -175,6 +176,31 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	taskOps := web.NewSQLTaskOpsStore(db)
 	liveStreamer := &cmuxClientStreamer{client: cmux.NewClient()}
 	liveProvider := &sqlLiveStreamProvider{store: taskDetailStore}
+
+	// Start the completion watcher so running tasks that have written their
+	// sentinel file are transitioned to done (or failed) without a separate
+	// daemon process.  The goroutine is cancelled when ctx is cancelled
+	// (i.e. when the web server shuts down).
+	wsRoot := filepath.Join(filepath.Dir(dbPath), "workspaces")
+	auditPath := auditLogPathFor(opts.ConfigPath)
+	var watchAuditor config.Auditor = config.NopAuditor{}
+	if al, alErr := logging.NewAuditLog(auditPath); alErr == nil {
+		watchAuditor = al
+	}
+	if watcher, watchErr := completion.New(
+		completion.WithStore(taskRepo),
+		completion.WithWorkspaceDirs(workspaceDirs{root: wsRoot}),
+		completion.WithAuditor(watchAuditor),
+	); watchErr == nil {
+		go func() {
+			if runErr := watcher.Run(ctx); runErr != nil {
+				logger.Error("web.completion_watcher", "err", runErr.Error())
+			}
+		}()
+		logger.Info("web.completion_watcher", "status", "started")
+	} else {
+		logger.Warn("web.completion_watcher", "status", "build_failed", "err", watchErr.Error())
+	}
 
 	// Build the real dispatcher so the Dispatch button in the web UI actually
 	// starts a Claude session instead of just updating the DB status.
