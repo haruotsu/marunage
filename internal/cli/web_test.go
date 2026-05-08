@@ -541,7 +541,9 @@ port = 7777
 	}
 
 	addr := freeLoopbackAddr(t)
-	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
+	factoryCtx, factoryCancel := context.WithCancel(context.Background())
+	t.Cleanup(factoryCancel)
+	runner, closer, err := productionWebFactory(factoryCtx, WebFactoryOptions{
 		Addr: addr, ConfigPath: cfgPath,
 	})
 	if err != nil {

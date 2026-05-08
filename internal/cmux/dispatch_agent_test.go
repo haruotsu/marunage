@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -44,10 +45,10 @@ func (f *fakeAgentRunner) Run(_ context.Context, name string, args ...string) ([
 	return []byte(f.resp), nil, nil
 }
 
-func TestDispatchAgent_Enqueue_WritesFile(t *testing.T) {
+func TestDispatchAgent_enqueue_WritesFile(t *testing.T) {
 	dir := t.TempDir()
 	agent := &DispatchAgent{queueDir: dir}
-	if err := agent.Enqueue(42); err != nil {
+	if err := agent.enqueue(42); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	entries, _ := os.ReadDir(dir)
@@ -59,10 +60,10 @@ func TestDispatchAgent_Enqueue_WritesFile(t *testing.T) {
 	}
 }
 
-func TestDispatchAgent_Enqueue_CreatesQueueDir(t *testing.T) {
+func TestDispatchAgent_enqueue_CreatesQueueDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "queue")
 	agent := &DispatchAgent{queueDir: dir}
-	if err := agent.Enqueue(7); err != nil {
+	if err := agent.enqueue(7); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	if _, err := os.Stat(dir); err != nil {
@@ -184,5 +185,94 @@ func TestDispatchAgent_Dispatch_WritesToQueue(t *testing.T) {
 	name := filepath.Join(dir, strconv.FormatInt(55, 10)+".dispatch")
 	if _, err := os.Stat(name); err != nil {
 		t.Errorf("dispatch file not created: %v", err)
+	}
+}
+
+func TestDispatchAgent_BuildAgentCmd_DispatchBeforeRemove(t *testing.T) {
+	agent := &DispatchAgent{
+		queueDir: "/tmp/queue",
+		exePath:  "/usr/bin/marunage",
+		cfgPath:  "/etc/marunage/config.toml",
+	}
+	cmd := agent.buildAgentCmd()
+	dispIdx := strings.Index(cmd, "marunage")
+	rmIdx := strings.Index(cmd, "rm -f")
+	if dispIdx == -1 {
+		t.Fatalf("buildAgentCmd output missing marunage: %q", cmd)
+	}
+	if rmIdx == -1 {
+		t.Fatalf("buildAgentCmd output missing rm -f: %q", cmd)
+	}
+	if rmIdx < dispIdx {
+		t.Errorf("rm -f (pos %d) appears before dispatch (pos %d); want dispatch before rm\ncmd=%q", rmIdx, dispIdx, cmd)
+	}
+}
+
+func TestDispatchAgent_BuildAgentCmd_ContainsExeAndConfig(t *testing.T) {
+	agent := &DispatchAgent{
+		queueDir: "/tmp/q",
+		exePath:  "/usr/local/bin/marunage",
+		cfgPath:  "/home/user/.marunage/config.toml",
+	}
+	cmd := agent.buildAgentCmd()
+	if !strings.Contains(cmd, "/usr/local/bin/marunage") {
+		t.Errorf("cmd missing exePath; cmd=%q", cmd)
+	}
+	if !strings.Contains(cmd, "/home/user/.marunage/config.toml") {
+		t.Errorf("cmd missing cfgPath; cmd=%q", cmd)
+	}
+}
+
+func TestShellescape_SimplePath(t *testing.T) {
+	got := shellescape("/tmp/queue")
+	if got != "'/tmp/queue'" {
+		t.Errorf("shellescape = %q; want '/tmp/queue'", got)
+	}
+}
+
+func TestShellescape_EmbeddedSingleQuote(t *testing.T) {
+	got := shellescape("/tmp/it's here")
+	want := "'/tmp/it'\\''s here'"
+	if got != want {
+		t.Errorf("shellescape = %q; want %q", got, want)
+	}
+}
+
+func TestDispatchAgent_Start_CommandContainsExeAndConfig(t *testing.T) {
+	wsDir := t.TempDir()
+	fr := &fakeAgentRunner{
+		perSubcmd: map[string]fakeResult{
+			"list-workspaces": {resp: ""},
+			"new-workspace":   {resp: "OK workspace:99\n"},
+		},
+	}
+	agent := &DispatchAgent{
+		queueDir: t.TempDir(),
+		wsFile:   filepath.Join(wsDir, "agent.ws"),
+		runner:   fr,
+		exePath:  "/usr/local/bin/marunage",
+		cfgPath:  "/etc/marunage/config.toml",
+	}
+	if err := agent.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var cmdArg string
+	for _, call := range fr.calls {
+		if len(call) > 1 && call[1] == "new-workspace" {
+			for i, a := range call {
+				if a == "--command" && i+1 < len(call) {
+					cmdArg = call[i+1]
+				}
+			}
+		}
+	}
+	if cmdArg == "" {
+		t.Fatalf("--command arg not found in new-workspace call; calls=%v", fr.calls)
+	}
+	if !strings.Contains(cmdArg, "/usr/local/bin/marunage") {
+		t.Errorf("--command missing exePath; cmdArg=%q", cmdArg)
+	}
+	if !strings.Contains(cmdArg, "/etc/marunage/config.toml") {
+		t.Errorf("--command missing cfgPath; cmdArg=%q", cmdArg)
 	}
 }

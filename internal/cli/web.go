@@ -179,26 +179,30 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 
 	// Start the completion watcher so running tasks that have written their
 	// sentinel file are transitioned to done (or failed) without a separate
-	// daemon process.  The goroutine is cancelled when ctx is cancelled
-	// (i.e. when the web server shuts down).
+	// daemon process.  A child context is used so closer() can stop the
+	// goroutine before closing the DB, preventing queries against a closed
+	// connection in error paths.
 	wsRoot := filepath.Join(filepath.Dir(dbPath), "workspaces")
 	auditPath := auditLogPathFor(opts.ConfigPath)
 	var watchAuditor config.Auditor = config.NopAuditor{}
 	if al, alErr := logging.NewAuditLog(auditPath); alErr == nil {
 		watchAuditor = al
 	}
+	watchCtx, watchCancel := context.WithCancel(ctx)
 	if watcher, watchErr := completion.New(
 		completion.WithStore(taskRepo),
 		completion.WithWorkspaceDirs(workspaceDirs{root: wsRoot}),
 		completion.WithAuditor(watchAuditor),
 	); watchErr == nil {
 		go func() {
-			if runErr := watcher.Run(ctx); runErr != nil {
+			if runErr := watcher.Run(watchCtx); runErr != nil {
 				logger.Error("web.completion_watcher", "err", runErr.Error())
 			}
 		}()
 		logger.Info("web.completion_watcher", "status", "started")
 	} else {
+		watchCancel()
+		watchCancel = func() {}
 		logger.Warn("web.completion_watcher", "status", "build_failed", "err", watchErr.Error())
 	}
 
@@ -206,6 +210,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	// starts a Claude session instead of just updating the DB status.
 	dispRunner, dispCloser, err := productionDispatcherFactory(ctx, opts.ConfigPath)
 	if err != nil {
+		watchCancel()
 		_ = rot.Close()
 		_ = listener.Close()
 		_ = db.Close()
@@ -220,7 +225,9 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	// works when the process stays inside a cmux session.
 	exePath, exeErr := os.Executable()
 	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
-	if exeErr == nil {
+	if exeErr != nil {
+		logger.Warn("web.dispatch_agent", "status", "exe_path_error", "err", exeErr.Error())
+	} else {
 		stateDir := filepath.Dir(dbPath)
 		agent := cmux.NewDispatchAgent(
 			filepath.Join(stateDir, "dispatch-queue"),
@@ -230,12 +237,16 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		)
 		if startErr := agent.Start(ctx); startErr == nil {
 			dispatcher = agent
+			// Release dispRunner immediately: the agent owns dispatch from here on,
+			// so the direct runner's DB connection is no longer needed.
+			_ = dispCloser()
+			dispCloser = func() error { return nil }
 			logger.Info("web.dispatch_agent", "status", "started")
 		} else if errors.Is(startErr, cmux.ErrNoCmuxSession) || errors.Is(startErr, cmux.ErrCmuxNotFound) {
 			// No cmux session or binary: graceful fallback to direct dispatch.
 			logger.Info("web.dispatch_agent", "status", "no_cmux_session_direct_dispatch")
 		} else {
-			logger.Info("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
+			logger.Warn("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
 		}
 	}
 
@@ -272,6 +283,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		// listing them here would just add noise.
 	})
 	if err != nil {
+		watchCancel()
 		_ = dispCloser()
 		_ = rot.Close()
 		_ = listener.Close()
@@ -280,6 +292,9 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	}
 
 	closer := func() error {
+		// Cancel the watcher goroutine before closing the DB so it does not
+		// issue queries against a closed connection during shutdown.
+		watchCancel()
 		// Closing an already-closed listener returns "use of closed
 		// network connection" — swallow it so the cleanup path is
 		// idempotent and safe to call after a normal shutdown.

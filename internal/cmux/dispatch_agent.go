@@ -117,13 +117,12 @@ func (a *DispatchAgent) Start(ctx context.Context) error {
 // Dispatch writes an <id>.dispatch file to the queue directory. The agent
 // workspace shell picks it up and runs "marunage dispatch <id>".
 // Safe to call even from an orphaned/daemonised process.
+// ctx is intentionally unused: file I/O does not support cancellation.
 func (a *DispatchAgent) Dispatch(_ context.Context, id int64) error {
-	return a.Enqueue(id)
+	return a.enqueue(id)
 }
 
-// Enqueue writes the dispatch sentinel file. Exported so tests can call it
-// directly; production code goes through Dispatch.
-func (a *DispatchAgent) Enqueue(id int64) error {
+func (a *DispatchAgent) enqueue(id int64) error {
 	if err := os.MkdirAll(a.queueDir, 0o700); err != nil {
 		return fmt.Errorf("dispatch agent: mkdir queue: %w", err)
 	}
@@ -172,8 +171,7 @@ func (a *DispatchAgent) buildAgentCmd() string {
 			`for f in %s/*.dispatch; do `+
 			`[ -f "$f" ] || continue; `+
 			`id=$(basename "$f" .dispatch); `+
-			`rm -f "$f"; `+
-			`%s --config %s dispatch "$id"; `+
+			`%s --config %s dispatch "$id" && rm -f "$f"; `+
 			`done; `+
 			`sleep 1; `+
 			`done`,
