@@ -175,7 +175,7 @@ func (a *DispatchAgent) buildAgentCmd() string {
 }
 
 // shellescape wraps a path in single quotes, escaping any embedded single
-// quotes (replace ' with '\'').  Sufficient for shell command construction
+// quotes (replace ' with '\”).  Sufficient for shell command construction
 // where the input is a filesystem path (no null bytes, controlled chars).
 func shellescape(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
