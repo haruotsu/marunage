@@ -72,9 +72,9 @@ type webRunner interface {
 // to 0.0.0.0 + emits the warning banner) so the factory does not
 // need to know about it.
 type WebFactoryOptions struct {
-	Addr                 string
-	ConfigPath           string
-	DisableDispatchAgent bool // when true, skip starting the cmux dispatch agent workspace
+	Addr              string
+	ConfigPath        string
+	SkipDispatchAgent bool // when true, skip starting the cmux dispatch agent workspace
 }
 
 // webFactory builds a webRunner from the resolved options and hands
@@ -225,7 +225,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	// a cmux session (ErrNoCmuxSession), fall back to the direct dispatcher which
 	// works when the process stays inside a cmux session.
 	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
-	if !opts.DisableDispatchAgent {
+	if !opts.SkipDispatchAgent {
 		exePath, exeErr := os.Executable()
 		if exeErr != nil {
 			logger.Warn("web.dispatch_agent", "status", "exe_path_error", "err", exeErr.Error())
