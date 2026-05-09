@@ -241,6 +241,8 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		TaskOps:            taskOps,
 		Dispatcher:         dispatcher,
 		AllowedCwdPrefixes: expandedCwdPrefixes,
+		Metrics:            web.NewSQLMetricsProvider(db),
+		Journal:            web.NewSQLJournalProvider(db),
 		TaskList: web.TaskListProviderFunc(func(ctx context.Context, f web.TaskListFilter) ([]store.Task, int, error) {
 			var statuses []string
 			if len(f.Statuses) > 0 {
