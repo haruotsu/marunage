@@ -140,6 +140,7 @@ type Dispatcher struct {
 	lockKeys            map[string]string
 	claudeCommand       string
 	allowedCwdPrefixes  []string
+	defaultCwd          string
 	auditor             config.Auditor
 	workspaceDirs       WorkspaceDirs
 	matcher             PermissionMatcher
@@ -244,6 +245,13 @@ func WithPermissionMode(mode string) Option {
 // the slice reaches the dispatcher.
 func WithAllowedCwdPrefixes(prefixes []string) Option {
 	return func(d *Dispatcher) { d.allowedCwdPrefixes = prefixes }
+}
+
+// WithDefaultCwd sets the fallback CWD used when a task's CWD field is
+// empty. An empty task CWD means "unset"; the dispatcher substitutes
+// defaultCwd so cmux.NewWorkspace always receives a non-empty path.
+func WithDefaultCwd(cwd string) Option {
+	return func(d *Dispatcher) { d.defaultCwd = cwd }
 }
 
 // ErrInvalidConfig signals a missing required Option at construction.
@@ -502,13 +510,20 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 // A non-nil error is reserved for store-level failures the dispatcher
 // cannot recover from; per-row failures are recorded onto the row.
 func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, error) {
+	// An empty task CWD means "unset"; substitute the configured default
+	// so cmux.NewWorkspace always receives a non-empty path.
+	effectiveCwd := task.CWD
+	if effectiveCwd == "" {
+		effectiveCwd = d.defaultCwd
+	}
+
 	// Reject CWD outside the configured allowlist before doing any
 	// work. requirement.md L687 promises this gate runs "dispatch 前",
 	// so we put it ahead of AcquireLock — no point burning a lock_key
 	// on a row we are about to fail anyway.
-	if !policy.CwdAllowed(task.CWD, d.allowedCwdPrefixes) {
+	if !policy.CwdAllowed(effectiveCwd, d.allowedCwdPrefixes) {
 		d.markFailed(ctx, task.ID,
-			fmt.Sprintf("dispatch: cwd %q not in allowed_cwd_prefixes", task.CWD))
+			fmt.Sprintf("dispatch: cwd %q not in allowed_cwd_prefixes", effectiveCwd))
 		return false, nil
 	}
 
@@ -580,7 +595,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	}
 
 	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
-		CWD:     task.CWD,
+		CWD:     effectiveCwd,
 		Command: d.claudeCommand,
 		Name:    workspaceName(task),
 	})

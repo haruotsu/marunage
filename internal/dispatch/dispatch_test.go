@@ -659,6 +659,39 @@ func TestRunRejectsCwdDotDotTraversal(t *testing.T) {
 	}
 }
 
+// E_cwd_default: when task.CWD is empty and WithDefaultCwd is configured,
+// the dispatcher must substitute the default CWD so cmux receives a
+// non-empty path. Without this, cmux.NewWorkspace returns ErrInvalidOptions
+// and the task is silently failed even though the policy layer allowed it.
+func TestRunEmptyCwdFallsBackToDefaultCwd(t *testing.T) {
+	f := newDispatchFixture(t,
+		dispatch.WithDefaultCwd("/tmp/default"),
+		dispatch.WithAllowedCwdPrefixes([]string{"/tmp/"}),
+	)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "empty-cwd", CWD: "",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 1 {
+		t.Fatalf("NewWorkspace calls = %d; want 1 (empty cwd should dispatch via defaultCwd)", got)
+	}
+	if got := f.cmux.newWorkspaceCalls[0].CWD; got != "/tmp/default" {
+		t.Errorf("NewWorkspace CWD = %q; want %q (empty task cwd must fall back to default_cwd)", got, "/tmp/default")
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusRunning {
+		t.Errorf("status = %q; want %q (empty cwd + defaultCwd configured should dispatch)", row.Status, store.StatusRunning)
+	}
+}
+
 // D3: when dispatch fails AFTER the row already carries a triage /
 // orient judgment_reason (e.g. "phase1: markdown source bypass" set at
 // Insert time, or an EscalateToHuman reason left over from a prior
