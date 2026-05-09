@@ -692,6 +692,37 @@ func TestRunEmptyCwdFallsBackToDefaultCwd(t *testing.T) {
 	}
 }
 
+// E_cwd_default_unset: when task.CWD is empty AND no default CWD is
+// configured, the dispatcher must fail the task rather than passing an
+// empty path to cmux.NewWorkspace (which would return ErrInvalidOptions
+// with an undefined working directory).
+func TestRunEmptyCwdWithNoDefaultCwdFails(t *testing.T) {
+	// No WithDefaultCwd — d.defaultCwd stays "".
+	f := newDispatchFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "manual", Title: "unset-cwd", CWD: "",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+		t.Errorf("NewWorkspace called %d times; want 0 (empty cwd with no default must not reach cmux)", got)
+	}
+	row, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if row.Status != store.StatusFailed {
+		t.Errorf("status = %q; want %q (empty cwd with no default_cwd must fail)", row.Status, store.StatusFailed)
+	}
+	if !strings.Contains(row.JudgmentReason, "cwd") {
+		t.Errorf("judgment_reason = %q; want it to mention cwd", row.JudgmentReason)
+	}
+}
+
 // D3: when dispatch fails AFTER the row already carries a triage /
 // orient judgment_reason (e.g. "phase1: markdown source bypass" set at
 // Insert time, or an EscalateToHuman reason left over from a prior

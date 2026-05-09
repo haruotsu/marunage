@@ -516,6 +516,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	if effectiveCwd == "" {
 		effectiveCwd = d.defaultCwd
 	}
+	if effectiveCwd == "" {
+		d.markFailed(ctx, task.ID,
+			"dispatch: cwd is unset and no core.default_cwd is configured")
+		return false, nil
+	}
 
 	// Reject CWD outside the configured allowlist before doing any
 	// work. requirement.md L687 promises this gate runs "dispatch 前",
