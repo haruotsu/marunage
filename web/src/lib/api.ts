@@ -133,11 +133,3 @@ export async function updateTaskPriority(id: number, priority: number): Promise<
     body: JSON.stringify({ priority }),
   })
 }
-
-export async function sendToWorkspace(id: number, text: string): Promise<void> {
-  await apiFetch(`/api/tasks/${id}/send`, {
-    method: 'POST',
-    headers: mutationHeaders(),
-    body: JSON.stringify({ text }),
-  })
-}
