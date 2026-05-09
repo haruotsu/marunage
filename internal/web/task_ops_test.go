@@ -176,6 +176,14 @@ func TestTaskOpsHandler_Dispatch_NoSession(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503", rec.Code)
 	}
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	wantErr := "no active session: restart marunage web from a terminal"
+	if resp["error"] != wantErr {
+		t.Errorf("response error = %q; want %q", resp["error"], wantErr)
+	}
 }
 
 // TestTaskOpsHandler_Promote_OK: skipped -> pending success -> 200

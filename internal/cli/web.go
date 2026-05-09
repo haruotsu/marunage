@@ -217,7 +217,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		return nil, nil, fmt.Errorf("web: build dispatcher: %w", err)
 	}
 
-	dispatcher := web.TaskDispatcher(&webDispatchAdapter{runner: dispRunner})
+	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
 
 	expandedCwdPrefixes := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
 	for _, p := range cfg.Execution.AllowedCwdPrefixes {
