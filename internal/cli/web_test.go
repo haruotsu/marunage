@@ -191,7 +191,7 @@ func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 	addr := freeLoopbackAddr(t)
 
-	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath})
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath, DisableDispatchAgent: true})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
 	}
@@ -308,8 +308,9 @@ port = 7777
 
 	addr := freeLoopbackAddr(t)
 	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
-		Addr:       addr,
-		ConfigPath: cfgPath,
+		Addr:                 addr,
+		ConfigPath:           cfgPath,
+		DisableDispatchAgent: true,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
@@ -387,8 +388,9 @@ func TestWeb_DaemonLogReceivesAccessRecord(t *testing.T) {
 	addr := freeLoopbackAddr(t)
 
 	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
-		Addr:       addr,
-		ConfigPath: cfgPath,
+		Addr:                 addr,
+		ConfigPath:           cfgPath,
+		DisableDispatchAgent: true,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
@@ -544,7 +546,7 @@ port = 7777
 	factoryCtx, factoryCancel := context.WithCancel(context.Background())
 	t.Cleanup(factoryCancel)
 	runner, closer, err := productionWebFactory(factoryCtx, WebFactoryOptions{
-		Addr: addr, ConfigPath: cfgPath,
+		Addr: addr, ConfigPath: cfgPath, DisableDispatchAgent: true,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)

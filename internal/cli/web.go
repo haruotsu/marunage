@@ -72,8 +72,9 @@ type webRunner interface {
 // to 0.0.0.0 + emits the warning banner) so the factory does not
 // need to know about it.
 type WebFactoryOptions struct {
-	Addr       string
-	ConfigPath string
+	Addr                 string
+	ConfigPath           string
+	DisableDispatchAgent bool // when true, skip starting the cmux dispatch agent workspace
 }
 
 // webFactory builds a webRunner from the resolved options and hands
@@ -223,30 +224,32 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	// calls "marunage dispatch <id>" for each request. If the web server is NOT in
 	// a cmux session (ErrNoCmuxSession), fall back to the direct dispatcher which
 	// works when the process stays inside a cmux session.
-	exePath, exeErr := os.Executable()
 	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
-	if exeErr != nil {
-		logger.Warn("web.dispatch_agent", "status", "exe_path_error", "err", exeErr.Error())
-	} else {
-		stateDir := filepath.Dir(dbPath)
-		agent := cmux.NewDispatchAgent(
-			filepath.Join(stateDir, "dispatch-queue"),
-			filepath.Join(stateDir, "dispatch-agent.ws"),
-			exePath,
-			opts.ConfigPath,
-		)
-		if startErr := agent.Start(ctx); startErr == nil {
-			dispatcher = agent
-			// Release dispRunner immediately: the agent owns dispatch from here on,
-			// so the direct runner's DB connection is no longer needed.
-			_ = dispCloser()
-			dispCloser = func() error { return nil }
-			logger.Info("web.dispatch_agent", "status", "started")
-		} else if errors.Is(startErr, cmux.ErrNoCmuxSession) || errors.Is(startErr, cmux.ErrCmuxNotFound) {
-			// No cmux session or binary: graceful fallback to direct dispatch.
-			logger.Info("web.dispatch_agent", "status", "no_cmux_session_direct_dispatch")
+	if !opts.DisableDispatchAgent {
+		exePath, exeErr := os.Executable()
+		if exeErr != nil {
+			logger.Warn("web.dispatch_agent", "status", "exe_path_error", "err", exeErr.Error())
 		} else {
-			logger.Warn("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
+			stateDir := filepath.Dir(dbPath)
+			agent := cmux.NewDispatchAgent(
+				filepath.Join(stateDir, "dispatch-queue"),
+				filepath.Join(stateDir, "dispatch-agent.ws"),
+				exePath,
+				opts.ConfigPath,
+			)
+			if startErr := agent.Start(ctx); startErr == nil {
+				dispatcher = agent
+				// Release dispRunner immediately: the agent owns dispatch from here on,
+				// so the direct runner's DB connection is no longer needed.
+				_ = dispCloser()
+				dispCloser = func() error { return nil }
+				logger.Info("web.dispatch_agent", "status", "started")
+			} else if errors.Is(startErr, cmux.ErrNoCmuxSession) || errors.Is(startErr, cmux.ErrCmuxNotFound) {
+				// No cmux session or binary: graceful fallback to direct dispatch.
+				logger.Info("web.dispatch_agent", "status", "no_cmux_session_direct_dispatch")
+			} else {
+				logger.Warn("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
+			}
 		}
 	}
 
