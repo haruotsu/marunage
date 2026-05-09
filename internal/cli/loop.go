@@ -163,7 +163,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		return nil, nil, fmt.Errorf("build reaper: %w", err)
 	}
 
-	l, err := loop.New(
+	loopOpts := []loop.Option{
 		loop.WithRegistry(registry),
 		loop.WithTaskRepo(repo),
 		loop.WithKVStateRepo(kv),
@@ -173,7 +173,19 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		loop.WithAuditor(auditor),
 		loop.WithMaxParallel(cfg.Core.MaxParallel),
 		loop.WithLockKey("default"),
-	)
+	}
+	if cfg.Discovery.DispatchInterval != "" {
+		di, diErr := time.ParseDuration(cfg.Discovery.DispatchInterval)
+		if diErr != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("parse discovery.dispatch_interval %q: %w",
+				cfg.Discovery.DispatchInterval, diErr)
+		}
+		if di > 0 {
+			loopOpts = append(loopOpts, loop.WithDispatchInterval(di))
+		}
+	}
+	l, err := loop.New(loopOpts...)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("build loop: %w", err)

@@ -918,3 +918,158 @@ func (r *trackingRender) Render(_ context.Context) error { r.fn(); return nil }
 type trackingReaper struct{ fn func() }
 
 func (r *trackingReaper) Run(_ context.Context) error { r.fn(); return nil }
+
+// D1: with a short dispatchInterval, dispatch fires more often than discovery.
+func TestRun_DispatchIntervalFiresMoreOftenThanDiscovery(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t, loop.WithDispatchInterval(10*time.Millisecond))
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, 100*time.Millisecond) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		disp := len(f.disp.snapshot())
+		plug.mu.Lock()
+		disc := plug.listCalls
+		plug.mu.Unlock()
+		// +2: require at least 2 dispatch-only ticks beyond the discover count,
+		// ruling out a coincidental tie from the initial RunOnce tick.
+		if disp > disc+2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("dispatch calls (%d) did not outpace discover calls (%d) within 2s", disp, disc)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
+// D2: dispatch-only ticks skip the discover phase entirely.
+func TestRun_DispatchOnlyTickSkipsDiscover(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t, loop.WithDispatchInterval(5*time.Millisecond))
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, time.Hour) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(f.disp.snapshot()) < 5 {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("dispatch only ran %d times within 2s; want >= 5", len(f.disp.snapshot()))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	plug.mu.Lock()
+	listCalls := plug.listCalls
+	plug.mu.Unlock()
+	// Run() fires an initial RunOnce before entering the ticker loop, so discover
+	// runs exactly once. The main ticker interval is time.Hour, which guarantees
+	// no second discover fires within the 2-second test window.
+	if listCalls != 1 {
+		t.Errorf("discover called %d times; want exactly 1 (initial tick only)", listCalls)
+	}
+	dispCalls := len(f.disp.snapshot())
+	if dispCalls < 5 {
+		t.Errorf("dispatch ran %d times; want >= 5", dispCalls)
+	}
+}
+
+// D3: dispatch-only tick failure records "loop.dispatch_tick.fail", not "loop.tick.fail".
+// The initial RunOnce (before the ticker loop) legitimately records "loop.tick.fail" once
+// when dispatch fails; only subsequent dispatch-only ticks should use the distinct action.
+func TestRunDispatchTick_FailureRecordsDistinctAuditAction(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	f.disp.err = errors.New("dispatch boom")
+	l := f.newLoop(t, loop.WithDispatchInterval(5*time.Millisecond))
+	ctx, cancel := context.WithTimeout(f.ctx, 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, time.Hour) }()
+	<-done
+
+	var fullTickFails, dispatchTickFails int
+	for _, e := range f.aud.snapshot() {
+		switch e.Action {
+		case "loop.tick.fail":
+			fullTickFails++
+		case "loop.dispatch_tick.fail":
+			dispatchTickFails++
+		}
+	}
+	// Initial RunOnce always fires once before the ticker loop, causing exactly
+	// 1 loop.tick.fail. All dispatch-only failures must use "loop.dispatch_tick.fail".
+	if fullTickFails > 1 {
+		t.Errorf("loop.tick.fail appeared %d times; only the initial RunOnce should produce it (want <= 1)", fullTickFails)
+	}
+	if dispatchTickFails < 5 {
+		t.Errorf("loop.dispatch_tick.fail appeared %d times; want >= 5", dispatchTickFails)
+	}
+}
+
+// D4: without WithDispatchInterval, dispatch and discover run in lockstep (no dispatch-only ticks).
+func TestRun_WithoutDispatchInterval_DispatchMatchesDiscover(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t) // no WithDispatchInterval: dt channel is nil, dispatch-only tick never fires
+	ctx, cancel := context.WithTimeout(f.ctx, 150*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, 20*time.Millisecond) }()
+	<-done
+
+	plug.mu.Lock()
+	disc := plug.listCalls
+	plug.mu.Unlock()
+	disp := len(f.disp.snapshot())
+
+	if disp != disc {
+		t.Errorf("without dispatchInterval: dispatch=%d, discover=%d; want equal (each RunOnce does both)", disp, disc)
+	}
+}
