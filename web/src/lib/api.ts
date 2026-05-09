@@ -1,4 +1,4 @@
-import { getCsrfToken } from './utils'
+import { getCsrfToken, setCsrfToken } from './utils'
 import type {
   DashboardSnapshot,
   MetricsSnapshot,
@@ -28,6 +28,8 @@ async function apiFetch<T>(
       ...options?.headers,
     },
   })
+  const csrfToken = res.headers.get('X-CSRF-Token')
+  if (csrfToken) setCsrfToken(csrfToken)
   if (!res.ok) {
     let message = `API error ${res.status}`
     try {
