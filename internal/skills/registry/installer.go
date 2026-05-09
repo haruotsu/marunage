@@ -160,11 +160,12 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (InstallR
 // entry. Centralising the filter here keeps both the CLI and the
 // Web UI on the same matching rules.
 func Search(idx Index, query string) []IndexEntry {
+	hits := make([]IndexEntry, 0, len(idx.Skills))
 	if query == "" {
-		return append([]IndexEntry(nil), idx.Skills...)
+		hits = append(hits, idx.Skills...)
+		return hits
 	}
 	q := strings.ToLower(query)
-	var hits []IndexEntry
 	for _, e := range idx.Skills {
 		if strings.Contains(strings.ToLower(e.Name), q) || strings.Contains(strings.ToLower(e.Description), q) {
 			hits = append(hits, e)

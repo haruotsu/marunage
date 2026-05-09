@@ -112,6 +112,79 @@ func TestRoutes_SkillsInstalledAPI_ReturnsJSON(t *testing.T) {
 	}
 }
 
+// TestRoutes_SkillsInstalledAPI_EmptyState_ReturnsEmptyArray guards
+// against the frontend null-crash: when no skills are installed the
+// JSON body must contain "skills":[] not "skills":null.
+func TestRoutes_SkillsInstalledAPI_EmptyState_ReturnsEmptyArray(t *testing.T) {
+	srv := newSkillsServer(t, SkillsConfig{SkillsRoot: t.TempDir()})
+	rec := doGet(t, srv, "/api/skills/installed")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `"skills":null`) {
+		t.Errorf("response contains null skills array; body=%s", body)
+	}
+	var parsed installedSkillsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Skills == nil {
+		t.Errorf("Skills field is nil; want empty slice")
+	}
+}
+
+// TestRoutes_SkillsInstalledAPI_ZeroConfig_ReturnsEmptyArray guards
+// the same nil case when SkillsRoot is not configured at all.
+func TestRoutes_SkillsInstalledAPI_ZeroConfig_ReturnsEmptyArray(t *testing.T) {
+	srv := newSkillsServer(t, SkillsConfig{})
+	rec := doGet(t, srv, "/api/skills/installed")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `"skills":null`) {
+		t.Errorf("response contains null skills array; body=%s", body)
+	}
+	var parsed installedSkillsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Skills == nil {
+		t.Errorf("Skills field is nil; want empty slice")
+	}
+}
+
+// TestRoutes_SkillsRegistryAPI_NoMatch_ReturnsEmptyArray guards the
+// registry search endpoint against returning "skills":null when the
+// query matches nothing — the same null-crash the installed endpoint
+// already protects against.
+func TestRoutes_SkillsRegistryAPI_NoMatch_ReturnsEmptyArray(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"schema_version":1,"skills":[{"name":"marunage-source-jira","latest":"0.1.0","description":"Jira"}]}`))
+	})
+	upstream := httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+
+	srv := newSkillsServer(t, SkillsConfig{RegistryURL: upstream.URL, AllowInsecure: true})
+	rec := doGet(t, srv, "/api/skills/registry?q=nonexistent")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	body := rec.Body.Bytes()
+	if strings.Contains(string(body), `"skills":null`) {
+		t.Errorf("response contains null skills array; body=%s", body)
+	}
+	var parsed registryResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Skills == nil {
+		t.Errorf("Skills field is nil; want empty slice")
+	}
+}
+
 // TestRoutes_SkillsRegistryAPI_FetchesAndFilters pins the pass-
 // through query: the handler hits the configured upstream registry
 // and returns the matching index entries as JSON.

@@ -83,6 +83,21 @@ func TestSaveState_PersistsAt0600(t *testing.T) {
 	}
 }
 
+// TestLoadState_MissingFile_InstalledNeverNil guards JSON callers: a
+// nil Installed slice serialises to "installed":null which breaks any
+// client that iterates the field. LoadState must always return a
+// non-nil slice even when the state file does not exist yet.
+func TestLoadState_MissingFile_InstalledNeverNil(t *testing.T) {
+	root := t.TempDir()
+	s, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if s.Installed == nil {
+		t.Error("Installed is nil; want non-nil empty slice")
+	}
+}
+
 // TestIsEmbeddedSkill pins the documented skip-list: registry
 // `install` of one of these names must take an explicit override
 // path rather than silently overwriting the bundled copy.

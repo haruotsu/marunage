@@ -294,3 +294,25 @@ func TestFindUpdates_ReportsOutdated(t *testing.T) {
 		t.Errorf("FindUpdates = %+v; want one jira entry", got)
 	}
 }
+
+// TestSearch_NoMatch_NeverNil guards JSON callers: a nil return from
+// Search serialises to "skills":null which breaks frontend iteration.
+func TestSearch_NoMatch_NeverNil(t *testing.T) {
+	idx := Index{SchemaVersion: 1, Skills: []IndexEntry{
+		{Name: "marunage-source-jira", Latest: "0.1.0", Description: "Jira"},
+	}}
+	got := Search(idx, "nonexistent")
+	if got == nil {
+		t.Error("Search returned nil; want non-nil empty slice")
+	}
+}
+
+// TestSearch_EmptyIndex_NeverNil guards the empty-query path with no
+// skills in the index.
+func TestSearch_EmptyIndex_NeverNil(t *testing.T) {
+	idx := Index{SchemaVersion: 1}
+	got := Search(idx, "")
+	if got == nil {
+		t.Error("Search returned nil; want non-nil empty slice")
+	}
+}

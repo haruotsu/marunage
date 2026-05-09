@@ -129,7 +129,7 @@ func newRegistrySearchAPIHandler(cfg SkillsConfig) http.Handler {
 // empty case.
 func loadInstalled(root string) (registry.State, error) {
 	if root == "" {
-		return registry.State{SchemaVersion: registry.SchemaVersion}, nil
+		return registry.State{SchemaVersion: registry.SchemaVersion, Installed: []registry.InstalledSkill{}}, nil
 	}
 	return registry.LoadState(root)
 }
