@@ -91,11 +91,7 @@ func newInstalledSkillsAPIHandler(cfg SkillsConfig) http.Handler {
 			http.Error(w, fmt.Sprintf("skills: %v", err), http.StatusInternalServerError)
 			return
 		}
-		installed := state.Installed
-		if installed == nil {
-			installed = []registry.InstalledSkill{}
-		}
-		writeJSON(w, http.StatusOK, installedSkillsResponse{Skills: installed})
+		writeJSON(w, http.StatusOK, installedSkillsResponse{Skills: state.Installed})
 	})
 }
 
@@ -123,9 +119,6 @@ func newRegistrySearchAPIHandler(cfg SkillsConfig) http.Handler {
 			return
 		}
 		hits := registry.Search(idx, r.URL.Query().Get("q"))
-		if hits == nil {
-			hits = []registry.IndexEntry{}
-		}
 		writeJSON(w, http.StatusOK, registryResponse{Skills: hits})
 	})
 }
@@ -136,7 +129,7 @@ func newRegistrySearchAPIHandler(cfg SkillsConfig) http.Handler {
 // empty case.
 func loadInstalled(root string) (registry.State, error) {
 	if root == "" {
-		return registry.State{SchemaVersion: registry.SchemaVersion}, nil
+		return registry.State{SchemaVersion: registry.SchemaVersion, Installed: []registry.InstalledSkill{}}, nil
 	}
 	return registry.LoadState(root)
 }

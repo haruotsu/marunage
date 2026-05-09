@@ -47,7 +47,7 @@ func LoadState(skillsRoot string) (State, error) {
 	body, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return State{SchemaVersion: SchemaVersion}, nil
+			return State{SchemaVersion: SchemaVersion, Installed: []InstalledSkill{}}, nil
 		}
 		return State{}, fmt.Errorf("registry: read state: %w", err)
 	}
@@ -57,6 +57,9 @@ func LoadState(skillsRoot string) (State, error) {
 	}
 	if s.SchemaVersion == 0 {
 		s.SchemaVersion = SchemaVersion
+	}
+	if s.Installed == nil {
+		s.Installed = []InstalledSkill{}
 	}
 	return s, nil
 }
