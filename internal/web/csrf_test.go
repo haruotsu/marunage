@@ -273,6 +273,25 @@ func TestCSRF_GetResponseIncludesCSRFTokenHeader(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rec.Code)
+		}
+		header := rec.Header().Get(CSRFHeaderName)
+		if header != existing {
+			t.Errorf("header %q = %q; want %q", CSRFHeaderName, header, existing)
+		}
+	})
+
+	t.Run("HEAD with existing cookie: header echoes token", func(t *testing.T) {
+		const existing = "head-method-token"
+		req := httptest.NewRequest(http.MethodHead, "/", nil)
+		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: existing})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rec.Code)
+		}
 		header := rec.Header().Get(CSRFHeaderName)
 		if header != existing {
 			t.Errorf("header %q = %q; want %q", CSRFHeaderName, header, existing)

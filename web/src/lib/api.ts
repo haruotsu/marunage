@@ -28,8 +28,6 @@ async function apiFetch<T>(
       ...options?.headers,
     },
   })
-  const csrfToken = res.headers.get('X-CSRF-Token')
-  if (csrfToken) setCsrfToken(csrfToken)
   if (!res.ok) {
     let message = `API error ${res.status}`
     try {
@@ -40,6 +38,8 @@ async function apiFetch<T>(
     }
     throw new Error(message)
   }
+  const csrfToken = res.headers.get('X-CSRF-Token')
+  if (csrfToken) setCsrfToken(csrfToken)
   return res.json() as Promise<T>
 }
 

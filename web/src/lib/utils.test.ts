@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { getCsrfToken, formatRelativeTime, formatDuration } from './utils'
+import { getCsrfToken, setCsrfToken, formatRelativeTime, formatDuration } from './utils'
 
 describe('getCsrfToken', () => {
   beforeEach(() => {
-    // Clear all cookies
+    setCsrfToken('')
     document.cookie.split(';').forEach((c) => {
       document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT'
     })
@@ -26,6 +26,32 @@ describe('getCsrfToken', () => {
 
   it('does NOT match the old csrf_token cookie name', () => {
     document.cookie = 'csrf_token=wrong'
+    expect(getCsrfToken()).toBe('')
+  })
+})
+
+describe('setCsrfToken / getCsrfToken cache', () => {
+  beforeEach(() => {
+    setCsrfToken('')
+    document.cookie.split(';').forEach((c) => {
+      document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT'
+    })
+  })
+
+  it('returns cached token instead of reading cookie', () => {
+    document.cookie = 'marunage_csrf=cookie-value'
+    setCsrfToken('cached-value')
+    expect(getCsrfToken()).toBe('cached-value')
+  })
+
+  it('falls back to cookie after cache is cleared', () => {
+    document.cookie = 'marunage_csrf=cookie-value'
+    setCsrfToken('cached-value')
+    setCsrfToken('')
+    expect(getCsrfToken()).toBe('cookie-value')
+  })
+
+  it('cache does not leak between tests', () => {
     expect(getCsrfToken()).toBe('')
   })
 })
