@@ -17,6 +17,7 @@ func newNextJSHandler(njs fs.FS) http.Handler {
 			path = "index.html"
 		}
 		fi, err := fs.Stat(njs, path)
+		// fs.Stat guarantees: err != nil implies fi == nil, and err == nil implies fi != nil.
 		switch {
 		case err != nil && !errors.Is(err, fs.ErrNotExist):
 			writeJSONError(w, http.StatusInternalServerError, "internal error")

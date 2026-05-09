@@ -126,7 +126,7 @@ func TestNextJSHandler_DirectoryRouteServesDirectoryIndex(t *testing.T) {
 
 func TestNextJSHandler_DirectoryWithoutIndexFallsBackToSPARoot(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html>index</html>"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html>spa-root</html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "empty-route"), 0o755); err != nil {
@@ -141,7 +141,7 @@ func TestNextJSHandler_DirectoryWithoutIndexFallsBackToSPARoot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /empty-route status = %d; want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "index") {
+	if !strings.Contains(rec.Body.String(), "spa-root") {
 		t.Errorf("GET /empty-route body = %q; want SPA root (index.html) fallback", rec.Body.String())
 	}
 }
