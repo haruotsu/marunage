@@ -5,8 +5,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+let _cachedCsrfToken = ''
+
+export function setCsrfToken(token: string): void {
+  _cachedCsrfToken = token
+}
+
 export function getCsrfToken(): string {
   if (typeof document === 'undefined') return ''
+  if (_cachedCsrfToken) return _cachedCsrfToken
   return document.cookie.match(/marunage_csrf=([^;]+)/)?.[1] ?? ''
 }
 

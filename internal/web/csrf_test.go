@@ -235,6 +235,83 @@ func TestCSRF_DoesNotParseNonFormBodyWhenRejecting(t *testing.T) {
 	}
 }
 
+// TestCSRF_GetResponseIncludesCSRFTokenHeader pins the contract that GET
+// responses carry the X-CSRF-Token header so JS fetch() can cache the token
+// without relying on document.cookie (which privacy extensions may block).
+func TestCSRF_GetResponseIncludesCSRFTokenHeader(t *testing.T) {
+	csrf, err := NewCSRF(testTokenSource)
+	if err != nil {
+		t.Fatalf("NewCSRF: %v", err)
+	}
+	h := csrf.Middleware(http.HandlerFunc(okHandler))
+
+	t.Run("fresh request: header matches issued cookie", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rec.Code)
+		}
+		header := rec.Header().Get(CSRFHeaderName)
+		if header == "" {
+			t.Fatalf("response missing %q header", CSRFHeaderName)
+		}
+		cookie := findCookie(rec.Result().Cookies(), CSRFCookieName)
+		if cookie == nil {
+			t.Fatalf("missing %q cookie", CSRFCookieName)
+		}
+		if header != cookie.Value {
+			t.Errorf("header %q = %q; want cookie value %q", CSRFHeaderName, header, cookie.Value)
+		}
+	})
+
+	t.Run("existing cookie: header echoes existing token", func(t *testing.T) {
+		const existing = "previously-issued-token"
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: existing})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rec.Code)
+		}
+		header := rec.Header().Get(CSRFHeaderName)
+		if header != existing {
+			t.Errorf("header %q = %q; want %q", CSRFHeaderName, header, existing)
+		}
+	})
+
+	t.Run("HEAD with existing cookie: header echoes token", func(t *testing.T) {
+		const existing = "head-method-token"
+		req := httptest.NewRequest(http.MethodHead, "/", nil)
+		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: existing})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rec.Code)
+		}
+		header := rec.Header().Get(CSRFHeaderName)
+		if header != existing {
+			t.Errorf("header %q = %q; want %q", CSRFHeaderName, header, existing)
+		}
+	})
+
+	t.Run("response with X-CSRF-Token carries Cache-Control: no-store", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Header().Get(CSRFHeaderName) == "" {
+			t.Fatal("precondition: X-CSRF-Token header must be set")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("Cache-Control = %q; want %q", cc, "no-store")
+		}
+	})
+}
+
 // countingReader wraps an io.Reader and records how many bytes have
 // been pulled.  Used to make "did this layer read the body?" a
 // directly-assertable property rather than an inference from leftover

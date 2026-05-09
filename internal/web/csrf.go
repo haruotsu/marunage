@@ -70,6 +70,10 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 				http.Error(w, "csrf: token issue failed", http.StatusInternalServerError)
 				return
 			}
+			if cookie, err := r.Cookie(CSRFCookieName); err == nil && cookie.Value != "" {
+				w.Header().Set(CSRFHeaderName, cookie.Value)
+				w.Header().Set("Cache-Control", "no-store")
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

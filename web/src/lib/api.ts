@@ -1,4 +1,4 @@
-import { getCsrfToken } from './utils'
+import { getCsrfToken, setCsrfToken } from './utils'
 import type {
   DashboardSnapshot,
   MetricsSnapshot,
@@ -38,6 +38,8 @@ async function apiFetch<T>(
     }
     throw new Error(message)
   }
+  const csrfToken = res.headers.get('X-CSRF-Token')
+  if (csrfToken) setCsrfToken(csrfToken)
   return res.json() as Promise<T>
 }
 
