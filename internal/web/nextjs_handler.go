@@ -11,8 +11,7 @@ import (
 // For paths that don't match a regular file, it serves index.html (SPA fallback).
 func newNextJSHandler(njs fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		path = strings.TrimSuffix(path, "/")
+		path := strings.Trim(r.URL.Path, "/")
 		if path == "" {
 			path = "index.html"
 		}

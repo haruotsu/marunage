@@ -124,6 +124,17 @@ func TestNextJSHandler_DirectoryRouteServesDirectoryIndex(t *testing.T) {
 	}
 }
 
+func TestNextJSHandler_DoubleTrailingSlashDoesNotReturn500(t *testing.T) {
+	h := newNextJSHandler(os.DirFS(seedNextJSDir(t)))
+	req := httptest.NewRequest("GET", "/skills//", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusInternalServerError {
+		t.Fatalf("GET /skills// returned 500; want 200 (double trailing slash must not cause internal error)")
+	}
+}
+
 func TestNextJSHandler_DirectoryWithoutIndexFallsBackToSPARoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html>spa-root</html>"), 0o644); err != nil {
