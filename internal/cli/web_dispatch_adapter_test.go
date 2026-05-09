@@ -11,7 +11,22 @@ import (
 	"github.com/haruotsu/marunage/internal/web"
 )
 
+// TestWebDispatchAdapter_NoSession_ReturnsErrNoActiveSession verifies that
+// Dispatch returns ErrNoActiveSession when the server is not running inside a
+// cmux terminal session (CMUX_WORKSPACE_ID unset), so the caller gets a clear
+// 503 rather than a confusing cmux error.
+func TestWebDispatchAdapter_NoSession_ReturnsErrNoActiveSession(t *testing.T) {
+	t.Setenv("CMUX_WORKSPACE_ID", "")
+	fd := &fakeDispatcher{}
+	adapter := &webDispatchAdapter{runner: fd}
+	err := adapter.Dispatch(context.Background(), 42)
+	if !errors.Is(err, web.ErrNoActiveSession) {
+		t.Fatalf("Dispatch with no session: err = %v; want web.ErrNoActiveSession", err)
+	}
+}
+
 func TestWebDispatchAdapter_Success(t *testing.T) {
+	t.Setenv("CMUX_WORKSPACE_ID", "workspace:1")
 	fd := &fakeDispatcher{runErr: nil}
 	adapter := &webDispatchAdapter{runner: fd}
 	if err := adapter.Dispatch(context.Background(), 42); err != nil {
@@ -20,6 +35,7 @@ func TestWebDispatchAdapter_Success(t *testing.T) {
 }
 
 func TestWebDispatchAdapter_NotFound(t *testing.T) {
+	t.Setenv("CMUX_WORKSPACE_ID", "workspace:1")
 	fd := &fakeDispatcher{runErr: store.ErrNotFound}
 	adapter := &webDispatchAdapter{runner: fd}
 	err := adapter.Dispatch(context.Background(), 42)
@@ -29,6 +45,7 @@ func TestWebDispatchAdapter_NotFound(t *testing.T) {
 }
 
 func TestWebDispatchAdapter_NotPending(t *testing.T) {
+	t.Setenv("CMUX_WORKSPACE_ID", "workspace:1")
 	fd := &fakeDispatcher{runErr: fmt.Errorf("wrapped: %w", dispatch.ErrNotPending)}
 	adapter := &webDispatchAdapter{runner: fd}
 	err := adapter.Dispatch(context.Background(), 42)
@@ -38,6 +55,7 @@ func TestWebDispatchAdapter_NotPending(t *testing.T) {
 }
 
 func TestWebDispatchAdapter_UnknownError(t *testing.T) {
+	t.Setenv("CMUX_WORKSPACE_ID", "workspace:1")
 	sentinel := errors.New("db blew up")
 	fd := &fakeDispatcher{runErr: sentinel}
 	adapter := &webDispatchAdapter{runner: fd}
@@ -48,6 +66,7 @@ func TestWebDispatchAdapter_UnknownError(t *testing.T) {
 }
 
 func TestWebDispatchAdapter_PassesID(t *testing.T) {
+	t.Setenv("CMUX_WORKSPACE_ID", "workspace:1")
 	fd := &fakeDispatcher{}
 	adapter := &webDispatchAdapter{runner: fd}
 	_ = adapter.Dispatch(context.Background(), 99)

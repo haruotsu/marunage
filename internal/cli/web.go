@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -322,7 +323,15 @@ type webDispatchAdapter struct {
 
 // Dispatch calls the real dispatcher for the given task ID and maps errors to
 // the sentinel values web.mapOpsError recognises for HTTP status mapping.
+//
+// Design: orphaned-process dispatch is intentionally unsupported. The server
+// must be running inside an active cmux terminal session (CMUX_WORKSPACE_ID
+// set). If the session is gone, return ErrNoActiveSession so the caller gets
+// a clear 503 rather than a confusing cmux error.
 func (a *webDispatchAdapter) Dispatch(ctx context.Context, id int64) error {
+	if os.Getenv("CMUX_WORKSPACE_ID") == "" {
+		return web.ErrNoActiveSession
+	}
 	err := a.runner.Run(ctx, dispatch.RunOptions{ID: id})
 	if err == nil {
 		return nil

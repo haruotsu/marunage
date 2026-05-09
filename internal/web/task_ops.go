@@ -21,6 +21,12 @@ var (
 	// allowed from the current status (e.g. dispatch on a non-pending row).
 	// Maps to 409 Conflict.
 	ErrTaskInvalidTransition = errors.New("task ops: invalid status transition")
+	// ErrNoActiveSession is returned by TaskDispatcher when the web server is
+	// not running inside a live cmux terminal session and therefore cannot
+	// dispatch tasks. Orphaned-process dispatch is intentionally unsupported;
+	// the operator must restart marunage web from an active terminal.
+	// Maps to 503 Service Unavailable.
+	ErrNoActiveSession = errors.New("task ops: no active cmux session")
 )
 
 // TaskDispatcher triggers real cmux-backed dispatch for a single task.
@@ -79,6 +85,8 @@ func mapOpsError(w http.ResponseWriter, err error) bool {
 		writeJSONError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, ErrTaskInvalidTransition):
 		writeJSONError(w, http.StatusConflict, "invalid status transition")
+	case errors.Is(err, ErrNoActiveSession):
+		writeJSONError(w, http.StatusServiceUnavailable, "no active session: restart marunage web from a terminal")
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 	}
