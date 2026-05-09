@@ -231,7 +231,7 @@ function TaskDetailContent() {
   )
 }
 
-function TaskListView() {
+export function TaskListView() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
