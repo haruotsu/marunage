@@ -191,7 +191,7 @@ func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 	addr := freeLoopbackAddr(t)
 
-	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath, SkipDispatchAgent: true})
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
 	}
@@ -220,22 +220,20 @@ func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
 	}
 }
 
-// TestWeb_ProductionFactory_DispatchAgentDefaultPath verifies that
-// productionWebFactory succeeds when SkipDispatchAgent is false (the
-// production default). Without a cmux session the dispatch agent falls back
-// to direct dispatch; the factory must not return an error.
-func TestWeb_ProductionFactory_DispatchAgentDefaultPath(t *testing.T) {
+// TestWeb_ProductionFactory_NoDispatchAgentWorkspace verifies that
+// productionWebFactory does not start a cmux dispatch-agent workspace.
+// The dispatch path must always use the direct dispatcher (webDispatchAdapter)
+// so that no "marunage-dispatch-agent" cmux window is created on startup.
+func TestWeb_ProductionFactory_NoDispatchAgentWorkspace(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 	addr := freeLoopbackAddr(t)
 
 	_, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
 		Addr:       addr,
 		ConfigPath: cfgPath,
-		// SkipDispatchAgent intentionally omitted — exercises the production
-		// default path that all other tests bypass with SkipDispatchAgent: true.
 	})
 	if err != nil {
-		t.Fatalf("productionWebFactory with default SkipDispatchAgent: %v", err)
+		t.Fatalf("productionWebFactory: %v", err)
 	}
 	if err := closer(); err != nil {
 		t.Fatalf("closer: %v", err)
@@ -246,8 +244,8 @@ func TestWeb_ProductionFactory_DispatchAgentDefaultPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", logPath, err)
 	}
-	if !bytes.Contains(body, []byte("web.dispatch_agent")) {
-		t.Errorf("daemon.log missing dispatch-agent status log\ncontent:\n%s", body)
+	if bytes.Contains(body, []byte("web.dispatch_agent")) {
+		t.Errorf("daemon.log must not contain dispatch-agent entries; got:\n%s", body)
 	}
 }
 
@@ -339,9 +337,8 @@ port = 7777
 
 	addr := freeLoopbackAddr(t)
 	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
-		Addr:              addr,
-		ConfigPath:        cfgPath,
-		SkipDispatchAgent: true,
+		Addr:       addr,
+		ConfigPath: cfgPath,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
@@ -419,9 +416,8 @@ func TestWeb_DaemonLogReceivesAccessRecord(t *testing.T) {
 	addr := freeLoopbackAddr(t)
 
 	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
-		Addr:              addr,
-		ConfigPath:        cfgPath,
-		SkipDispatchAgent: true,
+		Addr:       addr,
+		ConfigPath: cfgPath,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
@@ -577,7 +573,7 @@ port = 7777
 	factoryCtx, factoryCancel := context.WithCancel(context.Background())
 	t.Cleanup(factoryCancel)
 	runner, closer, err := productionWebFactory(factoryCtx, WebFactoryOptions{
-		Addr: addr, ConfigPath: cfgPath, SkipDispatchAgent: true,
+		Addr: addr, ConfigPath: cfgPath,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
