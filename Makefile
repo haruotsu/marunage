@@ -28,7 +28,7 @@ lint:
 		echo "golangci-lint not installed; see https://golangci-lint.run/welcome/install/"; \
 		exit 1; \
 	fi
-	golangci-lint run ./...
+	golangci-lint run ./cmd/... ./internal/...
 
 fmt:
 	gofmt -w .
