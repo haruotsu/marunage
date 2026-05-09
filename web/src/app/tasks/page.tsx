@@ -1,11 +1,11 @@
 'use client'
 import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { getTask, dispatchTask, promoteTask, reopenTask, deleteTask } from '@/lib/api'
+import { getTask, getTasks, dispatchTask, promoteTask, reopenTask, deleteTask } from '@/lib/api'
 import { StatusBadge } from '@/components/status-badge'
-import { LiveStream } from '@/components/live-stream'
+import { TaskCard } from '@/components/task-card'
 import { formatRelativeTime } from '@/lib/utils'
-import type { TaskDetail } from '@/lib/types'
+import type { Task, TaskDetail } from '@/lib/types'
 import { ArrowLeft, ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -58,11 +58,7 @@ function TaskDetailContent() {
   }
 
   if (!id) {
-    return (
-      <div className="py-12 text-center text-sm text-zinc-500">
-        No task selected. Use <code className="font-mono">?id=N</code> query param.
-      </div>
-    )
+    return <TaskListView />
   }
 
   if (loading && !task) {
@@ -212,11 +208,6 @@ function TaskDetailContent() {
         </Section>
       )}
 
-      <div className="mt-4">
-        <h2 className="mb-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Terminal Stream</h2>
-        <LiveStream taskId={task.id} active={task.status === 'running'} />
-      </div>
-
       {task.audit_entries.length > 0 && (
         <Section title="Audit Log" className="mt-4">
           <div className="space-y-2">
@@ -235,6 +226,61 @@ function TaskDetailContent() {
             ))}
           </div>
         </Section>
+      )}
+    </div>
+  )
+}
+
+function TaskListView() {
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    getTasks()
+      .then((resp) => {
+        setTasks(resp.tasks)
+        setTotal(resp.total)
+        setLoading(false)
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : 'Failed to load tasks')
+        setLoading(false)
+      })
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-24">
+        <RefreshCw className="h-6 w-6 animate-spin text-zinc-400" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/10 dark:text-red-400">
+        {error}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+          Tasks <span className="text-sm font-normal text-zinc-500">({total})</span>
+        </h1>
+      </div>
+      {tasks.length === 0 ? (
+        <div className="py-12 text-center text-sm text-zinc-500">No tasks found.</div>
+      ) : (
+        <div className="space-y-3">
+          {tasks.map((task) => (
+            <TaskCard key={task.id} task={task} />
+          ))}
+        </div>
       )}
     </div>
   )
