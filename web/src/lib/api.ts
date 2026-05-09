@@ -4,14 +4,9 @@ import type {
   MetricsSnapshot,
   JournalEntry,
   JournalAPIResponse,
-  ProjectResponse,
   Task,
   TaskDetail,
   TaskDetailAPIResponse,
-  SkillInfo,
-  SkillRegistryEntry,
-  InstalledSkillsResponse,
-  SkillRegistryResponse,
   TaskListResponse,
 } from './types'
 
@@ -66,11 +61,6 @@ export async function getJournal(date: string): Promise<JournalEntry[]> {
   return resp.entries
 }
 
-export async function getProject(): Promise<ProjectResponse> {
-  if (USE_MOCK) return (await import('./mock')).mockProject
-  return apiFetch<ProjectResponse>('/api/project')
-}
-
 export async function getTasks(): Promise<TaskListResponse> {
   if (USE_MOCK) {
     const { mockTasks } = await import('./mock')
@@ -92,23 +82,6 @@ export async function getSkippedTasks(): Promise<Task[]> {
     return mockTasks.filter((t) => t.status === 'skipped')
   }
   return apiFetch<Task[]>('/api/review/skipped')
-}
-
-export async function getInstalledSkills(): Promise<SkillInfo[]> {
-  if (USE_MOCK) return (await import('./mock')).mockSkillsInstalled
-  const resp = await apiFetch<InstalledSkillsResponse>('/api/skills/installed')
-  return resp.skills
-}
-
-export async function searchSkillsRegistry(q: string): Promise<SkillRegistryEntry[]> {
-  if (USE_MOCK) {
-    const { mockSkillsRegistry } = await import('./mock')
-    return mockSkillsRegistry.filter(
-      (s) => !q || s.name.includes(q) || s.description.includes(q),
-    )
-  }
-  const resp = await apiFetch<SkillRegistryResponse>(`/api/skills/registry?q=${encodeURIComponent(q)}`)
-  return resp.skills
 }
 
 export async function addTask(data: {
@@ -158,13 +131,5 @@ export async function updateTaskPriority(id: number, priority: number): Promise<
     method: 'PATCH',
     headers: mutationHeaders(),
     body: JSON.stringify({ priority }),
-  })
-}
-
-export async function sendToWorkspace(id: number, text: string): Promise<void> {
-  await apiFetch(`/api/tasks/${id}/send`, {
-    method: 'POST',
-    headers: mutationHeaders(),
-    body: JSON.stringify({ text }),
   })
 }

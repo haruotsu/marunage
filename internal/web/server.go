@@ -52,10 +52,6 @@ type Options struct {
 	// the store; the production CLI wires a real store-backed provider.
 	Dashboard DashboardProvider
 
-	// Skills wires the read-only skill registry surface.
-	// The zero value disables /skills and /api/skills/*.
-	Skills SkillsConfig
-
 	// TaskDetail wires the task detail page provider. Nil falls back to
 	// a noop that returns 404 for all IDs.
 	TaskDetail TaskDetailProvider
@@ -90,10 +86,6 @@ type Options struct {
 	// Nil falls back to a noop provider that returns empty entries.
 	Journal JournalProvider
 
-	// Project wires the project board provider for GET /project and GET /api/project.
-	// Nil falls back to a noop provider that returns empty phases.
-	Project ProjectProvider
-
 	// TaskList wires the read-only task list endpoint for GET /api/tasks.
 	// Nil disables GET /api/tasks so servers without a store never expose it.
 	TaskList TaskListProvider
@@ -127,7 +119,6 @@ type Server struct {
 	review     ReviewProvider
 	metrics    MetricsProvider
 	journal    JournalProvider
-	project    ProjectProvider
 	liveStream LiveStreamConfig
 	opts       Options
 }
@@ -167,10 +158,6 @@ func NewServer(opts Options) (*Server, error) {
 	if journal == nil {
 		journal = noopJournalProvider{}
 	}
-	project := opts.Project
-	if project == nil {
-		project = noopProjectProvider{}
-	}
 	liveStream := opts.LiveStream
 	if liveStream.Streamer == nil {
 		liveStream.Streamer = noopWorkspaceStreamer{}
@@ -191,7 +178,6 @@ func NewServer(opts Options) (*Server, error) {
 		review:     opts.Review,
 		metrics:    metrics,
 		journal:    journal,
-		project:    project,
 		liveStream: liveStream,
 		opts:       opts,
 	}, nil
@@ -212,13 +198,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /static/", newStaticHandler())
 
 	// API routes — always registered regardless of frontend mode.
-	mux.Handle("GET /api/skills/installed", newInstalledSkillsAPIHandler(s.opts.Skills))
-	mux.Handle("GET /api/skills/registry", newRegistrySearchAPIHandler(s.opts.Skills))
 	mux.Handle("GET /api/dashboard", newDashboardAPIHandler(s.dashboard))
 	mux.Handle("GET /api/metrics", newMetricsAPIHandler(s.metrics))
 	mux.Handle("GET /prometheus", newPrometheusHandler(s.metrics))
 	mux.Handle("GET /api/journal", newJournalAPIHandler(s.journal))
-	mux.Handle("GET /api/project", newProjectAPIHandler(s.project))
 	// GET /api/tasks/{id} uses the noop provider (returns 404 for all IDs)
 	// when TaskDetail is not wired. GET /api/tasks requires explicit TaskList wiring
 	// so servers without a store do not expose a list endpoint that returns nothing useful.
@@ -242,10 +225,8 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /", newIndexHandler(s.renderer, s.csrf, s.dashboard))
 		mux.Handle("GET /partials/dashboard", newDashboardPartialHandler(s.renderer, s.dashboard))
 		mux.Handle("GET /tasks/{id}", newTaskDetailHandler(s.renderer, s.taskDetail, s.auditLog))
-		mux.Handle("GET /skills", newSkillsHandler(s.renderer, s.csrf, s.opts.Skills))
 		mux.Handle("GET /metrics", newMetricsHandler(s.renderer, s.metrics))
 		mux.Handle("GET /journal", newJournalHandler(s.renderer, s.journal))
-		mux.Handle("GET /project", newProjectHandler(s.renderer, s.project))
 		if s.review != nil {
 			mux.Handle("GET /review", newReviewHandler(s.renderer, s.review))
 		}

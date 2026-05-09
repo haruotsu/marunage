@@ -7,9 +7,7 @@ import {
   ListTodo,
   BarChart2,
   BookOpen,
-  FolderKanban,
   ClipboardCheck,
-  Puzzle,
   Menu,
   X,
   Zap,
@@ -21,9 +19,7 @@ const navItems = [
   { href: '/tasks', label: 'Tasks', icon: ListTodo },
   { href: '/metrics', label: 'Metrics', icon: BarChart2 },
   { href: '/journal', label: 'Journal', icon: BookOpen },
-  { href: '/project', label: 'Project', icon: FolderKanban },
   { href: '/review', label: 'Review', icon: ClipboardCheck },
-  { href: '/skills', label: 'Skills', icon: Puzzle },
 ]
 
 export function Sidebar() {

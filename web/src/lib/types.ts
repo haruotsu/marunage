@@ -109,46 +109,6 @@ export interface JournalAPIResponse {
   entries: JournalEntry[]
 }
 
-export interface ProjectItem {
-  id: string
-  title: string
-  status: string
-}
-
-export interface ProjectPhase {
-  name: string
-  status: string
-  items: ProjectItem[]
-}
-
-// InstalledSkillsResponse mirrors the Go installedSkillsResponse JSON shape.
-export interface InstalledSkillsResponse {
-  skills: SkillInfo[]
-}
-
-// SkillRegistryResponse mirrors the Go registryResponse JSON shape.
-export interface SkillRegistryResponse {
-  skills: SkillRegistryEntry[]
-}
-
-export interface ProjectResponse {
-  phases: ProjectPhase[]
-}
-
-export interface SkillInfo {
-  name: string
-  description: string
-  version: string
-  installed_at: string
-}
-
-export interface SkillRegistryEntry {
-  name: string
-  description: string
-  version: string
-  author: string
-}
-
 // TaskListResponse mirrors the Go taskListAPIResponse JSON shape.
 export interface TaskListResponse {
   tasks: Task[]

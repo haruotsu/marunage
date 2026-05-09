@@ -2,11 +2,8 @@ import type {
   DashboardSnapshot,
   MetricsSnapshot,
   JournalEntry,
-  ProjectResponse,
   Task,
   TaskDetail,
-  SkillInfo,
-  SkillRegistryEntry,
 } from './types'
 
 export const mockDashboard: DashboardSnapshot = {
@@ -126,37 +123,6 @@ export const mockJournalEntries: JournalEntry[] = [
   },
 ]
 
-export const mockProject: ProjectResponse = {
-  phases: [
-    {
-      name: 'Phase 1: Foundation',
-      status: 'done',
-      items: [
-        { id: '10', title: 'Set up project structure', status: 'done' },
-        { id: '11', title: 'Configure CI/CD pipeline', status: 'done' },
-        { id: '12', title: 'Implement core data models', status: 'done' },
-      ],
-    },
-    {
-      name: 'Phase 2: Core Features',
-      status: 'running',
-      items: [
-        { id: '13', title: 'Build task discovery engine', status: 'done' },
-        { id: '14', title: 'Implement task execution', status: 'running' },
-        { id: '15', title: 'Add metrics collection', status: 'pending' },
-      ],
-    },
-    {
-      name: 'Phase 3: UI & Polish',
-      status: 'pending',
-      items: [
-        { id: '16', title: 'Build web dashboard', status: 'running' },
-        { id: '17', title: 'Add notifications', status: 'pending' },
-      ],
-    },
-  ],
-}
-
 export const mockTasks: Task[] = [
   {
     id: 1,
@@ -220,38 +186,3 @@ export const mockTaskDetail: TaskDetail = {
   ],
 }
 
-export const mockSkillsInstalled: SkillInfo[] = [
-  {
-    name: 'review-fix-loop',
-    description: 'Code review and auto-fix loop',
-    version: '1.2.0',
-    installed_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    name: 'marunage-triage',
-    description: 'Task triage and prioritization',
-    version: '2.0.1',
-    installed_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-]
-
-export const mockSkillsRegistry: SkillRegistryEntry[] = [
-  {
-    name: 'deploy-helper',
-    description: 'Automated deployment helper',
-    version: '1.0.0',
-    author: 'marunage-team',
-  },
-  {
-    name: 'code-review',
-    description: 'AI-powered code review',
-    version: '2.1.0',
-    author: 'community',
-  },
-  {
-    name: 'security-scan',
-    description: 'Security vulnerability scanner',
-    version: '0.9.0',
-    author: 'security-team',
-  },
-]
