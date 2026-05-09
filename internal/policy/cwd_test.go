@@ -58,9 +58,9 @@ func TestCwdAllowed_MultiplePrefix_MatchesFirst(t *testing.T) {
 	}
 }
 
-func TestCwdAllowed_EmptyCWD_WithPrefixes_Denied(t *testing.T) {
+func TestCwdAllowed_EmptyCWD_Allowed(t *testing.T) {
 	t.Parallel()
-	if policy.CwdAllowed("", []string{"/home/user/src"}) {
-		t.Error("empty cwd with non-empty prefixes should be denied")
+	if !policy.CwdAllowed("", []string{"/home/user/src"}) {
+		t.Error("empty cwd means unset; should always be allowed regardless of prefix list")
 	}
 }

@@ -128,6 +128,12 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		expandedCwdPrefixes = append(expandedCwdPrefixes, exp)
 	}
 
+	defaultCwd, err := expandHome(cfg.Core.DefaultCwd)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("resolve core.default_cwd %q: %w", cfg.Core.DefaultCwd, err)
+	}
+
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
 		dispatch.WithCmux(cm),
@@ -135,6 +141,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(expandedCwdPrefixes),
+		dispatch.WithDefaultCwd(defaultCwd),
 		dispatch.WithAuditor(auditor),
 		dispatch.WithWorkspaceDirs(dirs),
 		dispatch.WithPermissionMatcher(matcher),

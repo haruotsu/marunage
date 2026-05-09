@@ -287,16 +287,18 @@ func TestTaskOpsHandler_Add_CWDNotAllowed(t *testing.T) {
 	}
 }
 
-// TestTaskOpsHandler_Add_EmptyCWDWithAllowlist: empty cwd + non-empty allowlist -> 400
+// TestTaskOpsHandler_Add_EmptyCWDWithAllowlist: empty cwd means "unset" -> allowed even with allowlist
 func TestTaskOpsHandler_Add_EmptyCWDWithAllowlist(t *testing.T) {
-	store := &fakeTasks{}
+	store := &fakeTasks{
+		addFn: func(_ context.Context, _, _, _ string, _ int) (int64, error) { return 1, nil },
+	}
 	h := newAddTaskHandler(store, []string{"/home/user/works"})
 
 	payload, _ := json.Marshal(map[string]any{"title": "task", "cwd": ""})
 	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks", payload)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400 (empty cwd with allowlist)", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201 (empty cwd is unset and always allowed)", rec.Code)
 	}
 }
 
