@@ -297,6 +297,19 @@ func TestCSRF_GetResponseIncludesCSRFTokenHeader(t *testing.T) {
 			t.Errorf("header %q = %q; want %q", CSRFHeaderName, header, existing)
 		}
 	})
+
+	t.Run("response with X-CSRF-Token carries Cache-Control: no-store", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Header().Get(CSRFHeaderName) == "" {
+			t.Fatal("precondition: X-CSRF-Token header must be set")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("Cache-Control = %q; want %q", cc, "no-store")
+		}
+	})
 }
 
 // countingReader wraps an io.Reader and records how many bytes have

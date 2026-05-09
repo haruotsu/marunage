@@ -12,8 +12,8 @@ export function setCsrfToken(token: string): void {
 }
 
 export function getCsrfToken(): string {
-  if (_cachedCsrfToken) return _cachedCsrfToken
   if (typeof document === 'undefined') return ''
+  if (_cachedCsrfToken) return _cachedCsrfToken
   return document.cookie.match(/marunage_csrf=([^;]+)/)?.[1] ?? ''
 }
 

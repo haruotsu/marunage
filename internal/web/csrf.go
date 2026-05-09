@@ -72,6 +72,7 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 			}
 			if cookie, err := r.Cookie(CSRFCookieName); err == nil && cookie.Value != "" {
 				w.Header().Set(CSRFHeaderName, cookie.Value)
+				w.Header().Set("Cache-Control", "no-store")
 			}
 			next.ServeHTTP(w, r)
 			return
