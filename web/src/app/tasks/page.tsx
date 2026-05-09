@@ -252,7 +252,7 @@ export function TaskListView() {
 
   if (loading) {
     return (
-      <div className="flex justify-center py-24">
+      <div className="flex justify-center py-24" data-testid="loading">
         <RefreshCw className="h-6 w-6 animate-spin text-zinc-400" />
       </div>
     )

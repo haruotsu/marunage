@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import type { Task } from '@/lib/types'
+import { TaskListView } from './page'
 
 const mockGetTasks = vi.fn()
 
@@ -46,8 +47,6 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   }
 }
 
-import { TaskListView } from './page'
-
 describe('TaskListView', () => {
   beforeEach(() => {
     mockGetTasks.mockReset()
@@ -56,7 +55,7 @@ describe('TaskListView', () => {
   it('shows loading spinner while fetching', () => {
     mockGetTasks.mockReturnValue(new Promise(() => {}))
     render(<TaskListView />)
-    expect(document.querySelector('.animate-spin')).toBeTruthy()
+    expect(screen.getByTestId('loading')).toBeTruthy()
   })
 
   it('renders task cards after successful fetch', async () => {
