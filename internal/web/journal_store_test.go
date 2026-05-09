@@ -29,9 +29,9 @@ func newJournalFixture(t *testing.T) *journalFixture {
 	}
 	tasks := store.NewTaskRepo(db, store.WithClock(func() time.Time { return journalFixedClock }))
 	return &journalFixture{
-		ctx:      context.Background(),
-		taskRepo: tasks,
-		provider: web.NewSQLJournalProvider(db),
+		ctx:       context.Background(),
+		taskRepo:  tasks,
+		provider:  web.NewSQLJournalProvider(db),
 		closeFunc: func() { _ = db.Close() },
 	}
 }
