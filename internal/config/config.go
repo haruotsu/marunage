@@ -38,11 +38,12 @@ type SecretsConfig struct {
 }
 
 type DiscoveryConfig struct {
-	Interval       string          `toml:"interval"`
-	SourcesEnabled []string        `toml:"sources_enabled"`
-	Gmail          DiscoveryGmail  `toml:"gmail"`
-	Slack          DiscoverySlack  `toml:"slack"`
-	GitHub         DiscoveryGitHub `toml:"github"`
+	Interval         string          `toml:"interval"`
+	DispatchInterval string          `toml:"dispatch_interval"`
+	SourcesEnabled   []string        `toml:"sources_enabled"`
+	Gmail            DiscoveryGmail  `toml:"gmail"`
+	Slack            DiscoverySlack  `toml:"slack"`
+	GitHub           DiscoveryGitHub `toml:"github"`
 }
 
 type DiscoveryGmail struct {
@@ -175,8 +176,9 @@ func Default() Config {
 			Backend: "auto",
 		},
 		Discovery: DiscoveryConfig{
-			Interval:       "10m",
-			SourcesEnabled: []string{"markdown"},
+			Interval:         "10m",
+			DispatchInterval: "30s",
+			SourcesEnabled:   []string{"markdown"},
 			Gmail: DiscoveryGmail{
 				Query:         "is:unread to:me -label:auto-archived",
 				CheckpointKey: "gmail_last_id",
@@ -289,6 +291,11 @@ func (c Config) Validate() error {
 	}
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
+	}
+	if c.Discovery.DispatchInterval != "" {
+		if _, err := time.ParseDuration(c.Discovery.DispatchInterval); err != nil {
+			return fmt.Errorf("discovery.dispatch_interval: %w", err)
+		}
 	}
 	if c.Journal.Enabled {
 		d, err := time.ParseDuration(c.Journal.Interval)

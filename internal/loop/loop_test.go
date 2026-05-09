@@ -918,3 +918,86 @@ func (r *trackingRender) Render(_ context.Context) error { r.fn(); return nil }
 type trackingReaper struct{ fn func() }
 
 func (r *trackingReaper) Run(_ context.Context) error { r.fn(); return nil }
+
+// D1: with a short dispatchInterval, dispatch fires more often than discovery.
+func TestRun_DispatchIntervalFiresMoreOftenThanDiscovery(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t, loop.WithDispatchInterval(10*time.Millisecond))
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, 100*time.Millisecond) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		disp := len(f.disp.snapshot())
+		plug.mu.Lock()
+		disc := plug.listCalls
+		plug.mu.Unlock()
+		if disp > disc+2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("dispatch calls (%d) did not outpace discover calls (%d) within 2s", disp, disc)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
+// D2: dispatch-only ticks skip the discover phase entirely.
+func TestRun_DispatchOnlyTickSkipsDiscover(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t, loop.WithDispatchInterval(5*time.Millisecond))
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, time.Hour) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if len(f.disp.snapshot()) >= 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("dispatch only ran %d times within 2s; want >= 5", len(f.disp.snapshot()))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	plug.mu.Lock()
+	listCalls := plug.listCalls
+	plug.mu.Unlock()
+	if listCalls != 1 {
+		t.Errorf("discover called %d times; want exactly 1 (initial tick only)", listCalls)
+	}
+	dispCalls := len(f.disp.snapshot())
+	if dispCalls < 5 {
+		t.Errorf("dispatch ran %d times; want >= 5", dispCalls)
+	}
+}

@@ -99,16 +99,17 @@ type Reaper interface {
 // Loop is the orchestrator. One instance per process; concurrency
 // guarantees rest on WithLockKey.
 type Loop struct {
-	registry    *source.Registry
-	repo        TaskRepo
-	kv          KVStateRepo
-	dispatcher  Dispatcher
-	render      Render
-	reaper      Reaper
-	auditor     config.Auditor
-	now         func() time.Time
-	maxParallel int
-	lockKey     string
+	registry         *source.Registry
+	repo             TaskRepo
+	kv               KVStateRepo
+	dispatcher       Dispatcher
+	render           Render
+	reaper           Reaper
+	auditor          config.Auditor
+	now              func() time.Time
+	maxParallel      int
+	lockKey          string
+	dispatchInterval time.Duration
 	// ownerToken is the per-Loop sentinel used as the kv_state lock
 	// row's value so DeleteIfValue can detect "this defer's lock is no
 	// longer mine" and skip the release. Generated once at New time so
@@ -162,6 +163,15 @@ func WithLockKey(key string) Option { return func(l *Loop) { l.lockKey = key } }
 // the reaper phase is skipped. The reaper runs after render so orphaned
 // running rows are reclaimed before the next discover → dispatch cycle.
 func WithReaper(r Reaper) Option { return func(l *Loop) { l.reaper = r } }
+
+// WithDispatchInterval adds a second, shorter ticker that runs dispatch +
+// render (but NOT discover) on every fire. When > 0, pending tasks added
+// via the web UI are picked up without waiting for the full discovery
+// cycle. A nil channel in the select blocks forever, so callers that omit
+// this option see zero behaviour change.
+func WithDispatchInterval(d time.Duration) Option {
+	return func(l *Loop) { l.dispatchInterval = d }
+}
 
 // New builds a Loop. Required: WithRegistry, WithTaskRepo,
 // WithDispatcher, WithRender. Returns ErrInvalidConfig naming the
@@ -282,6 +292,11 @@ func (l *Loop) RunOnce(ctx context.Context) (err error) {
 // ctx is cancelled. RunOnce errors are audited but do not stop the
 // loop — the next tick still runs. This mirrors the dispatch contract:
 // per-plugin failures do not poison the queue.
+//
+// When WithDispatchInterval is set, a second ticker fires at that shorter
+// period and calls dispatchOnly (dispatch + render, no discover). A nil
+// channel in the select blocks forever so callers without a dispatch
+// interval see zero behaviour change.
 func (l *Loop) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		return fmt.Errorf("%w: got %v", ErrInvalidInterval, interval)
@@ -291,6 +306,14 @@ func (l *Loop) Run(ctx context.Context, interval time.Duration) error {
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
+
+	var dt <-chan time.Time
+	if l.dispatchInterval > 0 {
+		dispatchTicker := time.NewTicker(l.dispatchInterval)
+		defer dispatchTicker.Stop()
+		dt = dispatchTicker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -299,8 +322,61 @@ func (l *Loop) Run(ctx context.Context, interval time.Duration) error {
 			if err := l.runTick(ctx); err != nil {
 				return err
 			}
+		case <-dt:
+			if err := l.runDispatchTick(ctx); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+// dispatchOnly runs dispatcher.Run + render.Render + optional reaper.Run
+// without calling discoverAll. Used by the dispatch-interval ticker so
+// pending tasks added via the web UI are picked up on the shorter cycle.
+func (l *Loop) dispatchOnly(ctx context.Context) error {
+	if err := l.dispatcher.Run(ctx, dispatch.RunOptions{MaxParallel: l.maxParallel}); err != nil {
+		l.auditor.Record(config.AuditEvent{
+			Action: "loop.dispatch.fail",
+			Value:  logging.Redact(err.Error()),
+		})
+		return fmt.Errorf("loop: dispatch: %w", err)
+	}
+	if err := l.render.Render(ctx); err != nil {
+		l.auditor.Record(config.AuditEvent{
+			Action: "loop.render.fail",
+			Value:  logging.Redact(err.Error()),
+		})
+		return fmt.Errorf("loop: render: %w", err)
+	}
+	if l.reaper != nil {
+		if err := l.reaper.Run(ctx); err != nil {
+			slog.WarnContext(ctx, "loop: reaper failed", "err", err)
+			l.auditor.Record(config.AuditEvent{
+				Action: "loop.reaper.fail",
+				Value:  logging.Redact(err.Error()),
+			})
+		}
+	}
+	return nil
+}
+
+// runDispatchTick calls dispatchOnly and translates ctx-cancel into a
+// clean exit. Other errors are audited and swallowed — same pattern as
+// runTick so the loop keeps ticking through transient dispatch failures.
+func (l *Loop) runDispatchTick(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
+	if err := l.dispatchOnly(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		l.auditor.Record(config.AuditEvent{
+			Action: "loop.tick.fail",
+			Value:  logging.Redact(err.Error()),
+		})
+	}
+	return nil
 }
 
 // runTick runs one RunOnce and translates ctx-cancel into a clean exit
