@@ -104,6 +104,7 @@ func TestNextJSHandler_DirectoryRouteServesDirectoryIndex(t *testing.T) {
 	}{
 		{"/journal", "journal"},
 		{"/metrics", "metrics"},
+		// /skills without trailing slash; complements TrailingSlash test which uses /skills/
 		{"/skills", "skills"},
 	}
 	for _, tc := range cases {
@@ -120,5 +121,27 @@ func TestNextJSHandler_DirectoryRouteServesDirectoryIndex(t *testing.T) {
 				t.Errorf("GET %s body = %q; want it to contain %q (route-specific page, not root index)", tc.path, rec.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestNextJSHandler_DirectoryWithoutIndexFallsBackToSPARoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html>index</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "empty-route"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newNextJSHandler(os.DirFS(root))
+	req := httptest.NewRequest("GET", "/empty-route", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /empty-route status = %d; want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "index") {
+		t.Errorf("GET /empty-route body = %q; want SPA root (index.html) fallback", rec.Body.String())
 	}
 }

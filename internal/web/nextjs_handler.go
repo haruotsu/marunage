@@ -25,7 +25,7 @@ func newNextJSHandler(njs fs.FS) http.Handler {
 			// Next.js static export stores each route as <route>/index.html.
 			// Try the directory index before falling back to the SPA root.
 			if _, err2 := fs.Stat(njs, path+"/index.html"); err2 == nil {
-				path = path + "/index.html"
+				path += "/index.html"
 			} else {
 				path = "index.html"
 			}
