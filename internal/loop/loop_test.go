@@ -978,10 +978,7 @@ func TestRun_DispatchOnlyTickSkipsDiscover(t *testing.T) {
 	go func() { done <- l.Run(ctx, time.Hour) }()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if len(f.disp.snapshot()) >= 5 {
-			break
-		}
+	for len(f.disp.snapshot()) < 5 {
 		if time.Now().After(deadline) {
 			cancel()
 			<-done
