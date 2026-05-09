@@ -146,3 +146,36 @@ func TestSQLJournalProvider_ExcludesPendingTasks(t *testing.T) {
 		t.Errorf("Entries len=%d; want 0 (pending task excluded)", len(snap.Entries))
 	}
 }
+
+func TestSQLJournalProvider_EmptyDateUsesInjectedClock(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "tasks.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	pastDate := time.Date(2020, 1, 15, 12, 0, 0, 0, time.UTC)
+	tasks := store.NewTaskRepo(db, store.WithClock(func() time.Time { return pastDate }))
+
+	id, err := tasks.Insert(context.Background(), store.Task{Source: "test", Title: "past task"})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tasks.MarkDoneWithSummary(context.Background(), id, "done", pastDate); err != nil {
+		t.Fatalf("MarkDoneWithSummary: %v", err)
+	}
+
+	provider := web.NewSQLJournalProvider(db, web.JournalOptions{Now: func() time.Time { return pastDate }})
+
+	snap, err := provider.JournalSnapshot(context.Background(), "")
+	if err != nil {
+		t.Fatalf("JournalSnapshot: %v", err)
+	}
+	if len(snap.Entries) != 1 {
+		t.Fatalf("Entries len=%d; want 1 (clock-injected date should match task date)", len(snap.Entries))
+	}
+	if snap.Date != "2020-01-15" {
+		t.Errorf("Date=%q; want 2020-01-15", snap.Date)
+	}
+}

@@ -62,16 +62,15 @@ function makeTaskDetail(overrides: Partial<Task> = {}): TaskDetail {
 }
 
 describe('TaskDetailContent delete', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockGetTask.mockReset()
     mockDeleteTask.mockReset()
     mockPush.mockReset()
+    const { useSearchParams } = await import('next/navigation')
+    vi.mocked(useSearchParams).mockReturnValue({ get: (key: string) => key === 'id' ? '1' : null } as ReturnType<typeof useSearchParams>)
   })
 
   it('navigates to /tasks after successful delete', async () => {
-    const { useSearchParams } = await import('next/navigation')
-    vi.mocked(useSearchParams).mockReturnValue({ get: (key: string) => key === 'id' ? '1' : null } as ReturnType<typeof useSearchParams>)
-
     mockGetTask.mockResolvedValue(makeTaskDetail({ id: 1, title: 'To Delete' }))
     mockDeleteTask.mockResolvedValue(undefined)
 
@@ -86,6 +85,24 @@ describe('TaskDetailContent delete', () => {
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith('/tasks')
     })
+  })
+
+  it('shows error message when delete fails', async () => {
+    mockGetTask.mockResolvedValue(makeTaskDetail({ id: 1, title: 'To Delete' }))
+    mockDeleteTask.mockRejectedValue(new Error('delete failed'))
+
+    render(<TaskDetailContent />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Delete')).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByText('Delete'))
+
+    await waitFor(() => {
+      expect(screen.getByText('delete failed')).toBeTruthy()
+    })
+    expect(mockPush).not.toHaveBeenCalled()
   })
 })
 
