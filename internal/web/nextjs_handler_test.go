@@ -19,6 +19,8 @@ func seedNextJSDir(t *testing.T) string {
 	files := map[string]string{
 		"index.html":                  "<html>index</html>",
 		"skills/index.html":           "<html>skills</html>",
+		"journal/index.html":          "<html>journal</html>",
+		"metrics/index.html":          "<html>metrics</html>",
 		"_next/static/chunks/app.css": "body{color:red}",
 		"_next/static/chunks/app.js":  "console.log('ok')",
 	}
@@ -34,11 +36,11 @@ func seedNextJSDir(t *testing.T) string {
 	return root
 }
 
-// TestNextJSHandler_TrailingSlashFallsBackToIndexHTML guards against
-// the regression where fs.Stat("skills/") returns "invalid argument"
-// (not ErrNotExist) on os.DirFS / embed.FS, causing a 500 instead of
-// the SPA index.html fallback.
-func TestNextJSHandler_TrailingSlashFallsBackToIndexHTML(t *testing.T) {
+// TestNextJSHandler_TrailingSlashServesDirectoryIndex guards against the
+// regression where fs.Stat("skills/") returns "invalid argument" (not
+// ErrNotExist) on os.DirFS / embed.FS, causing a 500. It also verifies
+// that a trailing slash serves the route-specific page, not the SPA root.
+func TestNextJSHandler_TrailingSlashServesDirectoryIndex(t *testing.T) {
 	h := newNextJSHandler(os.DirFS(seedNextJSDir(t)))
 	req := httptest.NewRequest("GET", "/skills/", nil)
 	rec := httptest.NewRecorder()
@@ -47,8 +49,8 @@ func TestNextJSHandler_TrailingSlashFallsBackToIndexHTML(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /skills/ status = %d; want 200 (not 500)", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "index") {
-		t.Errorf("GET /skills/ body should be index.html fallback; got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "skills") {
+		t.Errorf("GET /skills/ body = %q; want route-specific page (skills/index.html)", rec.Body.String())
 	}
 }
 
@@ -92,5 +94,31 @@ func TestNextJSHandler_RootServesIndexHTML(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "index") {
 		t.Errorf("GET / body should be index.html; got %q", rec.Body.String())
+	}
+}
+
+func TestNextJSHandler_DirectoryRouteServesDirectoryIndex(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/journal", "journal"},
+		{"/metrics", "metrics"},
+		{"/skills", "skills"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			h := newNextJSHandler(os.DirFS(seedNextJSDir(t)))
+			req := httptest.NewRequest("GET", tc.path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d; want 200", tc.path, rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Errorf("GET %s body = %q; want it to contain %q (route-specific page, not root index)", tc.path, rec.Body.String(), tc.want)
+			}
+		})
 	}
 }
