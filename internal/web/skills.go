@@ -91,7 +91,11 @@ func newInstalledSkillsAPIHandler(cfg SkillsConfig) http.Handler {
 			http.Error(w, fmt.Sprintf("skills: %v", err), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, installedSkillsResponse{Skills: state.Installed})
+		installed := state.Installed
+		if installed == nil {
+			installed = []registry.InstalledSkill{}
+		}
+		writeJSON(w, http.StatusOK, installedSkillsResponse{Skills: installed})
 	})
 }
 
