@@ -372,7 +372,7 @@ func (l *Loop) runDispatchTick(ctx context.Context) error {
 			return nil
 		}
 		l.auditor.Record(config.AuditEvent{
-			Action: "loop.tick.fail",
+			Action: "loop.dispatch_tick.fail",
 			Value:  logging.Redact(err.Error()),
 		})
 	}

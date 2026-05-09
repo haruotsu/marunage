@@ -1001,3 +1001,44 @@ func TestRun_DispatchOnlyTickSkipsDiscover(t *testing.T) {
 		t.Errorf("dispatch ran %d times; want >= 5", dispCalls)
 	}
 }
+
+// D3: dispatch-only tick failure records "loop.dispatch_tick.fail", not "loop.tick.fail".
+// The initial RunOnce (before the ticker loop) legitimately records "loop.tick.fail" once
+// when dispatch fails; only subsequent dispatch-only ticks should use the distinct action.
+func TestRunDispatchTick_FailureRecordsDistinctAuditAction(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	plug := &fakePlugin{
+		name:   "test",
+		listFn: func(context.Context) ([]source.Task, error) { return nil, nil },
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	f.disp.err = errors.New("dispatch boom")
+	l := f.newLoop(t, loop.WithDispatchInterval(5*time.Millisecond))
+	ctx, cancel := context.WithTimeout(f.ctx, 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx, time.Hour) }()
+	<-done
+
+	var fullTickFails, dispatchTickFails int
+	for _, e := range f.aud.snapshot() {
+		switch e.Action {
+		case "loop.tick.fail":
+			fullTickFails++
+		case "loop.dispatch_tick.fail":
+			dispatchTickFails++
+		}
+	}
+	// Initial RunOnce always fires once before the ticker loop, causing exactly
+	// 1 loop.tick.fail. All dispatch-only failures must use "loop.dispatch_tick.fail".
+	if fullTickFails > 1 {
+		t.Errorf("loop.tick.fail appeared %d times; only the initial RunOnce should produce it (want <= 1)", fullTickFails)
+	}
+	if dispatchTickFails < 5 {
+		t.Errorf("loop.dispatch_tick.fail appeared %d times; want >= 5", dispatchTickFails)
+	}
+}

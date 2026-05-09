@@ -200,6 +200,26 @@ func TestValidate(t *testing.T) {
 			mutate:  func(c *Config) { c.Discovery.Gmail.MaxResults = -1 },
 			wantErr: "discovery.gmail.max_results",
 		},
+		{
+			name:    "discovery.dispatch_interval must parse as duration",
+			mutate:  func(c *Config) { c.Discovery.DispatchInterval = "not-a-duration" },
+			wantErr: "discovery.dispatch_interval",
+		},
+		{
+			name:    "discovery.dispatch_interval rejects negative",
+			mutate:  func(c *Config) { c.Discovery.DispatchInterval = "-30s" },
+			wantErr: "discovery.dispatch_interval",
+		},
+		{
+			name:    "discovery.dispatch_interval accepts empty (opt-out)",
+			mutate:  func(c *Config) { c.Discovery.DispatchInterval = "" },
+			wantErr: "",
+		},
+		{
+			name:    "discovery.dispatch_interval accepts zero (disabled)",
+			mutate:  func(c *Config) { c.Discovery.DispatchInterval = "0s" },
+			wantErr: "",
+		},
 	}
 
 	for _, tc := range cases {

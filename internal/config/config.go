@@ -293,8 +293,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("discovery.interval: %w", err)
 	}
 	if c.Discovery.DispatchInterval != "" {
-		if _, err := time.ParseDuration(c.Discovery.DispatchInterval); err != nil {
+		di, err := time.ParseDuration(c.Discovery.DispatchInterval)
+		if err != nil {
 			return fmt.Errorf("discovery.dispatch_interval: %w", err)
+		}
+		if di < 0 {
+			return fmt.Errorf("discovery.dispatch_interval: must be non-negative, got %v", di)
 		}
 	}
 	if c.Journal.Enabled {
