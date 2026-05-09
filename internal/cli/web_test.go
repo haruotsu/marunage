@@ -191,7 +191,7 @@ func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
 	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
 	addr := freeLoopbackAddr(t)
 
-	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath})
+	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{Addr: addr, ConfigPath: cfgPath, SkipDispatchAgent: true})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
 	}
@@ -217,6 +217,37 @@ func TestWeb_ProductionFactory_RealListenAndShutdown(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("Run did not return within 6s of cancel; expected graceful shutdown within 5s budget")
+	}
+}
+
+// TestWeb_ProductionFactory_DispatchAgentDefaultPath verifies that
+// productionWebFactory succeeds when SkipDispatchAgent is false (the
+// production default). Without a cmux session the dispatch agent falls back
+// to direct dispatch; the factory must not return an error.
+func TestWeb_ProductionFactory_DispatchAgentDefaultPath(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+	addr := freeLoopbackAddr(t)
+
+	_, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
+		Addr:       addr,
+		ConfigPath: cfgPath,
+		// SkipDispatchAgent intentionally omitted — exercises the production
+		// default path that all other tests bypass with SkipDispatchAgent: true.
+	})
+	if err != nil {
+		t.Fatalf("productionWebFactory with default SkipDispatchAgent: %v", err)
+	}
+	if err := closer(); err != nil {
+		t.Fatalf("closer: %v", err)
+	}
+
+	logPath := filepath.Join(filepath.Dir(cfgPath), "logs", "daemon.log")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", logPath, err)
+	}
+	if !bytes.Contains(body, []byte("web.dispatch_agent")) {
+		t.Errorf("daemon.log missing dispatch-agent status log\ncontent:\n%s", body)
 	}
 }
 
@@ -308,8 +339,9 @@ port = 7777
 
 	addr := freeLoopbackAddr(t)
 	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
-		Addr:       addr,
-		ConfigPath: cfgPath,
+		Addr:              addr,
+		ConfigPath:        cfgPath,
+		SkipDispatchAgent: true,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
@@ -387,8 +419,9 @@ func TestWeb_DaemonLogReceivesAccessRecord(t *testing.T) {
 	addr := freeLoopbackAddr(t)
 
 	runner, closer, err := productionWebFactory(context.Background(), WebFactoryOptions{
-		Addr:       addr,
-		ConfigPath: cfgPath,
+		Addr:              addr,
+		ConfigPath:        cfgPath,
+		SkipDispatchAgent: true,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
@@ -544,7 +577,7 @@ port = 7777
 	factoryCtx, factoryCancel := context.WithCancel(context.Background())
 	t.Cleanup(factoryCancel)
 	runner, closer, err := productionWebFactory(factoryCtx, WebFactoryOptions{
-		Addr: addr, ConfigPath: cfgPath,
+		Addr: addr, ConfigPath: cfgPath, SkipDispatchAgent: true,
 	})
 	if err != nil {
 		t.Fatalf("productionWebFactory: %v", err)
