@@ -8,13 +8,15 @@ import (
 )
 
 // CwdAllowed reports whether cwd satisfies the allowlist. An empty
-// prefixes slice means "all paths allowed". Otherwise cwd must equal
-// one of the prefixes or be a direct descendant (starts with prefix+"/").
+// prefixes slice means "all paths allowed". An empty cwd means "unset"
+// (the dispatcher will fall back to default_cwd) and is always allowed.
+// Otherwise cwd must equal one of the prefixes or be a direct descendant
+// (starts with prefix+"/").
 //
 // CWD is cleaned with filepath.Clean before comparison so that paths
 // containing ".." cannot bypass the check.
 func CwdAllowed(cwd string, prefixes []string) bool {
-	if len(prefixes) == 0 {
+	if len(prefixes) == 0 || cwd == "" {
 		return true
 	}
 	clean := filepath.Clean(cwd)
