@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { getTask, getTasks, dispatchTask, promoteTask, reopenTask, deleteTask } from '@/lib/api'
 import { StatusBadge } from '@/components/status-badge'
 import { TaskCard } from '@/components/task-card'
@@ -17,11 +17,12 @@ export default function TaskDetailPage() {
   )
 }
 
-function TaskDetailContent() {
+export function TaskDetailContent() {
   const params = useSearchParams()
   const idStr = params.get('id')
   const id = idStr ? parseInt(idStr, 10) : null
 
+  const router = useRouter()
   const [task, setTask] = useState<TaskDetail | null>(null)
   const [loading, setLoading] = useState(id !== null)
   const [error, setError] = useState<string | null>(null)
@@ -132,7 +133,14 @@ function TaskDetailContent() {
         )}
         <ActionButton
           label="Delete"
-          onClick={() => doAction(() => deleteTask(task.id))}
+          onClick={() => {
+            setActionError(null)
+            deleteTask(task.id)
+              .then(() => router.push('/tasks'))
+              .catch((e: unknown) => {
+                setActionError(e instanceof Error ? e.message : 'Action failed')
+              })
+          }}
           variant="danger"
           icon={<Trash2 className="h-3.5 w-3.5" />}
         />

@@ -27,6 +27,7 @@ jobs:
           # Pin the tool version so an upstream release cannot break CI silently.
           # action@v7 is required to drive golangci-lint v2.x — v6 only supports v1.x.
           version: v2.12.1
+          args: ./cmd/... ./internal/...
 
   test:
     runs-on: ubuntu-latest
