@@ -25,11 +25,12 @@ vi.mock('@/components/status-badge', () => ({
 }))
 
 function makeTask(overrides: Partial<Task> = {}): Task {
+  const id = overrides.id ?? 1
   return {
-    id: 1,
+    id,
     source: 'github',
-    external_id: 'ext-1',
-    external_url: 'https://example.com/1',
+    external_id: `ext-${id}`,
+    external_url: `https://example.com/${id}`,
     title: 'Test Task',
     body: '',
     notes: '',
