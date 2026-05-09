@@ -123,6 +123,9 @@ func newRegistrySearchAPIHandler(cfg SkillsConfig) http.Handler {
 			return
 		}
 		hits := registry.Search(idx, r.URL.Query().Get("q"))
+		if hits == nil {
+			hits = []registry.IndexEntry{}
+		}
 		writeJSON(w, http.StatusOK, registryResponse{Skills: hits})
 	})
 }

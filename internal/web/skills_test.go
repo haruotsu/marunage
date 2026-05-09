@@ -155,6 +155,36 @@ func TestRoutes_SkillsInstalledAPI_ZeroConfig_ReturnsEmptyArray(t *testing.T) {
 	}
 }
 
+// TestRoutes_SkillsRegistryAPI_NoMatch_ReturnsEmptyArray guards the
+// registry search endpoint against returning "skills":null when the
+// query matches nothing — the same null-crash the installed endpoint
+// already protects against.
+func TestRoutes_SkillsRegistryAPI_NoMatch_ReturnsEmptyArray(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"schema_version":1,"skills":[{"name":"marunage-source-jira","latest":"0.1.0","description":"Jira"}]}`))
+	})
+	upstream := httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+
+	srv := newSkillsServer(t, SkillsConfig{RegistryURL: upstream.URL, AllowInsecure: true})
+	rec := doGet(t, srv, "/api/skills/registry?q=nonexistent")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	body := rec.Body.Bytes()
+	if strings.Contains(string(body), `"skills":null`) {
+		t.Errorf("response contains null skills array; body=%s", body)
+	}
+	var parsed registryResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Skills == nil {
+		t.Errorf("Skills field is nil; want empty slice")
+	}
+}
+
 // TestRoutes_SkillsRegistryAPI_FetchesAndFilters pins the pass-
 // through query: the handler hits the configured upstream registry
 // and returns the matching index entries as JSON.
