@@ -242,12 +242,11 @@ export function TaskListView() {
       .then((resp) => {
         setTasks(resp.tasks)
         setTotal(resp.total)
-        setLoading(false)
       })
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : 'Failed to load tasks')
-        setLoading(false)
       })
+      .finally(() => setLoading(false))
   }, [])
 
   if (loading) {
