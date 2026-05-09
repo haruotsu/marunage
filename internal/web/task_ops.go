@@ -62,12 +62,6 @@ func parseIDFromRequest(r *http.Request) (int64, error) {
 	return strconv.ParseInt(raw, 10, 64)
 }
 
-// writeJSONError writes a JSON error response with the given status and message.
-// It delegates to writeJSON (defined in skills.go, shared across the web package).
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
 // mapOpsError translates TaskOpsStore errors to HTTP status codes.
 // Returns 0 if the error is nil, otherwise the appropriate HTTP status.
 func mapOpsError(w http.ResponseWriter, err error) bool {
