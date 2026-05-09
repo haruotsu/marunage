@@ -72,9 +72,8 @@ type webRunner interface {
 // to 0.0.0.0 + emits the warning banner) so the factory does not
 // need to know about it.
 type WebFactoryOptions struct {
-	Addr              string
-	ConfigPath        string
-	SkipDispatchAgent bool // when true, skip starting the cmux dispatch agent workspace
+	Addr       string
+	ConfigPath string
 }
 
 // webFactory builds a webRunner from the resolved options and hands
@@ -218,40 +217,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		return nil, nil, fmt.Errorf("web: build dispatcher: %w", err)
 	}
 
-	// Try to start a persistent dispatch agent workspace so dispatch works even
-	// after the web server's terminal session closes (orphaned process). The agent
-	// runs inside a cmux workspace it created at startup; it polls a queue dir and
-	// calls "marunage dispatch <id>" for each request. If the web server is NOT in
-	// a cmux session (ErrNoCmuxSession), fall back to the direct dispatcher which
-	// works when the process stays inside a cmux session.
 	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
-	if !opts.SkipDispatchAgent {
-		exePath, exeErr := os.Executable()
-		if exeErr != nil {
-			logger.Warn("web.dispatch_agent", "status", "exe_path_error", "err", exeErr.Error())
-		} else {
-			stateDir := filepath.Dir(dbPath)
-			agent := cmux.NewDispatchAgent(
-				filepath.Join(stateDir, "dispatch-queue"),
-				filepath.Join(stateDir, "dispatch-agent.ws"),
-				exePath,
-				opts.ConfigPath,
-			)
-			if startErr := agent.Start(ctx); startErr == nil {
-				dispatcher = agent
-				// Release dispRunner immediately: the agent owns dispatch from here on,
-				// so the direct runner's DB connection is no longer needed.
-				_ = dispCloser()
-				dispCloser = func() error { return nil }
-				logger.Info("web.dispatch_agent", "status", "started")
-			} else if errors.Is(startErr, cmux.ErrNoCmuxSession) || errors.Is(startErr, cmux.ErrCmuxNotFound) {
-				// No cmux session or binary: graceful fallback to direct dispatch.
-				logger.Info("web.dispatch_agent", "status", "no_cmux_session_direct_dispatch")
-			} else {
-				logger.Warn("web.dispatch_agent", "status", "start_failed", "err", startErr.Error())
-			}
-		}
-	}
 
 	expandedCwdPrefixes := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
 	for _, p := range cfg.Execution.AllowedCwdPrefixes {
@@ -357,7 +323,15 @@ type webDispatchAdapter struct {
 
 // Dispatch calls the real dispatcher for the given task ID and maps errors to
 // the sentinel values web.mapOpsError recognises for HTTP status mapping.
+//
+// Design: orphaned-process dispatch is intentionally unsupported. The server
+// must be running inside an active cmux terminal session (CMUX_WORKSPACE_ID
+// set). If the session is gone, return ErrNoActiveSession so the caller gets
+// a clear 503 rather than a confusing cmux error.
 func (a *webDispatchAdapter) Dispatch(ctx context.Context, id int64) error {
+	if os.Getenv("CMUX_WORKSPACE_ID") == "" {
+		return web.ErrNoActiveSession
+	}
 	err := a.runner.Run(ctx, dispatch.RunOptions{ID: id})
 	if err == nil {
 		return nil

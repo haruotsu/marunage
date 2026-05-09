@@ -254,6 +254,7 @@ No request body required.
 | 400 | `invalid task id` | `id` is not a valid integer |
 | 404 | `not found` | Task does not exist |
 | 409 | `invalid status transition` | Task is not in `pending` state |
+| 503 | `no active session: restart marunage web from a terminal` | Server is not running inside a cmux terminal session |
 | 500 | `internal error` | Store error |
 
 ---

@@ -162,6 +162,30 @@ func TestTaskOpsHandler_Dispatch_InvalidStatus(t *testing.T) {
 	}
 }
 
+// TestTaskOpsHandler_Dispatch_NoSession: no active cmux session -> 503
+func TestTaskOpsHandler_Dispatch_NoSession(t *testing.T) {
+	store := &fakeTasks{
+		dispatchFn: func(_ context.Context, _ int64) error {
+			return ErrNoActiveSession
+		},
+	}
+	h := newDispatchTaskHandler(store)
+
+	rec := doOpsRequest(t, h, http.MethodPost, "/api/tasks/1/dispatch", nil)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rec.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	wantErr := "no active session: restart marunage web from a terminal"
+	if resp["error"] != wantErr {
+		t.Errorf("response error = %q; want %q", resp["error"], wantErr)
+	}
+}
+
 // TestTaskOpsHandler_Promote_OK: skipped -> pending success -> 200
 func TestTaskOpsHandler_Promote_OK(t *testing.T) {
 	var calledID int64
