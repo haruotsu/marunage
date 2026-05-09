@@ -663,6 +663,10 @@ func TestRunRejectsCwdDotDotTraversal(t *testing.T) {
 // the dispatcher must substitute the default CWD so cmux receives a
 // non-empty path. Without this, cmux.NewWorkspace returns ErrInvalidOptions
 // and the task is silently failed even though the policy layer allowed it.
+//
+// The allowlist prefix "/tmp/" is required so that the substituted defaultCwd
+// "/tmp/default" passes the CwdAllowed gate — the test covers the combined
+// fallback+allowlist path.
 func TestRunEmptyCwdFallsBackToDefaultCwd(t *testing.T) {
 	f := newDispatchFixture(t,
 		dispatch.WithDefaultCwd("/tmp/default"),

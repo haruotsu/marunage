@@ -8,10 +8,11 @@ import (
 )
 
 // CwdAllowed reports whether cwd satisfies the allowlist. An empty
-// prefixes slice means "all paths allowed". An empty cwd is treated as
-// "unset"; callers are expected to substitute a concrete path before use.
-// Otherwise cwd must equal one of the prefixes or be a direct descendant
-// (starts with prefix+"/").
+// prefixes slice means "all paths allowed". An empty cwd passes
+// unconditionally — it represents "unset"; dispatch-layer callers are
+// responsible for substituting a concrete path before calling this
+// function. Otherwise cwd must equal one of the prefixes or be a direct
+// descendant (starts with prefix+"/").
 //
 // CWD is cleaned with filepath.Clean before comparison so that paths
 // containing ".." cannot bypass the check.
