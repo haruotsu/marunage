@@ -147,7 +147,7 @@ func (c *WebAPIClient) FetchDMs(ctx context.Context, sinceTS string) ([]Message,
 	}
 	channels, err := c.listChannels(ctx, "im")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("slack webclient: FetchDMs list channels: %w", err)
 	}
 	var out []Message
 	for _, ch := range channels {
