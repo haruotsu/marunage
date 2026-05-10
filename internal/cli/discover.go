@@ -24,7 +24,7 @@ import (
 // the moment PR-80 (Gmail) lands and a user types `marunage discover` in
 // muscle memory. Forcing --source up-front makes the choice explicit and
 // future-proofs the help text.
-func newDiscoverCmd() *cobra.Command {
+func newDiscoverCmd(configPath *string) *cobra.Command {
 	var (
 		once       bool
 		sourceName string
@@ -45,7 +45,11 @@ func newDiscoverCmd() *cobra.Command {
 			if sourceName == "" {
 				return fmt.Errorf("--source is required")
 			}
-			return runDiscoverOnce(cmd, sourceName, files)
+			cfg, err := config.Load(*configPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			return runDiscoverOnce(cmd, sourceName, cfg, files)
 		},
 	}
 	cmd.Flags().BoolVar(&once, "once", false, "Run the source's list step exactly once and exit.")
@@ -59,7 +63,7 @@ func newDiscoverCmd() *cobra.Command {
 // and JSON serialisation. Pulled out of the cobra closure so tests could in
 // principle swap the registry constructor without touching cobra; today
 // they exercise it through Execute(...) end-to-end.
-func runDiscoverOnce(cmd *cobra.Command, sourceName string, files []string) error {
+func runDiscoverOnce(cmd *cobra.Command, sourceName string, cfg config.Config, files []string) error {
 	// markdown requires at least one --file in discover mode; the plugin
 	// can register without files but List would return zero tasks silently.
 	if sourceName == "markdown" && len(files) == 0 {
@@ -70,7 +74,7 @@ func runDiscoverOnce(cmd *cobra.Command, sourceName string, files []string) erro
 	// test importing this package does not get a global side effect — and
 	// so failures (e.g. embedded manifest drift) attach to the user-
 	// visible command, not to a TestMain we do not own.
-	if err := registerBuiltin(r, sourceName, config.Config{}, files, false); err != nil {
+	if err := registerBuiltin(r, sourceName, cfg, files, false); err != nil {
 		return err
 	}
 

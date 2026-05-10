@@ -84,7 +84,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTaskCleanCmd(&configPath))
 	root.AddCommand(newReaperCmd(&configPath))
 	root.AddCommand(newTaskStatusCmd(&configPath))
-	root.AddCommand(newDiscoverCmd())
+	root.AddCommand(newDiscoverCmd(&configPath))
 	root.AddCommand(newWebCmd(&configPath))
 	root.AddCommand(newSkillsCmd(&configPath))
 	root.AddCommand(newTaskReviewCmd(&configPath))

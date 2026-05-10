@@ -67,7 +67,11 @@ func RegisterBuiltin(r *source.Registry, opts ...Option) error {
 	}
 	if !hasExplicitClient {
 		if tok := os.Getenv("MARUNAGE_SLACK_TOKEN"); tok != "" {
-			opts = append([]Option{WithClient(NewWebAPIClient("https://slack.com", tok))}, opts...)
+			baseURL := "https://slack.com"
+			if u := os.Getenv("MARUNAGE_SLACK_BASE_URL"); u != "" {
+				baseURL = u
+			}
+			opts = append([]Option{WithClient(NewWebAPIClient(baseURL, tok))}, opts...)
 		}
 	}
 	a := NewAdapter(New(opts...))

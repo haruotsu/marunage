@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/haruotsu/marunage/internal/source"
+	"github.com/haruotsu/marunage/internal/store"
 )
 
 // slackhogURL returns the base URL of the slackhog instance to test against.
@@ -276,6 +277,89 @@ func findTaskByChannel(tasks []source.Task, channelID string) *source.Task {
 		}
 	}
 	return nil
+}
+
+// IT-OODA-Queue: Slack messages → plugin.List() → store.Insert → DB confirmed.
+// This is the full Observe phase: slackhog acts as the Slack source, the
+// slackhogClient discovers messages, and they are persisted to a real SQLite
+// queue — exactly what marunage loop does in production.
+func TestSlackhogOODAFullQueue(t *testing.T) {
+	waitSlackhog(t)
+	clearSlackhogMessages(t)
+
+	base := fmt.Sprintf("%d", time.Now().UnixNano())
+	mentionCh := "C-eng-" + base
+	dmCh := "D-pm-" + base
+
+	webAPI := NewWebAPIClient(slackhogURL(), "xoxb-queue-test")
+	if err := webAPI.PostDM(context.Background(), mentionCh, "please review PR #99 <@haruto>"); err != nil {
+		t.Fatalf("seed mention: %v", err)
+	}
+	if err := webAPI.PostDM(context.Background(), dmCh, "can you deploy by EOD?"); err != nil {
+		t.Fatalf("seed DM: %v", err)
+	}
+
+	// Discover via slackhogClient (uses /_api/messages, same logic as loop).
+	client := newSlackhogOODAClient(slackhogURL())
+	plugin := New(
+		WithClient(client),
+		WithIncludeMentions(true),
+		WithIncludeDM(true),
+	)
+	tasks, err := plugin.List(context.Background())
+	if err != nil {
+		t.Fatalf("plugin.List: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("discovered %d tasks, want 2", len(tasks))
+	}
+
+	// Insert into a real SQLite queue (in-memory for isolation).
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	repo := store.NewTaskRepo(db)
+
+	for _, tk := range tasks {
+		notes := ""
+		if len(tk.RawMetadata) > 0 {
+			b, _ := marshalJSON(tk.RawMetadata)
+			notes = string(b)
+		}
+		row := store.Task{
+			Source:     tk.Source,
+			ExternalID: tk.ExternalID,
+			Title:      tk.Title,
+			Body:       tk.Body,
+			Notes:      notes,
+		}
+		if _, err := repo.Insert(context.Background(), row); err != nil {
+			t.Fatalf("repo.Insert %q: %v", tk.ExternalID, err)
+		}
+	}
+
+	// Verify tasks are in the DB as pending.
+	rows, err := repo.List(context.Background(), store.ListFilter{
+		Statuses: []string{"pending"},
+	})
+	if err != nil {
+		t.Fatalf("repo.List: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("DB has %d pending tasks, want 2", len(rows))
+	}
+
+	t.Logf("OODA full queue: %d tasks inserted into DB as pending", len(rows))
+	for _, row := range rows {
+		t.Logf("  #%d [%s] source=%s external_id=%s title=%q",
+			row.ID, row.Status, row.Source, row.ExternalID, row.Title)
+	}
+}
+
+func marshalJSON(v any) ([]byte, error) {
+	return json.Marshal(v)
 }
 
 // IT1: Plugin.Complete posts the documented notification text to the

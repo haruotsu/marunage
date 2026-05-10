@@ -92,11 +92,18 @@ func (s *slackhogServer) handleSearchMessages(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// handleConversationsList returns channels derived from stored messages.
+// handleConversationsList returns channels derived from stored messages,
+// filtered by the `types` query parameter (comma-separated Slack types).
+// Supported: "im" (D-prefix channels), "public_channel" / "private_channel"
+// (non-D channels). No types param returns all.
 func (s *slackhogServer) handleConversationsList(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	msgs := append([]capturedMessage(nil), s.messages...)
 	s.mu.Unlock()
+
+	types := r.URL.Query().Get("types")
+	wantIM := types == "" || strings.Contains(types, "im")
+	wantChannel := types == "" || strings.Contains(types, "channel")
 
 	seen := map[string]bool{}
 	var channels []map[string]any
@@ -106,6 +113,12 @@ func (s *slackhogServer) handleConversationsList(w http.ResponseWriter, r *http.
 		}
 		seen[m.Channel] = true
 		isIM := strings.HasPrefix(m.Channel, "D")
+		if isIM && !wantIM {
+			continue
+		}
+		if !isIM && !wantChannel {
+			continue
+		}
 		channels = append(channels, map[string]any{
 			"id":    m.Channel,
 			"name":  m.Channel,
@@ -383,11 +396,15 @@ func TestWebAPIClientPostDMReturnsErrOnNon2xxStatus(t *testing.T) {
 	}
 }
 
-// WC14: FetchMentions returns messages from search.messages endpoint.
+// WC14: FetchMentions returns channel messages via conversations.list +
+// conversations.history (not search.messages). DM channels are excluded.
 func TestWebAPIClientFetchMentionsReturnsMentions(t *testing.T) {
 	t.Parallel()
 	srv := newSlackhogServer(t)
-	srv.seed(capturedMessage{Channel: "C-general", Text: "hey <@me> can you help?", TS: "1700000001.000001"})
+	srv.seed(
+		capturedMessage{Channel: "C-general", Text: "hey <@me> can you help?", TS: "1700000001.000001"},
+		capturedMessage{Channel: "D-user1", Text: "this is a DM, should be excluded", TS: "1700000001.000002"},
+	)
 
 	client := NewWebAPIClient(srv.Server.URL, "xoxb-test")
 	msgs, err := client.FetchMentions(context.Background(), "")
@@ -395,13 +412,16 @@ func TestWebAPIClientFetchMentionsReturnsMentions(t *testing.T) {
 		t.Fatalf("FetchMentions: %v", err)
 	}
 	if len(msgs) != 1 {
-		t.Fatalf("FetchMentions returned %d messages, want 1", len(msgs))
+		t.Fatalf("FetchMentions returned %d messages, want 1 (DM excluded)", len(msgs))
 	}
 	if msgs[0].Text != "hey <@me> can you help?" {
 		t.Errorf("Text = %q, want %q", msgs[0].Text, "hey <@me> can you help?")
 	}
 	if msgs[0].ChannelID != "C-general" {
 		t.Errorf("ChannelID = %q, want C-general", msgs[0].ChannelID)
+	}
+	if msgs[0].ChannelType != "channel" {
+		t.Errorf("ChannelType = %q, want channel", msgs[0].ChannelType)
 	}
 }
 
