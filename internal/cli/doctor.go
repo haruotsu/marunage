@@ -139,6 +139,7 @@ func (r doctorRuntime) Inputs(cfg config.Config) doctor.Inputs {
 		Cfg:     cfg,
 		Runner:  runner,
 		Secrets: doctor.FileSecretsProbe{Runner: runner},
+		MCP:     doctor.ClaudeMCPProbe{},
 		OS:      doctor.RealOSDetector{},
 	}
 }

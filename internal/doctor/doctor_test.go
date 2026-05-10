@@ -17,6 +17,9 @@ package doctor
 //  13. --json emits a stable shape (snapshot a small fixture)
 //  14. install hint table covers every tool name returned by the checker registry
 //  15. Runner is injected -- no test invokes a real binary
+//  16. slack-mcp: slack not in sources_enabled -> optional, OK
+//  17. slack-mcp: slack enabled, MCP lists "slack" -> OK
+//  18. slack-mcp: slack enabled, MCP does not list "slack" -> required failure with hint
 
 import (
 	"context"
@@ -59,6 +62,16 @@ func (f fakeSecretsProbe) AvailableBackends() []string {
 	return out
 }
 
+// fakeMCPProbe implements MCPProbe for tests.
+type fakeMCPProbe struct {
+	servers []string
+	err     error
+}
+
+func (f fakeMCPProbe) ListMCPServers(_ context.Context) ([]string, error) {
+	return f.servers, f.err
+}
+
 // fakeOS lets tests pin the OS family without depending on runtime.GOOS.
 type fakeOS struct{ family OSFamily }
 
@@ -99,12 +112,17 @@ func defaultCfg() config.Config {
 	return c
 }
 
+func defaultMCP() fakeMCPProbe {
+	return fakeMCPProbe{servers: []string{"slack", "google-drive"}}
+}
+
 func TestRun_AllRequiredToolsPresent_ReportsOK(t *testing.T) {
 	runner, secrets := allToolsPresent()
 	rep := Run(context.Background(), Inputs{
 		Cfg:     defaultCfg(),
 		Runner:  runner,
 		Secrets: secrets,
+		MCP:     defaultMCP(),
 		OS:      fakeOS{family: OSFamilyDarwin},
 	})
 	if !rep.OK {
@@ -444,6 +462,83 @@ func TestRunner_NotInvokedAgainstRealBinary(t *testing.T) {
 		if out.OK {
 			t.Errorf("required tool %q reported OK with empty runner", name)
 		}
+	}
+}
+
+func TestRun_SlackMCP_SlackNotEnabled_Optional(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg() // sources_enabled = nil
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     fakeMCPProbe{servers: nil}, // slack MCP absent
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if !rep.OK {
+		t.Fatalf("Report.OK = false; want true (slack-mcp optional when slack not enabled)")
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if out.Required {
+		t.Fatalf("slack-mcp.Required = true; want false when slack not in sources_enabled")
+	}
+}
+
+func TestRun_SlackMCP_SlackEnabled_MCPPresent_OK(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Discovery.SourcesEnabled = []string{"slack"}
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     fakeMCPProbe{servers: []string{"slack", "google-drive"}},
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if !rep.OK {
+		t.Fatalf("Report.OK = false; want true (slack MCP configured). report=%#v", rep)
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if !out.OK {
+		t.Fatalf("slack-mcp.OK = false; want true when slack in MCP list")
+	}
+}
+
+func TestRun_SlackMCP_SlackEnabled_MCPAbsent_RequiredFailure(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Discovery.SourcesEnabled = []string{"slack"}
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     fakeMCPProbe{servers: []string{"google-drive"}}, // no slack
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if rep.OK {
+		t.Fatalf("Report.OK = true; want false (slack MCP not configured)")
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if !out.Required {
+		t.Fatalf("slack-mcp.Required = false; want true when slack in sources_enabled")
+	}
+	if out.OK {
+		t.Fatalf("slack-mcp.OK = true; want false when slack absent from MCP list")
+	}
+	if !strings.Contains(out.Hint, "claude mcp add") {
+		t.Fatalf("slack-mcp hint should mention 'claude mcp add'; got %q", out.Hint)
 	}
 }
 

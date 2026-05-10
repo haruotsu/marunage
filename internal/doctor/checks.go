@@ -10,6 +10,7 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 )
 
+
 // Check is the declarative description of one probe. The registry below is
 // a slice of these; adding a new tool is a one-entry change here plus a
 // matching install-hint row (install.go).
@@ -41,6 +42,7 @@ func registeredChecks(_ config.Config) []Check {
 		{Name: "gws", RequiredFor: googleSourceEnabled, Eval: probeBinary("gws", noVersionFloor)},
 		{Name: "jq", RequiredFor: neverRequired, Eval: probeBinary("jq", noVersionFloor)},
 		{Name: "secrets", RequiredFor: alwaysRequired, Eval: probeSecrets},
+		{Name: "slack-mcp", RequiredFor: slackSourceEnabled, Eval: probeSlackMCP},
 	}
 }
 
@@ -97,6 +99,53 @@ func isGoogleSourceName(s string) bool {
 		return true
 	}
 	return false
+}
+
+// slackSourceEnabled reports whether the slack or slack:reaction source is
+// enabled. Both rely on Slack MCP access via `claude -p`, so either name
+// promotes the slack-mcp check to required.
+func slackSourceEnabled(cfg config.Config) bool {
+	for _, s := range cfg.Discovery.SourcesEnabled {
+		if s == "slack" || s == "slack:reaction" {
+			return true
+		}
+	}
+	return false
+}
+
+// probeSlackMCP checks whether the Slack MCP server is configured in Claude
+// Code. When the MCP probe is nil (no probe wired) and slack is required, we
+// report a failure so the user knows the check couldn't run rather than
+// silently passing.
+func probeSlackMCP(ctx context.Context, in Inputs) CheckOutcome {
+	if in.MCP == nil {
+		return CheckOutcome{
+			OK:     false,
+			Detail: "MCP probe not available; cannot verify Slack MCP configuration",
+			Hint:   "run `claude mcp add slack ...` to configure the Slack MCP server",
+		}
+	}
+	servers, err := in.MCP.ListMCPServers(ctx)
+	if err != nil {
+		return CheckOutcome{
+			OK:     false,
+			Detail: fmt.Sprintf("claude mcp list failed: %v", err),
+			Hint:   "ensure the claude binary is on PATH and working",
+		}
+	}
+	for _, s := range servers {
+		if strings.EqualFold(s, "slack") {
+			return CheckOutcome{
+				OK:     true,
+				Detail: "Slack MCP server configured in Claude Code",
+			}
+		}
+	}
+	return CheckOutcome{
+		OK:     false,
+		Detail: "Slack MCP server not found in `claude mcp list` output",
+		Hint:   "run `claude mcp add slack <transport>` to configure the Slack MCP server",
+	}
 }
 
 // versionFloor is the minimum acceptable version for a tool. nil means

@@ -35,6 +35,18 @@ import (
 // fakeRunner so tests can mirror the real behavior.
 var errMissingBinary = errors.New("binary not found on PATH")
 
+// MCPProbe reports which MCP server names are configured in Claude Code.
+// The interface is satisfied by a production implementation that runs
+// `claude mcp list` and a fake in tests.
+type MCPProbe interface {
+	// ListMCPServers returns the server names visible to Claude Code (e.g.
+	// "slack", "google-drive"). An empty slice means no MCP servers are
+	// configured. Implementations must not return an error if the list is
+	// simply empty; errors are reserved for "claude binary missing" or
+	// "command failed unexpectedly".
+	ListMCPServers(ctx context.Context) ([]string, error)
+}
+
 // Inputs bundles the dependencies Run needs. Grouping them in a struct
 // (rather than ten positional arguments) keeps the CLI wiring readable and
 // gives tests a single place to set up scenarios.
@@ -42,6 +54,7 @@ type Inputs struct {
 	Cfg     config.Config
 	Runner  Runner
 	Secrets SecretsProbe
+	MCP     MCPProbe
 	OS      OSDetector
 }
 

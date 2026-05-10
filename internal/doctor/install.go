@@ -184,6 +184,11 @@ var installHints = map[string]installHintRow{
 		pkgs: map[OSFamily]string{},
 		url:  "run `marunage setup` to configure a secret backend",
 	},
+	"slack-mcp": {
+		// slack-mcp is not a binary; the fix is adding the MCP server to Claude Code.
+		pkgs: map[OSFamily]string{},
+		url:  "run `claude mcp add slack <transport>` to configure the Slack MCP server",
+	},
 }
 
 // installHintFor returns the install hint string for tool on family. The
