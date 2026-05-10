@@ -45,7 +45,11 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			return fmt.Errorf("register markdown: %w", err)
 		}
 	case "slack":
-		if err := slack.RegisterBuiltin(r); err != nil {
+		slackOpts := []slack.Option{
+			slack.WithIncludeMentions(cfg.Discovery.Slack.IncludeMentions),
+			slack.WithIncludeDM(cfg.Discovery.Slack.IncludeDM),
+		}
+		if err := slack.RegisterBuiltin(r, slackOpts...); err != nil {
 			return fmt.Errorf("register slack: %w", err)
 		}
 	case "slack:reaction":

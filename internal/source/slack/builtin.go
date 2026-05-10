@@ -3,6 +3,7 @@ package slack
 import (
 	_ "embed"
 	"fmt"
+	"os"
 
 	"github.com/haruotsu/marunage/internal/source"
 )
@@ -37,6 +38,12 @@ func Manifest() (*source.Manifest, error) {
 // drift between the embedded TOML and the adapter's actual interfaces
 // is caught at startup rather than at first dispatch.
 //
+// When no WithClient option is provided and MARUNAGE_SLACK_TOKEN is set,
+// RegisterBuiltin automatically wires a WebAPIClient so that FetchMentions /
+// FetchDMs work out of the box without callers needing to build the client
+// themselves. Callers that want full control (tests, custom transports) pass
+// WithClient explicitly and the env-var wiring is skipped.
+//
 // opts forward to New, so callers pass WithClient / WithCheckpointer /
 // WithIncludeMentions / WithIncludeDM / WithNotifyChannelID here
 // exactly as they would for a directly-constructed Plugin. Returns
@@ -45,6 +52,27 @@ func Manifest() (*source.Manifest, error) {
 func RegisterBuiltin(r *source.Registry, opts ...Option) error {
 	if r == nil {
 		return fmt.Errorf("slack: nil registry")
+	}
+	// Auto-wire WebAPIClient from MARUNAGE_SLACK_TOKEN when no explicit
+	// WithClient was provided. We detect "no client" by building a temporary
+	// plugin and checking whether it's still carrying nilClient.
+	hasExplicitClient := false
+	for _, o := range opts {
+		probe := &Plugin{}
+		o(probe)
+		if probe.client != nil {
+			hasExplicitClient = true
+			break
+		}
+	}
+	if !hasExplicitClient {
+		if tok := os.Getenv("MARUNAGE_SLACK_TOKEN"); tok != "" {
+			baseURL := "https://slack.com"
+			if u := os.Getenv("MARUNAGE_SLACK_BASE_URL"); u != "" {
+				baseURL = u
+			}
+			opts = append([]Option{WithClient(NewWebAPIClient(baseURL, tok))}, opts...)
+		}
 	}
 	a := NewAdapter(New(opts...))
 	m, err := Manifest()
