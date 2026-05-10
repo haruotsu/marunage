@@ -302,7 +302,6 @@ func TestWebAPIClientAuthStatusNotConfigured(t *testing.T) {
 	}
 }
 
-
 // WC9: WebAPIClient implements the Client interface so it is assignable
 // to production injection points.
 func TestWebAPIClientImplementsClientInterface(t *testing.T) {

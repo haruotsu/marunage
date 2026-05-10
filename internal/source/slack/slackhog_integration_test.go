@@ -94,11 +94,11 @@ func waitSlackhog(t *testing.T) {
 
 // slackhogAPIMessage is the shape returned by slackhog's /_api/messages.
 type slackhogAPIMessage struct {
-	ID          string         `json:"id"`
-	Channel     string         `json:"channel"`
-	Text        string         `json:"text"`
-	ReceivedAt  time.Time      `json:"received_at"`
-	RawPayload  map[string]any `json:"raw_payload"`
+	ID         string         `json:"id"`
+	Channel    string         `json:"channel"`
+	Text       string         `json:"text"`
+	ReceivedAt time.Time      `json:"received_at"`
+	RawPayload map[string]any `json:"raw_payload"`
 }
 
 // slackhogClient implements the slack.Client interface using slackhog's
