@@ -481,3 +481,70 @@ func TestWebAPIClientFetchMentionsRequiresToken(t *testing.T) {
 		t.Fatalf("FetchMentions without token: err = %v, want ErrWebAPINotImplemented", err)
 	}
 }
+
+// WC18: FetchDMs returns ErrWebAPINotImplemented when no token is set.
+func TestWebAPIClientFetchDMsRequiresToken(t *testing.T) {
+	t.Parallel()
+	client := NewWebAPIClient("https://slack.com", "")
+	_, err := client.FetchDMs(context.Background(), "")
+	if !errors.Is(err, ErrWebAPINotImplemented) {
+		t.Fatalf("FetchDMs without token: err = %v, want ErrWebAPINotImplemented", err)
+	}
+}
+
+// WC19: FetchMentions surfaces API-level errors from conversations.list (ok:false).
+func TestWebAPIClientFetchMentionsErrorsOnListChannelsAPIError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	}))
+	defer srv.Close()
+
+	client := NewWebAPIClient(srv.URL, "xoxb-test")
+	_, err := client.FetchMentions(context.Background(), "")
+	if err == nil {
+		t.Fatalf("FetchMentions: expected error on ok:false response, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid_auth") {
+		t.Errorf("error %q should mention 'invalid_auth'", err.Error())
+	}
+}
+
+// WC20: FetchDMs surfaces API-level errors from conversations.list (ok:false).
+func TestWebAPIClientFetchDMsErrorsOnListChannelsAPIError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	}))
+	defer srv.Close()
+
+	client := NewWebAPIClient(srv.URL, "xoxb-test")
+	_, err := client.FetchDMs(context.Background(), "")
+	if err == nil {
+		t.Fatalf("FetchDMs: expected error on ok:false response, got nil")
+	}
+}
+
+// WC21: FetchDMs respects sinceTS and excludes older messages.
+func TestWebAPIClientFetchDMsRespectsSinceTS(t *testing.T) {
+	t.Parallel()
+	srv := newSlackhogServer(t)
+	srv.seed(
+		capturedMessage{Channel: "D-user1", Text: "old DM", TS: "1700000001.000001"},
+		capturedMessage{Channel: "D-user1", Text: "new DM", TS: "1700000002.000002"},
+	)
+
+	client := NewWebAPIClient(srv.Server.URL, "xoxb-test")
+	msgs, err := client.FetchDMs(context.Background(), "1700000001.000001")
+	if err != nil {
+		t.Fatalf("FetchDMs: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FetchDMs returned %d messages after sinceTS, want 1", len(msgs))
+	}
+	if msgs[0].Text != "new DM" {
+		t.Errorf("Text = %q, want %q", msgs[0].Text, "new DM")
+	}
+}

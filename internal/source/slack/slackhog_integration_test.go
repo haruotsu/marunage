@@ -325,7 +325,7 @@ func TestSlackhogOODAFullQueue(t *testing.T) {
 	for _, tk := range tasks {
 		notes := ""
 		if len(tk.RawMetadata) > 0 {
-			b, _ := marshalJSON(tk.RawMetadata)
+			b, _ := json.Marshal(tk.RawMetadata)
 			notes = string(b)
 		}
 		row := store.Task{
@@ -356,10 +356,6 @@ func TestSlackhogOODAFullQueue(t *testing.T) {
 		t.Logf("  #%d [%s] source=%s external_id=%s title=%q",
 			row.ID, row.Status, row.Source, row.ExternalID, row.Title)
 	}
-}
-
-func marshalJSON(v any) ([]byte, error) {
-	return json.Marshal(v)
 }
 
 // IT1: Plugin.Complete posts the documented notification text to the

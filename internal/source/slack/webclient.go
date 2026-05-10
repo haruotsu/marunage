@@ -24,16 +24,16 @@ import (
 
 const defaultHTTPTimeout = 30 * time.Second
 
-// ErrWebAPINotImplemented is returned by WebAPIClient methods whose
-// Slack API counterpart is handled by the MCP-backed Client rather than
-// a direct Web API call. Callers that need FetchMentions / FetchDMs
-// should inject a Client built with WithClient(mcpClient) instead.
+// ErrWebAPINotImplemented is returned by WebAPIClient methods that require
+// a Slack token but none is configured. Callers should set MARUNAGE_SLACK_TOKEN
+// or pass WithClient(NewWebAPIClient(baseURL, token)) to enable these methods.
 var ErrWebAPINotImplemented = errors.New("slack: not implemented via Slack Web API (use MCP-backed client)")
 
-// WebAPIClient is an HTTP-based implementation of Client that posts to
-// the Slack Web API. It currently covers PostDM (chat.postMessage) and
-// AuthStatus; FetchMentions / FetchDMs return ErrWebAPINotImplemented
-// because those operations are routed through the Slack MCP transport.
+// WebAPIClient is an HTTP-based implementation of Client backed by the Slack
+// Web API. When a token is provided it handles PostDM, AuthStatus,
+// FetchMentions, and FetchDMs directly via conversations.list +
+// conversations.history. When no token is configured, FetchMentions and
+// FetchDMs return ErrWebAPINotImplemented.
 //
 // Construct via NewWebAPIClient; functional options allow test injection.
 type WebAPIClient struct {
@@ -183,7 +183,8 @@ func (c *WebAPIClient) listChannels(ctx context.Context, types string) ([]string
 	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
-		OK       bool `json:"ok"`
+		OK       bool   `json:"ok"`
+		Error    string `json:"error"`
 		Channels []struct {
 			ID   string `json:"id"`
 			IsIM bool   `json:"is_im"`
@@ -191,6 +192,9 @@ func (c *WebAPIClient) listChannels(ctx context.Context, types string) ([]string
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("slack webclient: decode conversations.list: %w", err)
+	}
+	if !result.OK {
+		return nil, fmt.Errorf("slack webclient: conversations.list api error: %s", result.Error)
 	}
 	var ids []string
 	for _, ch := range result.Channels {
