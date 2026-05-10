@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/haruotsu/marunage/internal/source"
@@ -196,8 +197,19 @@ func (c *WebAPIClient) listChannels(ctx context.Context, types string) ([]string
 	if !result.OK {
 		return nil, fmt.Errorf("slack webclient: conversations.list api error: %s", result.Error)
 	}
+	// Real Slack DM channels always start with "D"; public/private channels
+	// start with "C" or "G". Use the ID prefix as a fallback when is_im is
+	// not set correctly (e.g. slackhog sets is_im=false for all channels).
+	wantIM := types == "im"
 	var ids []string
 	for _, ch := range result.Channels {
+		isDM := ch.IsIM || strings.HasPrefix(ch.ID, "D")
+		if wantIM && !isDM {
+			continue
+		}
+		if !wantIM && isDM {
+			continue
+		}
 		ids = append(ids, ch.ID)
 	}
 	return ids, nil
