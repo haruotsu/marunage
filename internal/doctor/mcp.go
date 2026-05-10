@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -22,6 +24,10 @@ type ClaudeMCPProbe struct{}
 func (ClaudeMCPProbe) ListMCPServers(ctx context.Context) ([]string, error) {
 	out, err := exec.CommandContext(ctx, "claude", "mcp", "list").Output()
 	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
 		return nil, err
 	}
 	var names []string

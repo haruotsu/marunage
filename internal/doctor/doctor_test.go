@@ -17,12 +17,10 @@ package doctor
 //  13. --json emits a stable shape (snapshot a small fixture)
 //  14. install hint table covers every tool name returned by the checker registry
 //  15. Runner is injected -- no test invokes a real binary
-//  16. slack-mcp: slack not in sources_enabled -> optional, OK
-//  17. slack-mcp: slack enabled, MCP lists "slack" -> OK
-//  18. slack-mcp: slack enabled, MCP does not list "slack" -> required failure with hint
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -539,6 +537,60 @@ func TestRun_SlackMCP_SlackEnabled_MCPAbsent_RequiredFailure(t *testing.T) {
 	}
 	if !strings.Contains(out.Hint, "claude mcp add") {
 		t.Fatalf("slack-mcp hint should mention 'claude mcp add'; got %q", out.Hint)
+	}
+}
+
+func TestRun_SlackMCP_SlackEnabled_MCPNil_RequiredFailure(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Discovery.SourcesEnabled = []string{"slack"}
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     nil, // probe not wired
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if rep.OK {
+		t.Fatalf("Report.OK = true; want false (MCP probe not available)")
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if out.OK {
+		t.Fatalf("slack-mcp.OK = true; want false when MCP probe is nil")
+	}
+	if !strings.Contains(out.Detail, "MCP probe not available") {
+		t.Fatalf("slack-mcp detail should mention 'MCP probe not available'; got %q", out.Detail)
+	}
+}
+
+func TestRun_SlackMCP_SlackEnabled_ListFails_RequiredFailure(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Discovery.SourcesEnabled = []string{"slack"}
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     fakeMCPProbe{err: errors.New("claude binary not found")},
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if rep.OK {
+		t.Fatalf("Report.OK = true; want false (ListMCPServers failed)")
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if out.OK {
+		t.Fatalf("slack-mcp.OK = true; want false when ListMCPServers errors")
+	}
+	if !strings.Contains(out.Detail, "claude mcp list failed") {
+		t.Fatalf("slack-mcp detail should mention 'claude mcp list failed'; got %q", out.Detail)
 	}
 }
 

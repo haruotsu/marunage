@@ -155,6 +155,9 @@ func (c *WebAPIClient) FetchDMs(ctx context.Context, sinceTS string) ([]Message,
 		if err != nil {
 			return nil, err
 		}
+		for i := range msgs {
+			msgs[i].ChannelType = "im"
+		}
 		out = append(out, msgs...)
 	}
 	return out, nil
@@ -238,11 +241,10 @@ func (c *WebAPIClient) fetchHistory(ctx context.Context, channelID, sinceTS stri
 			ch = channelID
 		}
 		out = append(out, Message{
-			ChannelID:   ch,
-			ChannelType: "im",
-			TS:          m.TS,
-			UserID:      m.User,
-			Text:        m.Text,
+			ChannelID: ch,
+			TS:        m.TS,
+			UserID:    m.User,
+			Text:      m.Text,
 		})
 	}
 	return out, nil

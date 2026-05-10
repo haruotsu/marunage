@@ -10,7 +10,6 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 )
 
-
 // Check is the declarative description of one probe. The registry below is
 // a slice of these; adding a new tool is a one-entry change here plus a
 // matching install-hint row (install.go).

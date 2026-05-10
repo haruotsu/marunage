@@ -2,6 +2,7 @@ package slack
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/source"
@@ -79,5 +80,43 @@ func TestRegisterBuiltinNilRegistry(t *testing.T) {
 	t.Parallel()
 	if err := RegisterBuiltin(nil); err == nil {
 		t.Fatalf("expected error on nil registry")
+	}
+}
+
+// H5: MARUNAGE_SLACK_TOKEN auto-wires a WebAPIClient when no WithClient provided.
+func TestRegisterBuiltin_AutoWiresWebAPIClientFromEnvToken(t *testing.T) {
+	t.Setenv("MARUNAGE_SLACK_TOKEN", "xoxb-test-token")
+	t.Setenv("MARUNAGE_SLACK_BASE_URL", "https://slack.com")
+
+	r := source.NewRegistry()
+	if err := RegisterBuiltin(r); err != nil {
+		t.Fatalf("RegisterBuiltin: %v", err)
+	}
+	got, err := r.Get("slack")
+	if err != nil {
+		t.Fatalf("Get slack: %v", err)
+	}
+	a := got.(*Adapter)
+	if reflect.TypeOf(a.inner.client) != reflect.TypeOf(&WebAPIClient{}) {
+		t.Fatalf("client type = %T, want *WebAPIClient (env var not wired)", a.inner.client)
+	}
+}
+
+// H6: explicit WithClient suppresses env-var auto-wiring even when token is set.
+func TestRegisterBuiltin_WithClientSuppressesEnvToken(t *testing.T) {
+	t.Setenv("MARUNAGE_SLACK_TOKEN", "xoxb-env-token")
+
+	r := source.NewRegistry()
+	explicit := nilClient{}
+	if err := RegisterBuiltin(r, WithClient(explicit)); err != nil {
+		t.Fatalf("RegisterBuiltin: %v", err)
+	}
+	got, err := r.Get("slack")
+	if err != nil {
+		t.Fatalf("Get slack: %v", err)
+	}
+	a := got.(*Adapter)
+	if reflect.TypeOf(a.inner.client) != reflect.TypeOf(nilClient{}) {
+		t.Fatalf("client type = %T, want nilClient (explicit WithClient should suppress env var)", a.inner.client)
 	}
 }
