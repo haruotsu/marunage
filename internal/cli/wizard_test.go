@@ -35,6 +35,14 @@ func setTTYHooksForTest(
 	}
 }
 
+// setGetTermSizeForTest swaps getTermSizeFunc so detectTermWidth can be
+// exercised against synthetic terminal widths without a real TTY.
+func setGetTermSizeForTest(f func(fd int) (width, height int, err error)) func() {
+	prev := getTermSizeFunc
+	getTermSizeFunc = f
+	return func() { getTermSizeFunc = prev }
+}
+
 // テストリスト:
 // 1. applyKeys: Enter だけで初期選択がそのまま返る
 // 2. applyKeys: Space でカーソル位置の選択が反転する
@@ -66,6 +74,9 @@ func setTTYHooksForTest(
 // 28. physicalRows: termWidth <= 0 でも最低 1 行を返す (detectTermWidth が 0 を返した場合の防御)
 // 29. runeDisplayWidth: C0 制御文字 (r<0x20) および DEL (0x7f) は幅 0
 // 30. displayWidth: サロゲートペア (CJK Ext B-F, U+20000 以上) は幅 2
+// 31. detectTermWidth: 非 TTY (*os.File でない io.Writer) では defaultTermWidth(80) を返す
+// 32. detectTermWidth: *os.File かつ getTermSizeFunc 成功時はその幅を返す
+// 33. detectTermWidth: *os.File かつ getTermSizeFunc がエラーを返すときは defaultTermWidth(80) にフォールバックする
 
 // --- applyKeys unit tests ---
 
@@ -542,6 +553,41 @@ func TestDisplayWidth_ControlChars(t *testing.T) {
 	// 制御文字は ASCII と混在しても他の幅に影響しない。
 	if got := displayWidth("a\x00b"); got != 2 {
 		t.Errorf("displayWidth(\"a\\x00b\")=%d; want 2", got)
+	}
+}
+
+// TestDetectTermWidth_NonFileReturnsDefault は bytes.Buffer のような
+// 非 *os.File の io.Writer に対し defaultTermWidth (80) を返すことを保証する。
+// 既存テスト群が暗黙的に依存しているデフォルト経路の回帰を直接守る。
+func TestDetectTermWidth_NonFileReturnsDefault(t *testing.T) {
+	var buf bytes.Buffer
+	if got := detectTermWidth(&buf); got != 80 {
+		t.Errorf("detectTermWidth(bytes.Buffer)=%d; want 80", got)
+	}
+}
+
+// TestDetectTermWidth_OSFileSuccessUsesGetTermSize は *os.File に対して
+// getTermSizeFunc が成功した場合、その width をそのまま返すことを保証する。
+func TestDetectTermWidth_OSFileSuccessUsesGetTermSize(t *testing.T) {
+	restore := setGetTermSizeForTest(func(fd int) (int, int, error) {
+		return 120, 40, nil
+	})
+	defer restore()
+	if got := detectTermWidth(os.Stdout); got != 120 {
+		t.Errorf("detectTermWidth(os.Stdout with stubbed size)=%d; want 120", got)
+	}
+}
+
+// TestDetectTermWidth_OSFileErrorFallsBackToDefault は *os.File でも
+// getTermSizeFunc がエラーを返すときに defaultTermWidth (80) にフォールバック
+// することを保証する (パイプ化された stdout 等の防御)。
+func TestDetectTermWidth_OSFileErrorFallsBackToDefault(t *testing.T) {
+	restore := setGetTermSizeForTest(func(fd int) (int, int, error) {
+		return 0, 0, errors.New("not a tty")
+	})
+	defer restore()
+	if got := detectTermWidth(os.Stdout); got != 80 {
+		t.Errorf("detectTermWidth(stub err)=%d; want 80", got)
 	}
 }
 

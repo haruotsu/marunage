@@ -12,7 +12,7 @@ import (
 	"golang.org/x/term"
 )
 
-// TTY interaction is funnelled through these three function vars so
+// TTY interaction is funnelled through these function vars so
 // wizard_test.go can drive the non-TTY and MakeRaw-failure branches
 // without a real terminal. Production code never reassigns them; tests
 // use setTTYHooksForTest in wizard_test.go which restores the
@@ -21,6 +21,7 @@ var (
 	isTerminalFunc  = term.IsTerminal
 	makeRawFunc     = term.MakeRaw
 	restoreTermFunc = term.Restore
+	getTermSizeFunc = term.GetSize
 )
 
 // sourceItem is one entry in the discovery-source selection list.
@@ -248,16 +249,22 @@ func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer
 	return selected, nil
 }
 
+// defaultTermWidth is the fallback column count used when out is not a TTY
+// (e.g. a bytes.Buffer in tests, or stdout piped to a file). 80 mirrors the
+// historical VT100 default so wrapped output stays usable on inherited
+// pipelines.
+const defaultTermWidth = 80
+
 // detectTermWidth returns the column width of the terminal backing out, or
-// 80 as a safe default when out is not a TTY (e.g. a bytes.Buffer in tests
+// defaultTermWidth when out is not a TTY (e.g. a bytes.Buffer in tests
 // or a pipe in non-interactive contexts).
 func detectTermWidth(out io.Writer) int {
 	if f, ok := out.(*os.File); ok {
-		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+		if w, _, err := getTermSizeFunc(int(f.Fd())); err == nil && w > 0 {
 			return w
 		}
 	}
-	return 80
+	return defaultTermWidth
 }
 
 // initialSelection builds the parallel bool slice from the currently enabled
