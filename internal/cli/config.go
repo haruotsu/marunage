@@ -31,13 +31,16 @@ func auditLogPathFor(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "logs", "audit.log")
 }
 
-// newConfigCmd builds the `marunage config` subtree. get/set are wired to
-// the internal/config primitives; edit/wizard remain stubs (PR-30+ will
-// flesh them out).
+// newConfigCmd builds the `marunage config` subtree. Running `marunage config`
+// without a subcommand launches the interactive wizard. get/set remain
+// available for scripting.
 func newConfigCmd(configPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Inspect or modify ~/.marunage/config.toml.",
+		Short: "Configure marunage interactively (or use get/set for scripting).",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runConfigWizard(*configPath, cmd.InOrStdin(), cmd.OutOrStdout())
+		},
 	}
 
 	cmd.AddCommand(&cobra.Command{
@@ -94,11 +97,17 @@ func newConfigCmd(configPath *string) *cobra.Command {
 		},
 	})
 
-	for _, s := range []stubSpec{
-		{"edit", "Open ~/.marunage/config.toml in $EDITOR with schema validation on save."},
-		{"wizard", "Run the interactive config wizard."},
-	} {
-		cmd.AddCommand(newStubCmd(s, "config"))
-	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "wizard",
+		Short: "Run the interactive config wizard (same as `marunage config` with no args).",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runConfigWizard(*configPath, cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	})
+
+	cmd.AddCommand(newStubCmd(stubSpec{
+		use:   "edit",
+		short: "Open ~/.marunage/config.toml in $EDITOR with schema validation on save.",
+	}, "config"))
 	return cmd
 }

@@ -209,5 +209,6 @@ func printInitResult(w io.Writer, res initialize.Result, mode string) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Next steps:")
 	fmt.Fprintln(w, "  1. marunage doctor              # check that claude / cmux / sqlite3 / ... are usable")
-	fmt.Fprintln(w, "  2. marunage setup --skills      # install the bundled triage / execute / reflect skills")
+	fmt.Fprintln(w, "  2. marunage config              # pick discovery sources via interactive wizard")
+	fmt.Fprintln(w, "  3. marunage setup --skills      # install the bundled triage / execute / reflect skills")
 }
