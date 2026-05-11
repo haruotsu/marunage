@@ -127,8 +127,11 @@ func applyKeys(n int, initial []bool, keys []keyEvent) (cursor int, selected []b
 }
 
 // displayWidth returns the number of terminal columns needed to render s.
-// East Asian Wide and Fullwidth runes count as 2; control characters as 0.
-// Other runes (ASCII, Halfwidth, ambiguous) count as 1.
+// East Asian Wide and Fullwidth runes count as 2; C0 control characters and
+// DEL count as 0. Other runes count as 1 — notably East Asian Ambiguous
+// characters (e.g. ↑ U+2191, ↓ U+2193, ─ U+2500) are treated as 1 here,
+// which matches non-CJK locale rendering and Western terminals but may
+// undercount by 1 column per such char on CJK-locale terminals.
 func displayWidth(s string) int {
 	w := 0
 	for _, r := range s {
@@ -139,6 +142,9 @@ func displayWidth(s string) int {
 
 // runeDisplayWidth returns the column width of r, using a conservative
 // approximation of the Unicode East Asian Width tables (no external dep).
+// C0 controls (< 0x20) and DEL (0x7f) collapse to 0; C1 controls
+// (0x80-0x9F) are treated as 1 since they are not expected in CLI output.
+// East Asian Ambiguous runes fall through to the default of 1.
 func runeDisplayWidth(r rune) int {
 	if r < 0x20 || r == 0x7f {
 		return 0
@@ -299,7 +305,10 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("load %s: %w", configPath, err)
 	}
 
-	// Raw mode is on at this point, so use \r\n explicitly instead of Fprintln.
+	// Raw mode may be on at this point (when isTerminalFunc(in) is true and
+	// MakeRaw succeeded), so emit \r\n explicitly instead of Fprintln. \r\n
+	// is also harmless on cooked terminals and in tests, so we use it
+	// unconditionally rather than branching on the raw-mode state.
 	fmt.Fprint(out, "\r\nmarunage config wizard\r\n")
 	fmt.Fprint(out, strings.Repeat("─", 40)+"\r\n")
 
