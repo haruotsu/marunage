@@ -18,6 +18,9 @@ type sourceItem struct {
 }
 
 // knownSources is the ordered list shown to the user in the wizard.
+// This is a subset of knownBuiltinNames (source_registry.go); intentionally
+// excluded: "slack:reaction" (requires extra config), "googletasks", "notion"
+// (experimental).
 var knownSources = []sourceItem{
 	{key: "markdown", label: "Markdown", description: "ローカルの Markdown TODO ファイルを監視"},
 	{key: "slack", label: "Slack", description: "メンション・DM をタスク化"},

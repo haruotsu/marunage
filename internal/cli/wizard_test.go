@@ -14,11 +14,15 @@ import (
 // 3. applyKeys: Down でカーソルが次に移動する（末尾でクランプ）
 // 4. applyKeys: Up でカーソルが前に移動する（先頭でクランプ）
 // 5. applyKeys: Down→Space→Enter で 2 番目が追加選択される
-// 6. multiSelect: Enter を受け取ると初期選択を返す
-// 7. multiSelect: Space→Enter で選択が反転される
-// 8. runConfigWizard: 現在有効なソースが事前選択される
-// 9. runConfigWizard: ウィザード完了後に sources_enabled が保存される
-// 10. config wizard サブコマンドが存在し、非 TTY でも完了する
+// 6. applyKeys: Down を末尾でクランプする
+// 7. multiSelect: Enter を受け取ると初期選択を返す
+// 8. multiSelect: Space→Enter で選択が反転される
+// 9. multiSelect: 出力にソースラベルが含まれる
+// 10. runConfigWizard: 現在有効なソースが事前選択される
+// 11. runConfigWizard: ウィザード完了後に sources_enabled が保存される
+// 12. runConfigWizard: 全未選択で空スライスが保存される
+// 13. config wizard サブコマンドが存在する
+// 14. knownSources のキーはすべて knownBuiltinNames に含まれる
 
 // --- applyKeys unit tests ---
 
@@ -145,7 +149,9 @@ func TestMultiSelect_OutputContainsSourceLabels(t *testing.T) {
 	}
 	in := bytes.NewBufferString("\r")
 	var out bytes.Buffer
-	_, _ = multiSelect(items, []bool{false, false}, in, &out)
+	if _, err := multiSelect(items, []bool{false, false}, in, &out); err != nil {
+		t.Fatalf("multiSelect err=%v", err)
+	}
 
 	rendered := out.String()
 	if !strings.Contains(rendered, "Slack") {
