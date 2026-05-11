@@ -184,7 +184,9 @@ func physicalRows(lineWidth, termWidth int) int {
 // renderList draws the current selection state to out.
 // It returns the number of physical terminal rows used (accounting for line
 // wrapping at termWidth columns) so the caller can move the cursor up to
-// redraw without leaving stale rows on screen.
+// redraw without leaving stale rows on screen. multiSelect feeds this value
+// back to ESC[{n}A on the next redraw to rewind exactly past the previous
+// frame.
 func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer, termWidth int) int {
 	// In raw mode the terminal does not translate \n to \r\n, so every line
 	// must end with \r\n to ensure the cursor returns to column 0 before the
