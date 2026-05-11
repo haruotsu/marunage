@@ -129,8 +129,11 @@ func applyKeys(n int, initial []bool, keys []keyEvent) (cursor int, selected []b
 // It returns the number of lines printed so the caller can move the cursor up
 // to redraw.
 func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer) int {
+	// In raw mode the terminal does not translate \n to \r\n, so every line
+	// must end with \r\n to ensure the cursor returns to column 0 before the
+	// next line is drawn. Otherwise the list renders as a staircase.
 	lines := 0
-	header := "ソースを選択（↑↓ 移動、Space で切り替え、Enter で確定）:\n"
+	header := "ソースを選択（↑↓ 移動、Space で切り替え、Enter で確定）:\r\n"
 	fmt.Fprint(out, header)
 	lines++
 
@@ -143,7 +146,7 @@ func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer) 
 		if i == cursor {
 			arrow = "> "
 		}
-		fmt.Fprintf(out, "%s[%s] %-16s  %s\n", arrow, check, item.label, item.description)
+		fmt.Fprintf(out, "%s[%s] %-16s  %s\r\n", arrow, check, item.label, item.description)
 		lines++
 	}
 	return lines
@@ -211,7 +214,7 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 	if f, ok := in.(*os.File); ok && isTerminalFunc(int(f.Fd())) {
 		oldState, err := makeRawFunc(int(f.Fd()))
 		if err != nil {
-			fmt.Fprintf(out, "warning: failed to enter raw mode: %v\n", err)
+			fmt.Fprintf(out, "warning: failed to enter raw mode: %v\r\n", err)
 		} else {
 			defer func() { _ = restoreTermFunc(int(f.Fd()), oldState) }()
 		}
@@ -222,8 +225,9 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("load %s: %w", configPath, err)
 	}
 
-	fmt.Fprintln(out, "\nmarunage config wizard")
-	fmt.Fprintln(out, strings.Repeat("─", 40))
+	// Raw mode is on at this point, so use \r\n explicitly instead of Fprintln.
+	fmt.Fprint(out, "\r\nmarunage config wizard\r\n")
+	fmt.Fprint(out, strings.Repeat("─", 40)+"\r\n")
 
 	initial := initialSelection(cfg)
 	selected, err := multiSelect(knownSources, initial, in, out)
@@ -265,6 +269,6 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("save %s: %w", configPath, err)
 	}
 
-	fmt.Fprintf(out, "\n設定を保存しました: %s\n", configPath)
+	fmt.Fprintf(out, "\r\n設定を保存しました: %s\r\n", configPath)
 	return nil
 }

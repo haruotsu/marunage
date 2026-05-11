@@ -54,6 +54,7 @@ func setTTYHooksForTest(
 // 17. parseKey: ESC[ の後に未知バイトが来ても keyEvent{ch:0x1b} にフォールバック
 // 18. runConfigWizard: 非 TTY の *os.File 入力では raw mode に入らない
 // 19. runConfigWizard: MakeRaw 失敗時は warning を out に出して処理を継続する
+// 20. renderList: 各行は \r\n 終端（raw mode で行頭に戻るため）
 
 // --- applyKeys unit tests ---
 
@@ -434,6 +435,29 @@ func TestRunConfigWizard_MakeRawFailureShowsWarning(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "boom") {
 		t.Errorf("out does not contain underlying error 'boom'; got: %q", rendered)
+	}
+}
+
+// TestRenderList_LinesEndWithCRLF verifies that renderList emits \r\n at the
+// end of every line. In raw mode the terminal does not translate \n to \r\n,
+// so without an explicit carriage return each subsequent line starts at the
+// column where the previous one ended, producing a staircase layout.
+func TestRenderList_LinesEndWithCRLF(t *testing.T) {
+	items := []sourceItem{
+		{key: "a", label: "A", description: "desc a"},
+		{key: "b", label: "B", description: "desc b"},
+	}
+	var out bytes.Buffer
+	n := renderList(items, 0, []bool{false, false}, &out)
+	if n != 3 {
+		t.Fatalf("renderList returned %d lines; want 3 (header + 2 items)", n)
+	}
+	got := out.String()
+	if strings.Count(got, "\r\n") != 3 {
+		t.Errorf("expected 3 \\r\\n line terminators; got %d in %q", strings.Count(got, "\r\n"), got)
+	}
+	if strings.Contains(strings.ReplaceAll(got, "\r\n", ""), "\n") {
+		t.Errorf("found bare \\n (not preceded by \\r) in output: %q", got)
 	}
 }
 
