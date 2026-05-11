@@ -114,7 +114,7 @@ func TestExecute_DaemonGroup(t *testing.T) {
 
 func TestExecute_ConfigGroup(t *testing.T) {
 	allSubs := []string{"get", "set", "edit", "wizard"}
-	stillStubbed := []string{"edit", "wizard"}
+	stillStubbed := []string{"edit"}
 
 	t.Run("config --help lists subcommands", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
