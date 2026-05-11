@@ -49,6 +49,11 @@ func setTTYHooksForTest(
 // 12. runConfigWizard: 全未選択で空スライスが保存される
 // 13. config wizard サブコマンドが存在する
 // 14. knownSources のキーはすべて knownBuiltinNames に含まれる
+// 15. parseKey: ESC[A / ESC[B が 1 バイトずつ届いても矢印として解釈される
+// 16. parseKey: ESC 単独（後続なし）は keyEvent{ch:0x1b} にフォールバック
+// 17. parseKey: ESC[ の後に未知バイトが来ても keyEvent{ch:0x1b} にフォールバック
+// 18. runConfigWizard: 非 TTY の *os.File 入力では raw mode に入らない
+// 19. runConfigWizard: MakeRaw 失敗時は warning を out に出して処理を継続する
 
 // --- applyKeys unit tests ---
 
