@@ -63,6 +63,9 @@ func setTTYHooksForTest(
 // 25. physicalRows: displayWidth=0 でも最低 1 行
 // 26. renderList: termWidth が狭いときは折り返しを加味した物理行数を返す
 // 27. multiSelect: リドロー時の ESC[%dA に renderList が返した物理行数 (折り返し加味) が渡る、かつ ESC[J (clear to EOS) が後続する
+// 28. physicalRows: termWidth <= 0 でも最低 1 行を返す (detectTermWidth が 0 を返した場合の防御)
+// 29. runeDisplayWidth: C0 制御文字 (r<0x20) および DEL (0x7f) は幅 0
+// 30. displayWidth: サロゲートペア (CJK Ext B-F, U+20000 以上) は幅 2
 
 // --- applyKeys unit tests ---
 
@@ -510,6 +513,53 @@ func TestPhysicalRows_Wraps(t *testing.T) {
 func TestPhysicalRows_EmptyIsAtLeastOne(t *testing.T) {
 	if got := physicalRows(0, 80); got != 1 {
 		t.Errorf("physicalRows(0,80)=%d; want 1", got)
+	}
+}
+
+// TestPhysicalRows_NonPositiveTermWidth は detectTermWidth が 0 や負値を返した
+// 異常系でも巻き戻し計算が破綻しない (最低 1 行を返す) ことを保証する。
+func TestPhysicalRows_NonPositiveTermWidth(t *testing.T) {
+	if got := physicalRows(40, 0); got != 1 {
+		t.Errorf("physicalRows(40,0)=%d; want 1", got)
+	}
+	if got := physicalRows(40, -10); got != 1 {
+		t.Errorf("physicalRows(40,-10)=%d; want 1", got)
+	}
+	if got := physicalRows(0, 0); got != 1 {
+		t.Errorf("physicalRows(0,0)=%d; want 1", got)
+	}
+}
+
+// TestDisplayWidth_ControlChars は C0 制御文字と DEL が幅 0 として扱われ、
+// 物理行数計算に寄与しないことを保証する。
+func TestDisplayWidth_ControlChars(t *testing.T) {
+	if got := displayWidth("\x00\x01\x1f"); got != 0 {
+		t.Errorf("displayWidth(C0 controls)=%d; want 0", got)
+	}
+	if got := displayWidth("\x7f"); got != 0 {
+		t.Errorf("displayWidth(DEL)=%d; want 0", got)
+	}
+	// 制御文字は ASCII と混在しても他の幅に影響しない。
+	if got := displayWidth("a\x00b"); got != 2 {
+		t.Errorf("displayWidth(\"a\\x00b\")=%d; want 2", got)
+	}
+}
+
+// TestDisplayWidth_SurrogatePairCJK はサロゲートペア領域の CJK 拡張漢字
+// (U+20000 以上、CJK Ext B-F / G) が幅 2 として扱われることを保証する。
+// 自前テーブルで意図的にカバーしているレンジなので、回帰検知として残す。
+func TestDisplayWidth_SurrogatePairCJK(t *testing.T) {
+	// U+20000 (𠀀): CJK Ext B 先頭
+	if got := displayWidth("\U00020000"); got != 2 {
+		t.Errorf("displayWidth(U+20000)=%d; want 2", got)
+	}
+	// U+2FFFD: CJK Ext B-F 末尾近辺
+	if got := displayWidth("\U0002FFFD"); got != 2 {
+		t.Errorf("displayWidth(U+2FFFD)=%d; want 2", got)
+	}
+	// U+30000: CJK Ext G 先頭
+	if got := displayWidth("\U00030000"); got != 2 {
+		t.Errorf("displayWidth(U+30000)=%d; want 2", got)
 	}
 }
 
