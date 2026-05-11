@@ -125,17 +125,67 @@ func applyKeys(n int, initial []bool, keys []keyEvent) (cursor int, selected []b
 	return cursor, selected
 }
 
+// displayWidth returns the number of terminal columns needed to render s.
+// East Asian Wide and Fullwidth runes count as 2; control characters as 0.
+// Other runes (ASCII, Halfwidth, ambiguous) count as 1.
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeDisplayWidth(r)
+	}
+	return w
+}
+
+// runeDisplayWidth returns the column width of r, using a conservative
+// approximation of the Unicode East Asian Width tables (no external dep).
+func runeDisplayWidth(r rune) int {
+	if r < 0x20 || r == 0x7f {
+		return 0
+	}
+	switch {
+	case r >= 0x1100 && r <= 0x115F, // Hangul Jamo
+		r >= 0x2E80 && r <= 0x303E,    // CJK Radicals / Kangxi
+		r >= 0x3041 && r <= 0x33FF,    // Hiragana, Katakana, CJK symbols
+		r >= 0x3400 && r <= 0x4DBF,    // CJK Ext A
+		r >= 0x4E00 && r <= 0x9FFF,    // CJK Unified
+		r >= 0xA000 && r <= 0xA4CF,    // Yi
+		r >= 0xAC00 && r <= 0xD7A3,    // Hangul Syllables
+		r >= 0xF900 && r <= 0xFAFF,    // CJK Compatibility
+		r >= 0xFE30 && r <= 0xFE4F,    // CJK Compat Forms
+		r >= 0xFF00 && r <= 0xFF60,    // Fullwidth ASCII
+		r >= 0xFFE0 && r <= 0xFFE6,    // Fullwidth signs
+		r >= 0x20000 && r <= 0x2FFFD,  // CJK Ext B-F
+		r >= 0x30000 && r <= 0x3FFFD:  // CJK Ext G
+		return 2
+	}
+	return 1
+}
+
+// physicalRows returns how many terminal rows a logical line of the given
+// display width occupies when rendered into a terminal of termWidth columns.
+// Empty lines still occupy one row.
+func physicalRows(lineWidth, termWidth int) int {
+	if termWidth <= 0 {
+		return 1
+	}
+	if lineWidth == 0 {
+		return 1
+	}
+	return (lineWidth + termWidth - 1) / termWidth
+}
+
 // renderList draws the current selection state to out.
-// It returns the number of lines printed so the caller can move the cursor up
-// to redraw.
-func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer) int {
+// It returns the number of physical terminal rows used (accounting for line
+// wrapping at termWidth columns) so the caller can move the cursor up to
+// redraw without leaving stale rows on screen.
+func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer, termWidth int) int {
 	// In raw mode the terminal does not translate \n to \r\n, so every line
 	// must end with \r\n to ensure the cursor returns to column 0 before the
 	// next line is drawn. Otherwise the list renders as a staircase.
-	lines := 0
-	header := "ソースを選択（↑↓ 移動、Space で切り替え、Enter で確定）:\r\n"
-	fmt.Fprint(out, header)
-	lines++
+	rows := 0
+	header := "ソースを選択（↑↓ 移動、Space で切り替え、Enter で確定）:"
+	fmt.Fprint(out, header+"\r\n")
+	rows += physicalRows(displayWidth(header), termWidth)
 
 	for i, item := range items {
 		check := " "
@@ -146,21 +196,24 @@ func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer) 
 		if i == cursor {
 			arrow = "> "
 		}
-		fmt.Fprintf(out, "%s[%s] %-16s  %s\r\n", arrow, check, item.label, item.description)
-		lines++
+		line := fmt.Sprintf("%s[%s] %-16s  %s", arrow, check, item.label, item.description)
+		fmt.Fprint(out, line+"\r\n")
+		rows += physicalRows(displayWidth(line), termWidth)
 	}
-	return lines
+	return rows
 }
 
 // multiSelect shows a keyboard-driven multi-select list on out, reading keys
 // from in. It returns the final selection slice (parallel to items).
-// In non-TTY contexts the caller can pipe \r to accept the defaults.
-func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer) ([]bool, error) {
+// termWidth is the rendering width in columns used to compute how many
+// physical rows the redraw must rewind past. In non-TTY contexts the caller
+// can pipe \r to accept the defaults.
+func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer, termWidth int) ([]bool, error) {
 	selected := make([]bool, len(items))
 	copy(selected, initial)
 	cursor := 0
 
-	nLines := renderList(items, cursor, selected, out)
+	nRows := renderList(items, cursor, selected, out, termWidth)
 
 	for {
 		k, err := parseKey(in)
@@ -186,11 +239,25 @@ func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer
 			selected[cursor] = !selected[cursor]
 		}
 
-		// Move cursor up to redraw (ANSI: ESC[{n}A + carriage return).
-		fmt.Fprintf(out, "\033[%dA\r", nLines)
-		nLines = renderList(items, cursor, selected, out)
+		// Move cursor up to the start of the previous render and clear from
+		// there to end of screen. ESC[J avoids leaving stragglers behind when
+		// the new render is shorter than the previous one.
+		fmt.Fprintf(out, "\033[%dA\r\033[J", nRows)
+		nRows = renderList(items, cursor, selected, out, termWidth)
 	}
 	return selected, nil
+}
+
+// detectTermWidth returns the column width of the terminal backing out, or
+// 80 as a safe default when out is not a TTY (e.g. a bytes.Buffer in tests
+// or a pipe in non-interactive contexts).
+func detectTermWidth(out io.Writer) int {
+	if f, ok := out.(*os.File); ok {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+			return w
+		}
+	}
+	return 80
 }
 
 // initialSelection builds the parallel bool slice from the currently enabled
@@ -229,8 +296,9 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 	fmt.Fprint(out, "\r\nmarunage config wizard\r\n")
 	fmt.Fprint(out, strings.Repeat("─", 40)+"\r\n")
 
+	termWidth := detectTermWidth(out)
 	initial := initialSelection(cfg)
-	selected, err := multiSelect(knownSources, initial, in, out)
+	selected, err := multiSelect(knownSources, initial, in, out, termWidth)
 	if err != nil {
 		return err
 	}

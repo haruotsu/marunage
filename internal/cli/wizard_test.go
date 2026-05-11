@@ -55,6 +55,12 @@ func setTTYHooksForTest(
 // 18. runConfigWizard: 非 TTY の *os.File 入力では raw mode に入らない
 // 19. runConfigWizard: MakeRaw 失敗時は warning を out に出して処理を継続する
 // 20. renderList: 各行は \r\n 終端（raw mode で行頭に戻るため）
+// 21. displayWidth: ASCII 文字は 1 カラム
+// 22. displayWidth: 全角(東アジア幅)文字は 2 カラム
+// 23. physicalRows: displayWidth <= termWidth なら 1 行
+// 24. physicalRows: termWidth+1 なら 2 行（折り返し）
+// 25. physicalRows: displayWidth=0 でも最低 1 行
+// 26. renderList: termWidth が狭いときは折り返しを加味した物理行数を返す
 
 // --- applyKeys unit tests ---
 
@@ -148,7 +154,7 @@ func TestMultiSelect_EnterImmediatelyReturnsInitial(t *testing.T) {
 	// just Enter
 	in := bytes.NewBufferString("\r")
 	var out bytes.Buffer
-	got, err := multiSelect(items, initial, in, &out)
+	got, err := multiSelect(items, initial, in, &out, 80)
 	if err != nil {
 		t.Fatalf("multiSelect err=%v", err)
 	}
@@ -165,7 +171,7 @@ func TestMultiSelect_SpaceEnterTogglesFirst(t *testing.T) {
 
 	in := bytes.NewBufferString(" \r") // space then enter
 	var out bytes.Buffer
-	got, err := multiSelect(items, initial, in, &out)
+	got, err := multiSelect(items, initial, in, &out, 80)
 	if err != nil {
 		t.Fatalf("multiSelect err=%v", err)
 	}
@@ -181,7 +187,7 @@ func TestMultiSelect_OutputContainsSourceLabels(t *testing.T) {
 	}
 	in := bytes.NewBufferString("\r")
 	var out bytes.Buffer
-	if _, err := multiSelect(items, []bool{false, false}, in, &out); err != nil {
+	if _, err := multiSelect(items, []bool{false, false}, in, &out, 80); err != nil {
 		t.Fatalf("multiSelect err=%v", err)
 	}
 
@@ -448,7 +454,7 @@ func TestRenderList_LinesEndWithCRLF(t *testing.T) {
 		{key: "b", label: "B", description: "desc b"},
 	}
 	var out bytes.Buffer
-	n := renderList(items, 0, []bool{false, false}, &out)
+	n := renderList(items, 0, []bool{false, false}, &out, 200)
 	if n != 3 {
 		t.Fatalf("renderList returned %d lines; want 3 (header + 2 items)", n)
 	}
@@ -458,6 +464,67 @@ func TestRenderList_LinesEndWithCRLF(t *testing.T) {
 	}
 	if strings.Contains(strings.ReplaceAll(got, "\r\n", ""), "\n") {
 		t.Errorf("found bare \\n (not preceded by \\r) in output: %q", got)
+	}
+}
+
+func TestDisplayWidth_ASCII(t *testing.T) {
+	if got := displayWidth("Markdown"); got != 8 {
+		t.Errorf("displayWidth(\"Markdown\")=%d; want 8", got)
+	}
+}
+
+func TestDisplayWidth_FullWidth(t *testing.T) {
+	// 5 fullwidth Japanese chars = 10 columns
+	if got := displayWidth("ローカルの"); got != 10 {
+		t.Errorf("displayWidth(\"ローカルの\")=%d; want 10", got)
+	}
+}
+
+func TestDisplayWidth_Mixed(t *testing.T) {
+	// "[x] Markdown" + 2 cols Japanese = "[x] Markdown" (12) + "あ" (2) = 14
+	if got := displayWidth("[x] Markdownあ"); got != 14 {
+		t.Errorf("displayWidth(...)=%d; want 14", got)
+	}
+}
+
+func TestPhysicalRows_FitsInOneRow(t *testing.T) {
+	if got := physicalRows(40, 80); got != 1 {
+		t.Errorf("physicalRows(40,80)=%d; want 1", got)
+	}
+	if got := physicalRows(80, 80); got != 1 {
+		t.Errorf("physicalRows(80,80)=%d; want 1", got)
+	}
+}
+
+func TestPhysicalRows_Wraps(t *testing.T) {
+	if got := physicalRows(81, 80); got != 2 {
+		t.Errorf("physicalRows(81,80)=%d; want 2", got)
+	}
+	if got := physicalRows(161, 80); got != 3 {
+		t.Errorf("physicalRows(161,80)=%d; want 3", got)
+	}
+}
+
+func TestPhysicalRows_EmptyIsAtLeastOne(t *testing.T) {
+	if got := physicalRows(0, 80); got != 1 {
+		t.Errorf("physicalRows(0,80)=%d; want 1", got)
+	}
+}
+
+func TestRenderList_PhysicalRowCountWithNarrowTerm(t *testing.T) {
+	items := []sourceItem{
+		{key: "a", label: "A", description: "短い"},
+		{key: "b", label: "B", description: "短い"},
+	}
+	// Wide terminal: header + 2 items = 3 rows.
+	var wide bytes.Buffer
+	if n := renderList(items, 0, []bool{false, false}, &wide, 200); n != 3 {
+		t.Errorf("renderList(termWidth=200)=%d; want 3", n)
+	}
+	// Narrow terminal: each line wraps, so physical rows > 3.
+	var narrow bytes.Buffer
+	if n := renderList(items, 0, []bool{false, false}, &narrow, 10); n <= 3 {
+		t.Errorf("renderList(termWidth=10)=%d; want >3 (lines should wrap)", n)
 	}
 }
 
