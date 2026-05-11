@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.14](https://github.com/haruotsu/marunage/compare/v0.0.13...v0.0.14) - 2026-05-11
+- fix(cli): config wizardのレイアウト崩れを修正（raw modeでCRLF出力） by @haruotsu in https://github.com/haruotsu/marunage/pull/109
+
 ## [v0.0.13](https://github.com/haruotsu/marunage/compare/v0.0.12...v0.0.13) - 2026-05-11
 - fix(cli): config wizard で矢印キーを正しく処理する by @haruotsu in https://github.com/haruotsu/marunage/pull/107
 
