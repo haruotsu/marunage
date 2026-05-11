@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -61,6 +62,7 @@ func setTTYHooksForTest(
 // 24. physicalRows: termWidth+1 なら 2 行（折り返し）
 // 25. physicalRows: displayWidth=0 でも最低 1 行
 // 26. renderList: termWidth が狭いときは折り返しを加味した物理行数を返す
+// 27. multiSelect: リドロー時の ESC[%dA に renderList が返した物理行数 (折り返し加味) が渡る、かつ ESC[J (clear to EOS) が後続する
 
 // --- applyKeys unit tests ---
 
@@ -525,6 +527,46 @@ func TestRenderList_PhysicalRowCountWithNarrowTerm(t *testing.T) {
 	var narrow bytes.Buffer
 	if n := renderList(items, 0, []bool{false, false}, &narrow, 10); n <= 3 {
 		t.Errorf("renderList(termWidth=10)=%d; want >3 (lines should wrap)", n)
+	}
+}
+
+// TestMultiSelect_RedrawUsesPhysicalRowCount は本 PR 核心の回帰を直接保護する。
+// 狭い端末で行が折り返したとき、リドローの巻き戻し量 (ESC[%dA) が論理行数の
+// ままだと前回描画の末尾が消し残されてゴミが残る。ここでは termWidth=10 で
+// 折り返しを強制し、巻き戻しシーケンスに「初回 renderList が返した物理行数」
+// がそのまま現れること、続けて clear-to-EOS (ESC[J) が出ることを assert する。
+func TestMultiSelect_RedrawUsesPhysicalRowCount(t *testing.T) {
+	items := []sourceItem{
+		{key: "a", label: "AAAAAAAA", description: "longlonglonglong"},
+		{key: "b", label: "BBBBBBBB", description: "longlonglonglong"},
+	}
+
+	// 期待値: 同じ items / termWidth で renderList を呼んだときの物理行数。
+	var ref bytes.Buffer
+	wantRows := renderList(items, 0, []bool{false, false}, &ref, 10)
+	if wantRows <= 3 {
+		t.Fatalf("setup: expected wrap-induced rows>3, got %d", wantRows)
+	}
+
+	in := bytes.NewBufferString("\x1b[B\r") // Down, Enter
+	var out bytes.Buffer
+	if _, err := multiSelect(items, []bool{false, false}, in, &out, 10); err != nil {
+		t.Fatalf("multiSelect err=%v", err)
+	}
+
+	rendered := out.String()
+	wantRewind := fmt.Sprintf("\x1b[%dA", wantRows)
+	if !strings.Contains(rendered, wantRewind) {
+		t.Errorf("output missing redraw rewind %q; got %q", wantRewind, rendered)
+	}
+	if !strings.Contains(rendered, "\x1b[J") {
+		t.Errorf("output missing clear-to-EOS \"\\x1b[J\" in %q", rendered)
+	}
+	// 巻き戻し直後に clear-to-EOS が来ること (順序保証)。
+	if idxR := strings.Index(rendered, wantRewind); idxR >= 0 {
+		if idxJ := strings.Index(rendered[idxR:], "\x1b[J"); idxJ < 0 {
+			t.Errorf("ESC[J does not follow ESC[%%dA in %q", rendered)
+		}
 	}
 }
 
