@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,6 +258,45 @@ func TestConfigWizard_NonTTYCompletesWithEnter(t *testing.T) {
 	cmd, _, err := root.Find([]string{"config", "wizard"})
 	if err != nil || cmd.Use != "wizard" {
 		t.Fatalf("config wizard command not found (Use=%q, err=%v)", cmd.Use, err)
+	}
+}
+
+// oneByteReader wraps a []byte and returns exactly 1 byte per Read call.
+type oneByteReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *oneByteReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	p[0] = r.data[r.pos]
+	r.pos++
+	return 1, nil
+}
+
+func TestParseKey_EscUpOneByte(t *testing.T) {
+	// ESC [ A — delivered one byte at a time
+	r := &oneByteReader{data: []byte{0x1b, '[', 'A'}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyUp {
+		t.Errorf("got special=%v; want keyUp", k.special)
+	}
+}
+
+func TestParseKey_EscDownOneByte(t *testing.T) {
+	// ESC [ B — delivered one byte at a time
+	r := &oneByteReader{data: []byte{0x1b, '[', 'B'}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyDown {
+		t.Errorf("got special=%v; want keyDown", k.special)
 	}
 }
 

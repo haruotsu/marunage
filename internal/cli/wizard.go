@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
+	"golang.org/x/term"
 )
 
 // sourceItem is one entry in the discovery-source selection list.
@@ -67,14 +69,16 @@ func parseKey(r io.Reader) (keyEvent, error) {
 		return keyEvent{special: keyUp}, nil
 	case 'j':
 		return keyEvent{special: keyDown}, nil
-	case 0x1b: // ESC — try to read a 2-byte sequence
-		n, _ := r.Read(buf[1:3])
-		if n == 2 && buf[1] == '[' {
-			switch buf[2] {
-			case 'A':
-				return keyEvent{special: keyUp}, nil
-			case 'B':
-				return keyEvent{special: keyDown}, nil
+	case 0x1b: // ESC — read [ then the final byte one at a time
+		var b [1]byte
+		if _, err := io.ReadFull(r, b[:]); err == nil && b[0] == '[' {
+			if _, err := io.ReadFull(r, b[:]); err == nil {
+				switch b[0] {
+				case 'A':
+					return keyEvent{special: keyUp}, nil
+				case 'B':
+					return keyEvent{special: keyDown}, nil
+				}
 			}
 		}
 		return keyEvent{ch: 0x1b}, nil
@@ -193,6 +197,13 @@ func initialSelection(cfg config.Config) []bool {
 // It loads the config at configPath, runs the multi-select source picker, and
 // saves the result.
 func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		oldState, err := term.MakeRaw(int(f.Fd()))
+		if err == nil {
+			defer term.Restore(int(f.Fd()), oldState)
+		}
+	}
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load %s: %w", configPath, err)
