@@ -144,18 +144,18 @@ func runeDisplayWidth(r rune) int {
 	}
 	switch {
 	case r >= 0x1100 && r <= 0x115F, // Hangul Jamo
-		r >= 0x2E80 && r <= 0x303E,    // CJK Radicals / Kangxi
-		r >= 0x3041 && r <= 0x33FF,    // Hiragana, Katakana, CJK symbols
-		r >= 0x3400 && r <= 0x4DBF,    // CJK Ext A
-		r >= 0x4E00 && r <= 0x9FFF,    // CJK Unified
-		r >= 0xA000 && r <= 0xA4CF,    // Yi
-		r >= 0xAC00 && r <= 0xD7A3,    // Hangul Syllables
-		r >= 0xF900 && r <= 0xFAFF,    // CJK Compatibility
-		r >= 0xFE30 && r <= 0xFE4F,    // CJK Compat Forms
-		r >= 0xFF00 && r <= 0xFF60,    // Fullwidth ASCII
-		r >= 0xFFE0 && r <= 0xFFE6,    // Fullwidth signs
-		r >= 0x20000 && r <= 0x2FFFD,  // CJK Ext B-F
-		r >= 0x30000 && r <= 0x3FFFD:  // CJK Ext G
+		r >= 0x2E80 && r <= 0x303E,   // CJK Radicals / Kangxi
+		r >= 0x3041 && r <= 0x33FF,   // Hiragana, Katakana, CJK symbols
+		r >= 0x3400 && r <= 0x4DBF,   // CJK Ext A
+		r >= 0x4E00 && r <= 0x9FFF,   // CJK Unified
+		r >= 0xA000 && r <= 0xA4CF,   // Yi
+		r >= 0xAC00 && r <= 0xD7A3,   // Hangul Syllables
+		r >= 0xF900 && r <= 0xFAFF,   // CJK Compatibility
+		r >= 0xFE30 && r <= 0xFE4F,   // CJK Compat Forms
+		r >= 0xFF00 && r <= 0xFF60,   // Fullwidth ASCII
+		r >= 0xFFE0 && r <= 0xFFE6,   // Fullwidth signs
+		r >= 0x20000 && r <= 0x2FFFD, // CJK Ext B-F
+		r >= 0x30000 && r <= 0x3FFFD: // CJK Ext G
 		return 2
 	}
 	return 1
