@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.12](https://github.com/haruotsu/marunage/compare/v0.0.11...v0.0.12) - 2026-05-11
+- feat(config): interactive wizard for discovery source selection by @haruotsu in https://github.com/haruotsu/marunage/pull/105
+
 ## [v0.0.11](https://github.com/haruotsu/marunage/compare/v0.0.10...v0.0.11) - 2026-05-11
 - build: add make install target to put binary on PATH by @haruotsu in https://github.com/haruotsu/marunage/pull/89
 - fix: integrate reaper into loop and add CWD validation at add time by @haruotsu in https://github.com/haruotsu/marunage/pull/91
