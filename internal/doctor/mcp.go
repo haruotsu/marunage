@@ -32,9 +32,19 @@ func (ClaudeMCPProbe) ListMCPServers(ctx context.Context) ([]string, error) {
 	}
 	var names []string
 	for _, line := range strings.Split(string(out), "\n") {
-		if name := strings.TrimSpace(line); name != "" {
-			names = append(names, name)
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			names = append(names, parseMCPServerName(trimmed))
 		}
 	}
 	return names, nil
+}
+
+// parseMCPServerName extracts the server name from a `claude mcp list` output
+// line. The current format is "<name>: <url> - <status>"; older versions emit
+// just the name. When ": " is present, everything before it is the name.
+func parseMCPServerName(line string) string {
+	if idx := strings.Index(line, ": "); idx >= 0 {
+		return line[:idx]
+	}
+	return line
 }

@@ -133,7 +133,7 @@ func probeSlackMCP(ctx context.Context, in Inputs) CheckOutcome {
 		}
 	}
 	for _, s := range servers {
-		if strings.EqualFold(s, "slack") {
+		if strings.Contains(strings.ToLower(s), "slack") {
 			return CheckOutcome{
 				OK:     true,
 				Detail: "Slack MCP server configured in Claude Code",
