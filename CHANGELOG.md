@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.0.11](https://github.com/haruotsu/marunage/compare/v0.0.10...v0.0.11) - 2026-05-11
+- build: add make install target to put binary on PATH by @haruotsu in https://github.com/haruotsu/marunage/pull/89
+- fix: integrate reaper into loop and add CWD validation at add time by @haruotsu in https://github.com/haruotsu/marunage/pull/91
+- fix: decouple install from build to prevent root-owned build artifacts by @haruotsu in https://github.com/haruotsu/marunage/pull/92
+- fix: allow empty cwd when allowed_cwd_prefixes is configured by @haruotsu in https://github.com/haruotsu/marunage/pull/93
+- fix: prevent dispatch agent cmux windows from spawning during tests by @haruotsu in https://github.com/haruotsu/marunage/pull/94
+- fix: serve route-specific index.html for Next.js directory routes by @haruotsu in https://github.com/haruotsu/marunage/pull/95
+- fix: echo X-CSRF-Token response header and cache it in JS by @haruotsu in https://github.com/haruotsu/marunage/pull/96
+- fix: return empty array instead of null from /api/skills/installed by @haruotsu in https://github.com/haruotsu/marunage/pull/97
+- remove dispatch-agent workspace startup from marunage web by @haruotsu in https://github.com/haruotsu/marunage/pull/98
+- fix: show task list on /tasks and remove LiveStream by @haruotsu in https://github.com/haruotsu/marunage/pull/99
+- fix: Metrics/Journal not displaying + Delete navigation bug by @haruotsu in https://github.com/haruotsu/marunage/pull/100
+- fix: dispatch pending tasks on shorter interval (dispatch_interval) by @haruotsu in https://github.com/haruotsu/marunage/pull/101
+- feat(doctor): add slack-mcp check via claude mcp list by @haruotsu in https://github.com/haruotsu/marunage/pull/102
+- fix(doctor): parse claude mcp list new format and fix slack name matching by @haruotsu in https://github.com/haruotsu/marunage/pull/104
+
 ## [v0.0.10](https://github.com/haruotsu/marunage/compare/v0.0.9...v0.0.10) - 2026-05-08
 - fix(web): wire real cmux dispatch + persistent dispatch agent by @haruotsu in https://github.com/haruotsu/marunage/pull/87
 
