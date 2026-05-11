@@ -12,7 +12,7 @@ import (
 	"golang.org/x/term"
 )
 
-// TTY interaction is funnelled through these three function vars so
+// TTY interaction is funnelled through these function vars so
 // wizard_test.go can drive the non-TTY and MakeRaw-failure branches
 // without a real terminal. Production code never reassigns them; tests
 // use setTTYHooksForTest in wizard_test.go which restores the
@@ -21,6 +21,7 @@ var (
 	isTerminalFunc  = term.IsTerminal
 	makeRawFunc     = term.MakeRaw
 	restoreTermFunc = term.Restore
+	getTermSizeFunc = term.GetSize
 )
 
 // sourceItem is one entry in the discovery-source selection list.
@@ -125,14 +126,75 @@ func applyKeys(n int, initial []bool, keys []keyEvent) (cursor int, selected []b
 	return cursor, selected
 }
 
+// displayWidth returns the number of terminal columns needed to render s.
+// East Asian Wide and Fullwidth runes count as 2; C0 control characters and
+// DEL count as 0. Other runes count as 1 — notably East Asian Ambiguous
+// characters (e.g. ↑ U+2191, ↓ U+2193, ─ U+2500) are treated as 1 here,
+// which matches non-CJK locale rendering and Western terminals but may
+// undercount by 1 column per such char on CJK-locale terminals.
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeDisplayWidth(r)
+	}
+	return w
+}
+
+// runeDisplayWidth returns the column width of r, using a conservative
+// approximation of the Unicode East Asian Width tables (no external dep).
+// C0 controls (< 0x20) and DEL (0x7f) collapse to 0; C1 controls
+// (0x80-0x9F) are treated as 1 since they are not expected in CLI output.
+// East Asian Ambiguous runes fall through to the default of 1.
+func runeDisplayWidth(r rune) int {
+	if r < 0x20 || r == 0x7f {
+		return 0
+	}
+	switch {
+	case r >= 0x1100 && r <= 0x115F, // Hangul Jamo
+		r >= 0x2E80 && r <= 0x303E,   // CJK Radicals / Kangxi
+		r >= 0x3041 && r <= 0x33FF,   // Hiragana, Katakana, CJK symbols
+		r >= 0x3400 && r <= 0x4DBF,   // CJK Ext A
+		r >= 0x4E00 && r <= 0x9FFF,   // CJK Unified
+		r >= 0xA000 && r <= 0xA4CF,   // Yi
+		r >= 0xAC00 && r <= 0xD7A3,   // Hangul Syllables
+		r >= 0xF900 && r <= 0xFAFF,   // CJK Compatibility
+		r >= 0xFE30 && r <= 0xFE4F,   // CJK Compat Forms
+		r >= 0xFF00 && r <= 0xFF60,   // Fullwidth ASCII
+		r >= 0xFFE0 && r <= 0xFFE6,   // Fullwidth signs
+		r >= 0x20000 && r <= 0x2FFFD, // CJK Ext B-F
+		r >= 0x30000 && r <= 0x3FFFD: // CJK Ext G
+		return 2
+	}
+	return 1
+}
+
+// physicalRows returns how many terminal rows a logical line of the given
+// display width occupies when rendered into a terminal of termWidth columns.
+// Empty lines still occupy one row.
+func physicalRows(lineWidth, termWidth int) int {
+	if termWidth <= 0 {
+		return 1
+	}
+	if lineWidth == 0 {
+		return 1
+	}
+	return (lineWidth + termWidth - 1) / termWidth
+}
+
 // renderList draws the current selection state to out.
-// It returns the number of lines printed so the caller can move the cursor up
-// to redraw.
-func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer) int {
-	lines := 0
-	header := "ソースを選択（↑↓ 移動、Space で切り替え、Enter で確定）:\n"
-	fmt.Fprint(out, header)
-	lines++
+// It returns the number of physical terminal rows used (accounting for line
+// wrapping at termWidth columns) so the caller can move the cursor up to
+// redraw without leaving stale rows on screen. multiSelect feeds this value
+// back to ESC[{n}A on the next redraw to rewind exactly past the previous
+// frame.
+func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer, termWidth int) int {
+	// In raw mode the terminal does not translate \n to \r\n, so every line
+	// must end with \r\n to ensure the cursor returns to column 0 before the
+	// next line is drawn. Otherwise the list renders as a staircase.
+	rows := 0
+	header := "ソースを選択（↑↓ 移動、Space で切り替え、Enter で確定）:"
+	fmt.Fprint(out, header+"\r\n")
+	rows += physicalRows(displayWidth(header), termWidth)
 
 	for i, item := range items {
 		check := " "
@@ -143,21 +205,24 @@ func renderList(items []sourceItem, cursor int, selected []bool, out io.Writer) 
 		if i == cursor {
 			arrow = "> "
 		}
-		fmt.Fprintf(out, "%s[%s] %-16s  %s\n", arrow, check, item.label, item.description)
-		lines++
+		line := fmt.Sprintf("%s[%s] %-16s  %s", arrow, check, item.label, item.description)
+		fmt.Fprint(out, line+"\r\n")
+		rows += physicalRows(displayWidth(line), termWidth)
 	}
-	return lines
+	return rows
 }
 
 // multiSelect shows a keyboard-driven multi-select list on out, reading keys
 // from in. It returns the final selection slice (parallel to items).
-// In non-TTY contexts the caller can pipe \r to accept the defaults.
-func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer) ([]bool, error) {
+// termWidth is the rendering width in columns used to compute how many
+// physical rows the redraw must rewind past. In non-TTY contexts the caller
+// can pipe \r to accept the defaults.
+func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer, termWidth int) ([]bool, error) {
 	selected := make([]bool, len(items))
 	copy(selected, initial)
 	cursor := 0
 
-	nLines := renderList(items, cursor, selected, out)
+	nRows := renderList(items, cursor, selected, out, termWidth)
 
 	for {
 		k, err := parseKey(in)
@@ -183,11 +248,31 @@ func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer
 			selected[cursor] = !selected[cursor]
 		}
 
-		// Move cursor up to redraw (ANSI: ESC[{n}A + carriage return).
-		fmt.Fprintf(out, "\033[%dA\r", nLines)
-		nLines = renderList(items, cursor, selected, out)
+		// Move cursor up to the start of the previous render and clear from
+		// there to end of screen. ESC[J avoids leaving stragglers behind when
+		// the new render is shorter than the previous one.
+		fmt.Fprintf(out, "\033[%dA\r\033[J", nRows)
+		nRows = renderList(items, cursor, selected, out, termWidth)
 	}
 	return selected, nil
+}
+
+// defaultTermWidth is the fallback column count used when out is not a TTY
+// (e.g. a bytes.Buffer in tests, or stdout piped to a file). 80 mirrors the
+// historical VT100 default so wrapped output stays usable on inherited
+// pipelines.
+const defaultTermWidth = 80
+
+// detectTermWidth returns the column width of the terminal backing out, or
+// defaultTermWidth when out is not a TTY (e.g. a bytes.Buffer in tests
+// or a pipe in non-interactive contexts).
+func detectTermWidth(out io.Writer) int {
+	if f, ok := out.(*os.File); ok {
+		if w, _, err := getTermSizeFunc(int(f.Fd())); err == nil && w > 0 {
+			return w
+		}
+	}
+	return defaultTermWidth
 }
 
 // initialSelection builds the parallel bool slice from the currently enabled
@@ -211,7 +296,7 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 	if f, ok := in.(*os.File); ok && isTerminalFunc(int(f.Fd())) {
 		oldState, err := makeRawFunc(int(f.Fd()))
 		if err != nil {
-			fmt.Fprintf(out, "warning: failed to enter raw mode: %v\n", err)
+			fmt.Fprintf(out, "warning: failed to enter raw mode: %v\r\n", err)
 		} else {
 			defer func() { _ = restoreTermFunc(int(f.Fd()), oldState) }()
 		}
@@ -222,11 +307,16 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("load %s: %w", configPath, err)
 	}
 
-	fmt.Fprintln(out, "\nmarunage config wizard")
-	fmt.Fprintln(out, strings.Repeat("─", 40))
+	// Raw mode may be on at this point (when isTerminalFunc(in) is true and
+	// MakeRaw succeeded), so emit \r\n explicitly instead of Fprintln. \r\n
+	// is also harmless on cooked terminals and in tests, so we use it
+	// unconditionally rather than branching on the raw-mode state.
+	fmt.Fprint(out, "\r\nmarunage config wizard\r\n")
+	fmt.Fprint(out, strings.Repeat("─", 40)+"\r\n")
 
+	termWidth := detectTermWidth(out)
 	initial := initialSelection(cfg)
-	selected, err := multiSelect(knownSources, initial, in, out)
+	selected, err := multiSelect(knownSources, initial, in, out, termWidth)
 	if err != nil {
 		return err
 	}
@@ -265,6 +355,6 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("save %s: %w", configPath, err)
 	}
 
-	fmt.Fprintf(out, "\n設定を保存しました: %s\n", configPath)
+	fmt.Fprintf(out, "\r\n設定を保存しました: %s\r\n", configPath)
 	return nil
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,6 +35,14 @@ func setTTYHooksForTest(
 	}
 }
 
+// setGetTermSizeForTest swaps getTermSizeFunc so detectTermWidth can be
+// exercised against synthetic terminal widths without a real TTY.
+func setGetTermSizeForTest(f func(fd int) (width, height int, err error)) func() {
+	prev := getTermSizeFunc
+	getTermSizeFunc = f
+	return func() { getTermSizeFunc = prev }
+}
+
 // テストリスト:
 // 1. applyKeys: Enter だけで初期選択がそのまま返る
 // 2. applyKeys: Space でカーソル位置の選択が反転する
@@ -54,6 +63,20 @@ func setTTYHooksForTest(
 // 17. parseKey: ESC[ の後に未知バイトが来ても keyEvent{ch:0x1b} にフォールバック
 // 18. runConfigWizard: 非 TTY の *os.File 入力では raw mode に入らない
 // 19. runConfigWizard: MakeRaw 失敗時は warning を out に出して処理を継続する
+// 20. renderList: 各行は \r\n 終端（raw mode で行頭に戻るため）
+// 21. displayWidth: ASCII 文字は 1 カラム
+// 22. displayWidth: 全角(東アジア幅)文字は 2 カラム
+// 23. physicalRows: displayWidth <= termWidth なら 1 行
+// 24. physicalRows: termWidth+1 なら 2 行（折り返し）
+// 25. physicalRows: displayWidth=0 でも最低 1 行
+// 26. renderList: termWidth が狭いときは折り返しを加味した物理行数を返す
+// 27. multiSelect: リドロー時の ESC[%dA に renderList が返した物理行数 (折り返し加味) が渡る、かつ ESC[J (clear to EOS) が後続する
+// 28. physicalRows: termWidth <= 0 でも最低 1 行を返す (detectTermWidth が 0 を返した場合の防御)
+// 29. runeDisplayWidth: C0 制御文字 (r<0x20) および DEL (0x7f) は幅 0
+// 30. displayWidth: サロゲートペア (CJK Ext B-F, U+20000 以上) は幅 2
+// 31. detectTermWidth: 非 TTY (*os.File でない io.Writer) では defaultTermWidth(80) を返す
+// 32. detectTermWidth: *os.File かつ getTermSizeFunc 成功時はその幅を返す
+// 33. detectTermWidth: *os.File かつ getTermSizeFunc がエラーを返すときは defaultTermWidth(80) にフォールバックする
 
 // --- applyKeys unit tests ---
 
@@ -147,7 +170,7 @@ func TestMultiSelect_EnterImmediatelyReturnsInitial(t *testing.T) {
 	// just Enter
 	in := bytes.NewBufferString("\r")
 	var out bytes.Buffer
-	got, err := multiSelect(items, initial, in, &out)
+	got, err := multiSelect(items, initial, in, &out, 80)
 	if err != nil {
 		t.Fatalf("multiSelect err=%v", err)
 	}
@@ -164,7 +187,7 @@ func TestMultiSelect_SpaceEnterTogglesFirst(t *testing.T) {
 
 	in := bytes.NewBufferString(" \r") // space then enter
 	var out bytes.Buffer
-	got, err := multiSelect(items, initial, in, &out)
+	got, err := multiSelect(items, initial, in, &out, 80)
 	if err != nil {
 		t.Fatalf("multiSelect err=%v", err)
 	}
@@ -180,7 +203,7 @@ func TestMultiSelect_OutputContainsSourceLabels(t *testing.T) {
 	}
 	in := bytes.NewBufferString("\r")
 	var out bytes.Buffer
-	if _, err := multiSelect(items, []bool{false, false}, in, &out); err != nil {
+	if _, err := multiSelect(items, []bool{false, false}, in, &out, 80); err != nil {
 		t.Fatalf("multiSelect err=%v", err)
 	}
 
@@ -434,6 +457,212 @@ func TestRunConfigWizard_MakeRawFailureShowsWarning(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "boom") {
 		t.Errorf("out does not contain underlying error 'boom'; got: %q", rendered)
+	}
+}
+
+// TestRenderList_LinesEndWithCRLF verifies that renderList emits \r\n at the
+// end of every line. In raw mode the terminal does not translate \n to \r\n,
+// so without an explicit carriage return each subsequent line starts at the
+// column where the previous one ended, producing a staircase layout.
+func TestRenderList_LinesEndWithCRLF(t *testing.T) {
+	items := []sourceItem{
+		{key: "a", label: "A", description: "desc a"},
+		{key: "b", label: "B", description: "desc b"},
+	}
+	var out bytes.Buffer
+	n := renderList(items, 0, []bool{false, false}, &out, 200)
+	if n != 3 {
+		t.Fatalf("renderList returned %d lines; want 3 (header + 2 items)", n)
+	}
+	got := out.String()
+	if strings.Count(got, "\r\n") != 3 {
+		t.Errorf("expected 3 \\r\\n line terminators; got %d in %q", strings.Count(got, "\r\n"), got)
+	}
+	if strings.Contains(strings.ReplaceAll(got, "\r\n", ""), "\n") {
+		t.Errorf("found bare \\n (not preceded by \\r) in output: %q", got)
+	}
+}
+
+func TestDisplayWidth_ASCII(t *testing.T) {
+	if got := displayWidth("Markdown"); got != 8 {
+		t.Errorf("displayWidth(\"Markdown\")=%d; want 8", got)
+	}
+}
+
+func TestDisplayWidth_FullWidth(t *testing.T) {
+	// 5 fullwidth Japanese chars = 10 columns
+	if got := displayWidth("ローカルの"); got != 10 {
+		t.Errorf("displayWidth(\"ローカルの\")=%d; want 10", got)
+	}
+}
+
+func TestDisplayWidth_Mixed(t *testing.T) {
+	// "[x] Markdown" + 2 cols Japanese = "[x] Markdown" (12) + "あ" (2) = 14
+	if got := displayWidth("[x] Markdownあ"); got != 14 {
+		t.Errorf("displayWidth(...)=%d; want 14", got)
+	}
+}
+
+func TestPhysicalRows_FitsInOneRow(t *testing.T) {
+	if got := physicalRows(40, 80); got != 1 {
+		t.Errorf("physicalRows(40,80)=%d; want 1", got)
+	}
+	if got := physicalRows(80, 80); got != 1 {
+		t.Errorf("physicalRows(80,80)=%d; want 1", got)
+	}
+}
+
+func TestPhysicalRows_Wraps(t *testing.T) {
+	if got := physicalRows(81, 80); got != 2 {
+		t.Errorf("physicalRows(81,80)=%d; want 2", got)
+	}
+	if got := physicalRows(161, 80); got != 3 {
+		t.Errorf("physicalRows(161,80)=%d; want 3", got)
+	}
+}
+
+func TestPhysicalRows_EmptyIsAtLeastOne(t *testing.T) {
+	if got := physicalRows(0, 80); got != 1 {
+		t.Errorf("physicalRows(0,80)=%d; want 1", got)
+	}
+}
+
+// TestPhysicalRows_NonPositiveTermWidth は detectTermWidth が 0 や負値を返した
+// 異常系でも巻き戻し計算が破綻しない (最低 1 行を返す) ことを保証する。
+func TestPhysicalRows_NonPositiveTermWidth(t *testing.T) {
+	if got := physicalRows(40, 0); got != 1 {
+		t.Errorf("physicalRows(40,0)=%d; want 1", got)
+	}
+	if got := physicalRows(40, -10); got != 1 {
+		t.Errorf("physicalRows(40,-10)=%d; want 1", got)
+	}
+	if got := physicalRows(0, 0); got != 1 {
+		t.Errorf("physicalRows(0,0)=%d; want 1", got)
+	}
+}
+
+// TestDisplayWidth_ControlChars は C0 制御文字と DEL が幅 0 として扱われ、
+// 物理行数計算に寄与しないことを保証する。
+func TestDisplayWidth_ControlChars(t *testing.T) {
+	if got := displayWidth("\x00\x01\x1f"); got != 0 {
+		t.Errorf("displayWidth(C0 controls)=%d; want 0", got)
+	}
+	if got := displayWidth("\x7f"); got != 0 {
+		t.Errorf("displayWidth(DEL)=%d; want 0", got)
+	}
+	// 制御文字は ASCII と混在しても他の幅に影響しない。
+	if got := displayWidth("a\x00b"); got != 2 {
+		t.Errorf("displayWidth(\"a\\x00b\")=%d; want 2", got)
+	}
+}
+
+// TestDetectTermWidth_NonFileReturnsDefault は bytes.Buffer のような
+// 非 *os.File の io.Writer に対し defaultTermWidth (80) を返すことを保証する。
+// 既存テスト群が暗黙的に依存しているデフォルト経路の回帰を直接守る。
+func TestDetectTermWidth_NonFileReturnsDefault(t *testing.T) {
+	var buf bytes.Buffer
+	if got := detectTermWidth(&buf); got != 80 {
+		t.Errorf("detectTermWidth(bytes.Buffer)=%d; want 80", got)
+	}
+}
+
+// TestDetectTermWidth_OSFileSuccessUsesGetTermSize は *os.File に対して
+// getTermSizeFunc が成功した場合、その width をそのまま返すことを保証する。
+func TestDetectTermWidth_OSFileSuccessUsesGetTermSize(t *testing.T) {
+	restore := setGetTermSizeForTest(func(fd int) (int, int, error) {
+		return 120, 40, nil
+	})
+	defer restore()
+	if got := detectTermWidth(os.Stdout); got != 120 {
+		t.Errorf("detectTermWidth(os.Stdout with stubbed size)=%d; want 120", got)
+	}
+}
+
+// TestDetectTermWidth_OSFileErrorFallsBackToDefault は *os.File でも
+// getTermSizeFunc がエラーを返すときに defaultTermWidth (80) にフォールバック
+// することを保証する (パイプ化された stdout 等の防御)。
+func TestDetectTermWidth_OSFileErrorFallsBackToDefault(t *testing.T) {
+	restore := setGetTermSizeForTest(func(fd int) (int, int, error) {
+		return 0, 0, errors.New("not a tty")
+	})
+	defer restore()
+	if got := detectTermWidth(os.Stdout); got != 80 {
+		t.Errorf("detectTermWidth(stub err)=%d; want 80", got)
+	}
+}
+
+// TestDisplayWidth_SurrogatePairCJK はサロゲートペア領域の CJK 拡張漢字
+// (U+20000 以上、CJK Ext B-F / G) が幅 2 として扱われることを保証する。
+// 自前テーブルで意図的にカバーしているレンジなので、回帰検知として残す。
+func TestDisplayWidth_SurrogatePairCJK(t *testing.T) {
+	// U+20000 (𠀀): CJK Ext B 先頭
+	if got := displayWidth("\U00020000"); got != 2 {
+		t.Errorf("displayWidth(U+20000)=%d; want 2", got)
+	}
+	// U+2FFFD: CJK Ext B-F 末尾近辺
+	if got := displayWidth("\U0002FFFD"); got != 2 {
+		t.Errorf("displayWidth(U+2FFFD)=%d; want 2", got)
+	}
+	// U+30000: CJK Ext G 先頭
+	if got := displayWidth("\U00030000"); got != 2 {
+		t.Errorf("displayWidth(U+30000)=%d; want 2", got)
+	}
+}
+
+func TestRenderList_PhysicalRowCountWithNarrowTerm(t *testing.T) {
+	items := []sourceItem{
+		{key: "a", label: "A", description: "短い"},
+		{key: "b", label: "B", description: "短い"},
+	}
+	// Wide terminal: header + 2 items = 3 rows.
+	var wide bytes.Buffer
+	if n := renderList(items, 0, []bool{false, false}, &wide, 200); n != 3 {
+		t.Errorf("renderList(termWidth=200)=%d; want 3", n)
+	}
+	// Narrow terminal: each line wraps, so physical rows > 3.
+	var narrow bytes.Buffer
+	if n := renderList(items, 0, []bool{false, false}, &narrow, 10); n <= 3 {
+		t.Errorf("renderList(termWidth=10)=%d; want >3 (lines should wrap)", n)
+	}
+}
+
+// TestMultiSelect_RedrawUsesPhysicalRowCount は本 PR 核心の回帰を直接保護する。
+// 狭い端末で行が折り返したとき、リドローの巻き戻し量 (ESC[%dA) が論理行数の
+// ままだと前回描画の末尾が消し残されてゴミが残る。ここでは termWidth=10 で
+// 折り返しを強制し、巻き戻しシーケンスに「初回 renderList が返した物理行数」
+// がそのまま現れること、続けて clear-to-EOS (ESC[J) が出ることを assert する。
+func TestMultiSelect_RedrawUsesPhysicalRowCount(t *testing.T) {
+	items := []sourceItem{
+		{key: "a", label: "AAAAAAAA", description: "longlonglonglong"},
+		{key: "b", label: "BBBBBBBB", description: "longlonglonglong"},
+	}
+
+	// 期待値: 同じ items / termWidth で renderList を呼んだときの物理行数。
+	var ref bytes.Buffer
+	wantRows := renderList(items, 0, []bool{false, false}, &ref, 10)
+	if wantRows <= 3 {
+		t.Fatalf("setup: expected wrap-induced rows>3, got %d", wantRows)
+	}
+
+	in := bytes.NewBufferString("\x1b[B\r") // Down, Enter
+	var out bytes.Buffer
+	if _, err := multiSelect(items, []bool{false, false}, in, &out, 10); err != nil {
+		t.Fatalf("multiSelect err=%v", err)
+	}
+
+	rendered := out.String()
+	wantRewind := fmt.Sprintf("\x1b[%dA", wantRows)
+	if !strings.Contains(rendered, wantRewind) {
+		t.Errorf("output missing redraw rewind %q; got %q", wantRewind, rendered)
+	}
+	if !strings.Contains(rendered, "\x1b[J") {
+		t.Errorf("output missing clear-to-EOS \"\\x1b[J\" in %q", rendered)
+	}
+	// 巻き戻し直後に clear-to-EOS が来ること (順序保証)。
+	if idxR := strings.Index(rendered, wantRewind); idxR >= 0 {
+		if idxJ := strings.Index(rendered[idxR:], "\x1b[J"); idxJ < 0 {
+			t.Errorf("ESC[J does not follow ESC[%%dA in %q", rendered)
+		}
 	}
 }
 
