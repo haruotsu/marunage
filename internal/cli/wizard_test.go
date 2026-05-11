@@ -2,11 +2,37 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/term"
 )
+
+// setTTYHooksForTest swaps the TTY-related function vars used by
+// runConfigWizard so tests can drive the non-TTY and MakeRaw-failure
+// branches without a real terminal. The returned func restores the
+// originals and should be deferred.
+func setTTYHooksForTest(
+	isTerminal func(fd int) bool,
+	makeRaw func(fd int) (*term.State, error),
+	restoreTerm func(fd int, oldState *term.State) error,
+) func() {
+	prevIsTerm := isTerminalFunc
+	prevMakeRaw := makeRawFunc
+	prevRestore := restoreTermFunc
+	isTerminalFunc = isTerminal
+	makeRawFunc = makeRaw
+	restoreTermFunc = restoreTerm
+	return func() {
+		isTerminalFunc = prevIsTerm
+		makeRawFunc = prevMakeRaw
+		restoreTermFunc = prevRestore
+	}
+}
 
 // テストリスト:
 // 1. applyKeys: Enter だけで初期選択がそのまま返る
@@ -23,6 +49,11 @@ import (
 // 12. runConfigWizard: 全未選択で空スライスが保存される
 // 13. config wizard サブコマンドが存在する
 // 14. knownSources のキーはすべて knownBuiltinNames に含まれる
+// 15. parseKey: ESC[A / ESC[B が 1 バイトずつ届いても矢印として解釈される
+// 16. parseKey: ESC 単独（後続なし）は keyEvent{ch:0x1b} にフォールバック
+// 17. parseKey: ESC[ の後に未知バイトが来ても keyEvent{ch:0x1b} にフォールバック
+// 18. runConfigWizard: 非 TTY の *os.File 入力では raw mode に入らない
+// 19. runConfigWizard: MakeRaw 失敗時は warning を out に出して処理を継続する
 
 // --- applyKeys unit tests ---
 
@@ -257,6 +288,152 @@ func TestConfigWizard_NonTTYCompletesWithEnter(t *testing.T) {
 	cmd, _, err := root.Find([]string{"config", "wizard"})
 	if err != nil || cmd.Use != "wizard" {
 		t.Fatalf("config wizard command not found (Use=%q, err=%v)", cmd.Use, err)
+	}
+}
+
+// oneByteReader wraps a []byte and returns exactly 1 byte per Read call.
+type oneByteReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *oneByteReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	p[0] = r.data[r.pos]
+	r.pos++
+	return 1, nil
+}
+
+func TestParseKey_EscUpOneByte(t *testing.T) {
+	// ESC [ A — delivered one byte at a time
+	r := &oneByteReader{data: []byte{0x1b, '[', 'A'}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyUp {
+		t.Errorf("got special=%v; want keyUp", k.special)
+	}
+}
+
+func TestParseKey_EscDownOneByte(t *testing.T) {
+	// ESC [ B — delivered one byte at a time
+	r := &oneByteReader{data: []byte{0x1b, '[', 'B'}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyDown {
+		t.Errorf("got special=%v; want keyDown", k.special)
+	}
+}
+
+func TestParseKey_EscAloneFallback(t *testing.T) {
+	// ESC のみ（後続バイトなし、EOF）
+	r := &oneByteReader{data: []byte{0x1b}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyNone {
+		t.Errorf("got special=%v; want keyNone", k.special)
+	}
+	if k.ch != 0x1b {
+		t.Errorf("got ch=%#x; want 0x1b", k.ch)
+	}
+}
+
+func TestParseKey_EscBracketUnknownFallback(t *testing.T) {
+	// ESC [ の後に未知のバイト 'C' が来た場合
+	r := &oneByteReader{data: []byte{0x1b, '[', 'C'}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyNone {
+		t.Errorf("got special=%v; want keyNone", k.special)
+	}
+	if k.ch != 0x1b {
+		t.Errorf("got ch=%#x; want 0x1b", k.ch)
+	}
+}
+
+// TestRunConfigWizard_NonTTYFileSkipsRawMode verifies that when in is an
+// *os.File that is not a TTY, runConfigWizard skips the raw-mode setup
+// entirely (makeRawFunc must NOT be called) and still completes normally.
+func TestRunConfigWizard_NonTTYFileSkipsRawMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	rPipe, wPipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer func() { _ = rPipe.Close() }()
+
+	// Write Enter so multiSelect terminates, then close the writer to
+	// surface EOF.
+	go func() {
+		_, _ = wPipe.Write([]byte("\r"))
+		_ = wPipe.Close()
+	}()
+
+	makeRawCalls := 0
+	restore := setTTYHooksForTest(
+		func(fd int) bool { return false },
+		func(fd int) (*term.State, error) {
+			makeRawCalls++
+			return nil, errors.New("must not be called")
+		},
+		func(fd int, oldState *term.State) error { return nil },
+	)
+	defer restore()
+
+	var out bytes.Buffer
+	if err := runConfigWizard(path, rPipe, &out); err != nil {
+		t.Fatalf("runConfigWizard: %v", err)
+	}
+	if makeRawCalls != 0 {
+		t.Errorf("makeRawFunc called %d times; want 0 on non-TTY", makeRawCalls)
+	}
+}
+
+// TestRunConfigWizard_MakeRawFailureShowsWarning verifies that when
+// isTerminalFunc reports true but makeRawFunc returns an error, the
+// wizard continues running and prints a warning to out instead of
+// silently swallowing the failure.
+func TestRunConfigWizard_MakeRawFailureShowsWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	rPipe, wPipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer func() { _ = rPipe.Close() }()
+
+	go func() {
+		_, _ = wPipe.Write([]byte("\r"))
+		_ = wPipe.Close()
+	}()
+
+	restore := setTTYHooksForTest(
+		func(fd int) bool { return true },
+		func(fd int) (*term.State, error) { return nil, errors.New("boom") },
+		func(fd int, oldState *term.State) error { return nil },
+	)
+	defer restore()
+
+	var out bytes.Buffer
+	if err := runConfigWizard(path, rPipe, &out); err != nil {
+		t.Fatalf("runConfigWizard: %v", err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "warning") {
+		t.Errorf("out does not contain 'warning'; got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "boom") {
+		t.Errorf("out does not contain underlying error 'boom'; got: %q", rendered)
 	}
 }
 

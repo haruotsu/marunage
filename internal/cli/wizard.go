@@ -4,10 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
+	"golang.org/x/term"
+)
+
+// TTY interaction is funnelled through these three function vars so
+// wizard_test.go can drive the non-TTY and MakeRaw-failure branches
+// without a real terminal. Production code never reassigns them; tests
+// use setTTYHooksForTest in wizard_test.go which restores the
+// originals on cleanup. (Mirrors the pattern in internal/secrets/passphrase.go.)
+var (
+	isTerminalFunc  = term.IsTerminal
+	makeRawFunc     = term.MakeRaw
+	restoreTermFunc = term.Restore
 )
 
 // sourceItem is one entry in the discovery-source selection list.
@@ -50,11 +63,11 @@ type keyEvent struct {
 // parseKey reads the minimal byte(s) needed to identify one key event.
 // It supports ANSI escape sequences for arrow keys.
 func parseKey(r io.Reader) (keyEvent, error) {
-	buf := [3]byte{}
-	if _, err := io.ReadFull(r, buf[:1]); err != nil {
+	var head [1]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
 		return keyEvent{}, err
 	}
-	switch buf[0] {
+	switch head[0] {
 	case '\r', '\n':
 		return keyEvent{special: keyEnter}, nil
 	case ' ':
@@ -67,19 +80,21 @@ func parseKey(r io.Reader) (keyEvent, error) {
 		return keyEvent{special: keyUp}, nil
 	case 'j':
 		return keyEvent{special: keyDown}, nil
-	case 0x1b: // ESC — try to read a 2-byte sequence
-		n, _ := r.Read(buf[1:3])
-		if n == 2 && buf[1] == '[' {
-			switch buf[2] {
-			case 'A':
-				return keyEvent{special: keyUp}, nil
-			case 'B':
-				return keyEvent{special: keyDown}, nil
+	case 0x1b: // ESC — read [ then the final byte one at a time
+		var b [1]byte
+		if _, err := io.ReadFull(r, b[:]); err == nil && b[0] == '[' {
+			if _, err := io.ReadFull(r, b[:]); err == nil {
+				switch b[0] {
+				case 'A':
+					return keyEvent{special: keyUp}, nil
+				case 'B':
+					return keyEvent{special: keyDown}, nil
+				}
 			}
 		}
 		return keyEvent{ch: 0x1b}, nil
 	default:
-		return keyEvent{ch: rune(buf[0])}, nil
+		return keyEvent{ch: rune(head[0])}, nil
 	}
 }
 
@@ -193,6 +208,15 @@ func initialSelection(cfg config.Config) []bool {
 // It loads the config at configPath, runs the multi-select source picker, and
 // saves the result.
 func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
+	if f, ok := in.(*os.File); ok && isTerminalFunc(int(f.Fd())) {
+		oldState, err := makeRawFunc(int(f.Fd()))
+		if err != nil {
+			fmt.Fprintf(out, "warning: failed to enter raw mode: %v\n", err)
+		} else {
+			defer func() { _ = restoreTermFunc(int(f.Fd()), oldState) }()
+		}
+	}
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load %s: %w", configPath, err)
