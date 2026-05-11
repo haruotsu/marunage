@@ -134,6 +134,7 @@ func probeSlackMCP(ctx context.Context, in Inputs) CheckOutcome {
 	}
 	for _, s := range servers {
 		lo := strings.ToLower(s)
+		// Match bare "slack" (old format) or "<provider> slack" (e.g. "claude.ai Slack").
 		if lo == "slack" || strings.HasSuffix(lo, " slack") {
 			return CheckOutcome{
 				OK:     true,
