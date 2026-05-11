@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.13](https://github.com/haruotsu/marunage/compare/v0.0.12...v0.0.13) - 2026-05-11
+- fix(cli): config wizard で矢印キーを正しく処理する by @haruotsu in https://github.com/haruotsu/marunage/pull/107
+
 ## [v0.0.12](https://github.com/haruotsu/marunage/compare/v0.0.11...v0.0.12) - 2026-05-11
 - feat(config): interactive wizard for discovery source selection by @haruotsu in https://github.com/haruotsu/marunage/pull/105
 
