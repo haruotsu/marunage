@@ -567,6 +567,54 @@ func TestRun_SlackMCP_SlackEnabled_MCPNil_RequiredFailure(t *testing.T) {
 	}
 }
 
+func TestRun_SlackMCP_NewFormatName_OK(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Discovery.SourcesEnabled = []string{"slack"}
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     fakeMCPProbe{servers: []string{"claude.ai Slack"}},
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if !rep.OK {
+		t.Fatalf("Report.OK = false; want true ('claude.ai Slack' in MCP list). report=%#v", rep)
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if !out.OK {
+		t.Fatalf("slack-mcp.OK = false; want true when 'claude.ai Slack' in MCP list")
+	}
+}
+
+func TestRun_SlackMCP_NonSlackServerNotMatched(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Discovery.SourcesEnabled = []string{"slack"}
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		MCP:     fakeMCPProbe{servers: []string{"slackbot"}},
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if rep.OK {
+		t.Fatalf("Report.OK = true; want false ('slackbot' should not match as Slack MCP)")
+	}
+	out, ok := findOutcome(rep, "slack-mcp")
+	if !ok {
+		t.Fatalf("slack-mcp outcome missing from report")
+	}
+	if out.OK {
+		t.Fatalf("slack-mcp.OK = true; want false when server name is 'slackbot' (partial match must not trigger)")
+	}
+}
+
 func TestRun_SlackMCP_SlackEnabled_ListFails_RequiredFailure(t *testing.T) {
 	runner, secrets := allToolsPresent()
 	cfg := defaultCfg()

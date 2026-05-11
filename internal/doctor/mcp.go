@@ -9,8 +9,9 @@ import (
 )
 
 // ClaudeMCPProbe implements MCPProbe by running `claude mcp list` and parsing
-// each non-empty line as a server name. The output format `claude mcp list`
-// emits is one server name per line (e.g. "slack\ngoogle-drive\n").
+// each non-empty line as a server name. The current output format is
+// "<name>: <url> - <status>" (e.g. "claude.ai Slack: https://... - ✓ Connected");
+// older versions emit just the name (e.g. "slack").
 //
 // If the claude binary is missing or the command fails, ListMCPServers returns
 // an error so the caller can surface a "could not probe" message rather than
@@ -32,9 +33,20 @@ func (ClaudeMCPProbe) ListMCPServers(ctx context.Context) ([]string, error) {
 	}
 	var names []string
 	for _, line := range strings.Split(string(out), "\n") {
-		if name := strings.TrimSpace(line); name != "" {
-			names = append(names, name)
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			names = append(names, parseMCPServerName(trimmed))
 		}
 	}
 	return names, nil
+}
+
+// parseMCPServerName extracts the server name from a `claude mcp list` output
+// line. The current format is "<name>: <url> - <status>"; older versions emit
+// just the name. If ": " is absent or the name before it is empty, the full
+// line is returned unchanged.
+func parseMCPServerName(line string) string {
+	if name, _, ok := strings.Cut(line, ": "); ok && name != "" {
+		return name
+	}
+	return line
 }
