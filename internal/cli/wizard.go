@@ -12,6 +12,17 @@ import (
 	"golang.org/x/term"
 )
 
+// TTY interaction is funnelled through these three function vars so
+// wizard_test.go can drive the non-TTY and MakeRaw-failure branches
+// without a real terminal. Production code never reassigns them; tests
+// use setTTYHooksForTest in wizard_test.go which restores the
+// originals on cleanup. (Mirrors the pattern in internal/secrets/passphrase.go.)
+var (
+	isTerminalFunc  = term.IsTerminal
+	makeRawFunc     = term.MakeRaw
+	restoreTermFunc = term.Restore
+)
+
 // sourceItem is one entry in the discovery-source selection list.
 type sourceItem struct {
 	key         string
@@ -197,10 +208,12 @@ func initialSelection(cfg config.Config) []bool {
 // It loads the config at configPath, runs the multi-select source picker, and
 // saves the result.
 func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
-	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		oldState, err := term.MakeRaw(int(f.Fd()))
-		if err == nil {
-			defer func() { _ = term.Restore(int(f.Fd()), oldState) }()
+	if f, ok := in.(*os.File); ok && isTerminalFunc(int(f.Fd())) {
+		oldState, err := makeRawFunc(int(f.Fd()))
+		if err != nil {
+			fmt.Fprintf(out, "warning: failed to enter raw mode: %v\n", err)
+		} else {
+			defer func() { _ = restoreTermFunc(int(f.Fd()), oldState) }()
 		}
 	}
 
