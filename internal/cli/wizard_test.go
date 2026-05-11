@@ -190,7 +190,7 @@ func TestRunConfigWizard_PreSelectsEnabledSources(t *testing.T) {
 func TestRunConfigWizard_SavesSourcesEnabled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 
-	// 全ソース未選択の初期状態 → Down + Space (github 選択) + Enter
+	// 全ソース未選択の初期状態 → Down + Space (slack 選択) + Enter
 	in := bytes.NewBufferString("\x1b[B \r") // Down, Space, Enter
 	var out bytes.Buffer
 	if err := runConfigWizard(path, in, &out); err != nil {
@@ -247,14 +247,23 @@ func TestRunConfigWizard_EmptySelectionSavesEmptySlice(t *testing.T) {
 // --- CLI subcommand test ---
 
 func TestConfigWizard_NonTTYCompletesWithEnter(t *testing.T) {
-	// marunage config wizard を非 TTY（stdin パイプ）で実行 → exit 0
-	// Execute は stdin を受け取れないが、コマンドが存在し、
-	// TTY なしで graceful に動作するかを確認する。
-	// ここでは cobra コマンドツリーに "wizard" が存在し、かつ
-	// not-implemented ではないことをアサートする。
 	root := newRootCmd()
-	_, _, err := root.Find([]string{"config", "wizard"})
-	if err != nil {
-		t.Fatalf("config wizard command not found: %v", err)
+	cmd, _, err := root.Find([]string{"config", "wizard"})
+	if err != nil || cmd.Use != "wizard" {
+		t.Fatalf("config wizard command not found (Use=%q, err=%v)", cmd.Use, err)
+	}
+}
+
+// TestKnownSourcesKeysMatchBuiltinRegistry ensures every key in knownSources
+// is a valid builtin plugin name so that wizard selections can actually be activated.
+func TestKnownSourcesKeysMatchBuiltinRegistry(t *testing.T) {
+	valid := make(map[string]bool, len(knownBuiltinNames))
+	for _, name := range knownBuiltinNames {
+		valid[name] = true
+	}
+	for _, src := range knownSources {
+		if !valid[src.key] {
+			t.Errorf("knownSources key %q is not in knownBuiltinNames", src.key)
+		}
 	}
 }

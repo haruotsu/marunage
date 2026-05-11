@@ -23,7 +23,7 @@ var knownSources = []sourceItem{
 	{key: "slack", label: "Slack", description: "メンション・DM をタスク化"},
 	{key: "github", label: "GitHub", description: "Issue / PR をタスク化"},
 	{key: "gmail", label: "Gmail", description: "未読メールをタスク化"},
-	{key: "gcal", label: "Google Calendar", description: "Google Calendar の予定をタスク化"},
+	{key: "calendar", label: "Google Calendar", description: "Google Calendar の予定をタスク化"},
 }
 
 // specialKey identifies non-printable key events.
@@ -139,9 +139,7 @@ func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer
 	copy(selected, initial)
 	cursor := 0
 
-	// Collect accumulated key events so we can replay them through applyKeys
-	// in tests (applyKeys is the pure core; multiSelect is the I/O shell).
-	renderList(items, cursor, selected, out)
+	nLines := renderList(items, cursor, selected, out)
 
 	for {
 		k, err := parseKey(in)
@@ -168,9 +166,8 @@ func multiSelect(items []sourceItem, initial []bool, in io.Reader, out io.Writer
 		}
 
 		// Move cursor up to redraw (ANSI: ESC[{n}A + carriage return).
-		lines := 1 + len(items)
-		fmt.Fprintf(out, "\033[%dA\r", lines)
-		renderList(items, cursor, selected, out)
+		fmt.Fprintf(out, "\033[%dA\r", nLines)
+		nLines = renderList(items, cursor, selected, out)
 	}
 	return selected, nil
 }
@@ -216,7 +213,10 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 	}
 
 	// Encode as JSON array string for config.Set.
-	raw, _ := json.Marshal(sources)
+	raw, err := json.Marshal(sources)
+	if err != nil {
+		return fmt.Errorf("marshal sources: %w", err)
+	}
 	if err := config.Set(&cfg, "discovery.sources_enabled", string(raw)); err != nil {
 		return fmt.Errorf("set sources_enabled: %w", err)
 	}

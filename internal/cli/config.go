@@ -11,7 +11,6 @@ import (
 	"github.com/haruotsu/marunage/internal/logging"
 )
 
-
 // defaultConfigPath returns ~/.marunage/config.toml, with a graceful fallback
 // when $HOME cannot be resolved (e.g. exotic CI environments). Subcommands
 // surface the resolved path in their error messages so the user can tell
