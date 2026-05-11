@@ -147,7 +147,7 @@ func TestInit_Interactive_RepromptsOnInvalidChoice(t *testing.T) {
 
 // TestInit_GuidanceMentionsDoctorAndSetup pins the "next steps" surface:
 // a freshly initialised user must see what to run next, in order
-// (doctor → setup --skills).
+// (doctor → config → setup --skills).
 func TestInit_GuidanceMentionsDoctorAndSetup(t *testing.T) {
 	cfgPath := configPathInsideHome(t)
 
@@ -159,15 +159,22 @@ func TestInit_GuidanceMentionsDoctorAndSetup(t *testing.T) {
 
 	out := stdout.String()
 	doctorIdx := strings.Index(out, "marunage doctor")
+	configIdx := strings.Index(out, "marunage config")
 	setupIdx := strings.Index(out, "marunage setup --skills")
 	if doctorIdx < 0 {
 		t.Errorf("guidance missing 'marunage doctor'; stdout=%q", out)
 	}
+	if configIdx < 0 {
+		t.Errorf("guidance missing 'marunage config'; stdout=%q", out)
+	}
 	if setupIdx < 0 {
 		t.Errorf("guidance missing 'marunage setup --skills'; stdout=%q", out)
 	}
-	if doctorIdx >= 0 && setupIdx >= 0 && doctorIdx > setupIdx {
-		t.Errorf("guidance lists doctor after setup; want doctor first\nstdout=%q", out)
+	if doctorIdx >= 0 && configIdx >= 0 && doctorIdx > configIdx {
+		t.Errorf("guidance lists doctor after config; want doctor first\nstdout=%q", out)
+	}
+	if configIdx >= 0 && setupIdx >= 0 && configIdx > setupIdx {
+		t.Errorf("guidance lists config after setup; want config before setup\nstdout=%q", out)
 	}
 }
 

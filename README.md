@@ -85,6 +85,7 @@ sudo make install    # copies binary to /usr/local/bin (override: INSTALL_DIR=~/
 ```sh
 marunage init              # ~/.marunage/, SQLite, pick a permission mode
 marunage doctor            # check claude / cmux / python / sqlite3 / gh / gws / jq
+marunage config            # pick discovery sources via interactive wizard
 marunage setup --skills    # install the bundled Skills
 marunage loop              # discover → dispatch → render on a timer
 marunage web               # http://127.0.0.1:7777
