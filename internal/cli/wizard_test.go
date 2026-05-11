@@ -300,6 +300,36 @@ func TestParseKey_EscDownOneByte(t *testing.T) {
 	}
 }
 
+func TestParseKey_EscAloneFallback(t *testing.T) {
+	// ESC のみ（後続バイトなし、EOF）
+	r := &oneByteReader{data: []byte{0x1b}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyNone {
+		t.Errorf("got special=%v; want keyNone", k.special)
+	}
+	if k.ch != 0x1b {
+		t.Errorf("got ch=%#x; want 0x1b", k.ch)
+	}
+}
+
+func TestParseKey_EscBracketUnknownFallback(t *testing.T) {
+	// ESC [ の後に未知のバイト 'C' が来た場合
+	r := &oneByteReader{data: []byte{0x1b, '[', 'C'}}
+	k, err := parseKey(r)
+	if err != nil {
+		t.Fatalf("parseKey err=%v", err)
+	}
+	if k.special != keyNone {
+		t.Errorf("got special=%v; want keyNone", k.special)
+	}
+	if k.ch != 0x1b {
+		t.Errorf("got ch=%#x; want 0x1b", k.ch)
+	}
+}
+
 // TestKnownSourcesKeysMatchBuiltinRegistry ensures every key in knownSources
 // is a valid builtin plugin name so that wizard selections can actually be activated.
 func TestKnownSourcesKeysMatchBuiltinRegistry(t *testing.T) {

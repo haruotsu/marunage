@@ -52,11 +52,11 @@ type keyEvent struct {
 // parseKey reads the minimal byte(s) needed to identify one key event.
 // It supports ANSI escape sequences for arrow keys.
 func parseKey(r io.Reader) (keyEvent, error) {
-	buf := [3]byte{}
-	if _, err := io.ReadFull(r, buf[:1]); err != nil {
+	var head [1]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
 		return keyEvent{}, err
 	}
-	switch buf[0] {
+	switch head[0] {
 	case '\r', '\n':
 		return keyEvent{special: keyEnter}, nil
 	case ' ':
@@ -83,7 +83,7 @@ func parseKey(r io.Reader) (keyEvent, error) {
 		}
 		return keyEvent{ch: 0x1b}, nil
 	default:
-		return keyEvent{ch: rune(buf[0])}, nil
+		return keyEvent{ch: rune(head[0])}, nil
 	}
 }
 
@@ -200,7 +200,7 @@ func runConfigWizard(configPath string, in io.Reader, out io.Writer) error {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		oldState, err := term.MakeRaw(int(f.Fd()))
 		if err == nil {
-			defer term.Restore(int(f.Fd()), oldState)
+			defer func() { _ = term.Restore(int(f.Fd()), oldState) }()
 		}
 	}
 
