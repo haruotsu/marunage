@@ -88,6 +88,11 @@ type DiscoveryGitHub struct {
 }
 
 type ExecutionConfig struct {
+	// Backend selects the terminal multiplexer that owns the per-task
+	// Claude sessions. "cmux" (default) drives manaflow-ai/cmux; "herdr"
+	// drives ogulcancelik/herdr. The chosen backend is the only one the
+	// dispatcher talks to, and the only one `marunage doctor` requires.
+	Backend             string   `toml:"backend"`
 	PermissionMode      string   `toml:"permission_mode"`
 	ClaudeCommand       string   `toml:"claude_command"`
 	StartupTimeout      int      `toml:"startup_timeout"`
@@ -141,6 +146,7 @@ type WebConfig struct {
 var (
 	allowedSecretsBackends      = []string{"auto", "keyring", "pass", "age", "file", "env"}
 	allowedPermissionModes      = []string{"bypass", "default", "acceptEdits", "plan", "custom"}
+	allowedExecutionBackends    = []string{"cmux", "herdr"}
 	allowedOnUnknownPermissions = []string{"escalate", "fail", "retry"}
 	allowedLogLevels            = []string{"debug", "info", "warn", "error"}
 )
@@ -159,6 +165,27 @@ func IsValidOnUnknownPermission(s string) bool {
 // IsValidOnUnknownPermission above.
 func IsValidPermissionMode(s string) bool {
 	return contains(allowedPermissionModes, s)
+}
+
+// IsValidExecutionBackend reports whether s is a recognised value for
+// execution.backend. Backends are the terminal multiplexers marunage
+// can drive (cmux, herdr). Empty string is treated as the default
+// ("cmux") by EffectiveBackend rather than rejected here so older
+// config files without the field keep loading.
+func IsValidExecutionBackend(s string) bool {
+	return contains(allowedExecutionBackends, s)
+}
+
+// EffectiveBackend returns the execution backend, falling back to
+// "cmux" when the field is empty. Older config.toml files predate the
+// `backend` field; defaulting here keeps them loading without a
+// migration. Callers in dispatch / cli should always go through this
+// helper rather than reading c.Execution.Backend directly.
+func (c Config) EffectiveBackend() string {
+	if c.Execution.Backend == "" {
+		return "cmux"
+	}
+	return c.Execution.Backend
 }
 
 // Default returns the configuration shipped to a freshly initialised user.
@@ -199,6 +226,7 @@ func Default() Config {
 			},
 		},
 		Execution: ExecutionConfig{
+			Backend:            "cmux",
 			PermissionMode:     "bypass",
 			ClaudeCommand:      ClaudeCommandFor("bypass"),
 			StartupTimeout:     60,
@@ -273,6 +301,9 @@ func (c Config) Validate() error {
 	}
 	if !contains(allowedPermissionModes, c.Execution.PermissionMode) {
 		return fmt.Errorf("execution.permission_mode: %q not in %v", c.Execution.PermissionMode, allowedPermissionModes)
+	}
+	if c.Execution.Backend != "" && !contains(allowedExecutionBackends, c.Execution.Backend) {
+		return fmt.Errorf("execution.backend: %q not in %v", c.Execution.Backend, allowedExecutionBackends)
 	}
 	if c.Execution.PermissionMode == "custom" && c.Execution.ClaudeCommand == "" {
 		return fmt.Errorf("execution.claude_command: required when execution.permission_mode = %q", "custom")

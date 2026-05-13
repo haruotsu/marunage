@@ -13,7 +13,6 @@ import (
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/reaper"
 	"github.com/haruotsu/marunage/internal/store"
-	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // reaperRunner is the narrow surface newReaperCmd needs from
@@ -73,7 +72,7 @@ func productionReaperFactory(_ context.Context, configPath string) (reaperRunner
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient()
+	cm := newWorkspaceClient(cfg, false)
 
 	// Validate already gates this — this re-parse is just to surface a
 	// typed time.Duration to the reaper. Empty / malformed values

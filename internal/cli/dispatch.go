@@ -14,7 +14,6 @@ import (
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
-	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // workspaceDirs is the production WorkspaceDirs the dispatcher and the
@@ -87,7 +86,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
+	cm := newWorkspaceClient(cfg, true)
 
 	// Open the audit log alongside the SQLite store so requirement.md
 	// invariant #2 "No silent execution" is honoured for every dispatch.

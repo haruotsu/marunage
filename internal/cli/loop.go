@@ -21,7 +21,6 @@ import (
 	"github.com/haruotsu/marunage/internal/render"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
-	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // loopRunner is the narrow surface newLoopCmd needs from *loop.Loop.
@@ -78,7 +77,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	repo := store.NewTaskRepo(db)
 	kv := store.NewKVStateRepo(db)
-	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
+	cm := newWorkspaceClient(cfg, true)
 
 	auditPath := filepath.Join(filepath.Dir(dbPath), "logs", "audit.log")
 	var auditor config.Auditor = config.NopAuditor{}
@@ -154,7 +153,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	reap, err := reaper.New(
 		reaper.WithStore(repo),
-		reaper.WithCmux(cmux.NewClient()),
+		reaper.WithCmux(newWorkspaceClient(cfg, false)),
 		reaper.WithStuckThreshold(threshold),
 		reaper.WithAuditor(auditor),
 	)

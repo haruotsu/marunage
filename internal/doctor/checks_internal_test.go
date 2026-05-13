@@ -6,7 +6,45 @@ package doctor
 // whether the version-floor check correctly rejects an old python or
 // silently accepts garbage. Pin the contract directly.
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/haruotsu/marunage/internal/config"
+)
+
+// TestBackendIs_FlipsBetweenCmuxAndHerdr pins the
+// required/optional split between the two backends. doctor uses
+// backendIs to decide whether cmux or herdr is the "hard requirement"
+// for the current config; without this test a regression that hard-
+// codes one backend would silently pass.
+func TestBackendIs_FlipsBetweenCmuxAndHerdr(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfgBackend  string
+		wantCmux    bool
+		wantHerdr   bool
+		description string
+	}{
+		{"empty defaults to cmux", "", true, false, "older config.toml without backend field"},
+		{"explicit cmux", "cmux", true, false, "default selection"},
+		{"explicit herdr", "herdr", false, true, "opt-in to herdr"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Execution.Backend = tc.cfgBackend
+
+			gotCmux := backendIs("cmux")(cfg)
+			gotHerdr := backendIs("herdr")(cfg)
+			if gotCmux != tc.wantCmux {
+				t.Errorf("backendIs(cmux) = %v; want %v (%s)", gotCmux, tc.wantCmux, tc.description)
+			}
+			if gotHerdr != tc.wantHerdr {
+				t.Errorf("backendIs(herdr) = %v; want %v (%s)", gotHerdr, tc.wantHerdr, tc.description)
+			}
+		})
+	}
+}
 
 func TestExtractSemver(t *testing.T) {
 	cases := []struct {

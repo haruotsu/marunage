@@ -87,7 +87,7 @@ func productionProjectDispatch(ctx context.Context, configPath string, item proj
 		return fmt.Errorf("core.default_cwd %q does not exist or is not accessible: %w", cwd, statErr)
 	}
 
-	cm := cmux.NewClient()
+	cm := newWorkspaceClient(cfg, true)
 	ws, err := cm.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
 		CWD:     cwd,
 		Command: cfg.Execution.ClaudeCommand,
