@@ -97,7 +97,7 @@ func fenced(label, value string) string {
 // the receiving Claude session can refuse to follow instructions that
 // originate from inside a `<<body>>` / `<<title>>` fence.
 //
-// The Send wrapper in internal/cmux collapses any embedded \r\n run into
+// The Send wrapper in internal/workspace/cmux collapses any embedded \r\n run into
 // a single space before handing the payload to cmux; preserving the
 // original line breaks here keeps the prompt readable when the caller
 // inspects it via `marunage show <id>` or the Web UI.

@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/completion"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
@@ -21,6 +20,7 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
 	"github.com/haruotsu/marunage/internal/web"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // cmuxClientStreamer adapts cmux.Client into web.WorkspaceStreamer so the

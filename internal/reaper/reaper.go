@@ -24,9 +24,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/store"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // Store is the narrow read/write surface Reaper needs against the tasks

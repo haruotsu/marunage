@@ -29,7 +29,7 @@ type Plugin struct {
 }
 
 // Option mutates Plugin construction. The functional-option shape mirrors
-// internal/cmux and internal/source/markdown so callers see a consistent
+// internal/workspace/cmux and internal/source/markdown so callers see a consistent
 // style across the source ecosystem.
 type Option func(*Plugin)
 

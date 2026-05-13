@@ -22,7 +22,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // ErrUnparseableEval is returned by CmuxDriver.Scrape when the eval step

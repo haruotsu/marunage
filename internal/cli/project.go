@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/project"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // boardFetcher is the narrow surface newProjectRunCmd needs to read a
