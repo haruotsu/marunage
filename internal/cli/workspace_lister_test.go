@@ -7,12 +7,12 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // fakeCmuxRunner is the cmux.Runner stub used by the cmuxWorkspaceLister
 // suite so the tests never spawn a real cmux. The shape mirrors the
-// fakeRunner in internal/cmux/cmux_test.go so a future merge of these
+// fakeRunner in internal/workspace/cmux/cmux_test.go so a future merge of these
 // helpers stays cheap.
 type fakeCmuxRunner struct {
 	stdout []byte
@@ -100,7 +100,7 @@ func TestCmuxWorkspaceLister_IgnoresWorkspaceSubstringInTitles(t *testing.T) {
 // Missing cmux binary surfaces as cmux.ErrCmuxNotFound so the rest of
 // the codebase (PR-32 doctor, task_clean.go) can pattern-match via
 // errors.Is rather than substring-checking the wrapped diagnostic.
-// Mirrors the contract NewWorkspace honours in internal/cmux/cmux.go.
+// Mirrors the contract NewWorkspace honours in internal/workspace/cmux/cmux.go.
 func TestCmuxWorkspaceLister_BinaryNotFoundMapsToErrCmuxNotFound(t *testing.T) {
 	r := &fakeCmuxRunner{err: &exec.Error{Name: "cmux", Err: exec.ErrNotFound}}
 	l := cmuxWorkspaceLister{runner: r}

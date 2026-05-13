@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // Test list (t_wada TDD; ticked off as the matching test below goes green):

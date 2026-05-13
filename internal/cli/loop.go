@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
@@ -22,6 +21,7 @@ import (
 	"github.com/haruotsu/marunage/internal/render"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // loopRunner is the narrow surface newLoopCmd needs from *loop.Loop.

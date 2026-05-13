@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // TestExecRunnerCapturesStdoutSeparatelyFromStderr exercises the real

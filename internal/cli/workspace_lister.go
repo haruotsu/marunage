@@ -2,17 +2,16 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 
-	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/workspace"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // workspaceLister is the read-only probe `marunage clean` uses to decide
 // which tasks have a stale ws reference. The interface lives in the CLI
-// layer (rather than `internal/cmux`) for two reasons:
+// layer (rather than the workspace package) for two reasons:
 //
 //  1. PR-40 (the cmux wrapper) ships only NewWorkspace / WaitReady / Send
 //     because those were the dispatch-layer's needs at the time. Adding a
@@ -92,7 +91,7 @@ var listWorkspacePattern = regexp.MustCompile(`(?m)^[\s*]*(workspace:\d+)`)
 func (c cmuxWorkspaceLister) ListWorkspaceIDs(ctx context.Context) ([]string, error) {
 	stdout, stderr, err := c.runner.Run(ctx, "cmux", "list-workspaces")
 	if err != nil {
-		if isBinaryNotFound(err) {
+		if workspace.IsBinaryNotFound(err) {
 			return nil, cmux.ErrCmuxNotFound
 		}
 		return nil, fmt.Errorf("cmux list-workspaces: %w (stderr=%s)", err, string(stderr))
@@ -105,21 +104,3 @@ func (c cmuxWorkspaceLister) ListWorkspaceIDs(ctx context.Context) ([]string, er
 	return out, nil
 }
 
-// isBinaryNotFound mirrors the unexported helper in internal/cmux: a
-// missing binary surfaces as exec.ErrNotFound either directly or
-// wrapped in *exec.Error, depending on the Go version. CLI callers
-// translate it into cmux.ErrCmuxNotFound so the typed sentinel chain
-// stays usable from `errors.Is`.
-func isBinaryNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, exec.ErrNotFound) {
-		return true
-	}
-	var execErr *exec.Error
-	if errors.As(err, &execErr) {
-		return errors.Is(execErr.Err, exec.ErrNotFound)
-	}
-	return false
-}

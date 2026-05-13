@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/haruotsu/marunage/internal/workspace"
 )
 
 // ErrNoCmuxSession is returned by DispatchAgent.Start when cmux is not
@@ -87,7 +89,7 @@ func (a *DispatchAgent) Start(ctx context.Context) error {
 		"--name", "marunage-dispatch-agent",
 	)
 	if err != nil {
-		if isBinaryNotFound(err) {
+		if workspace.IsBinaryNotFound(err) {
 			return fmt.Errorf("%w", ErrCmuxNotFound)
 		}
 		// cmux prints these messages to stderr when invoked outside a live

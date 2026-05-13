@@ -3,6 +3,8 @@ package cmux
 import (
 	"context"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/workspace"
 )
 
 // claudeReadinessProbe checks whether Claude's interactive prompt ("❯") is
@@ -30,7 +32,7 @@ func NewClaudeReadinessProbeWithRunner(r Runner) ReadinessProbe {
 func (p *claudeReadinessProbe) IsReady(ctx context.Context, ws Workspace) (bool, error) {
 	stdout, _, err := p.runner.Run(ctx, "cmux", "read-screen", "--workspace", ws.ID)
 	if err != nil {
-		if isBinaryNotFound(err) {
+		if workspace.IsBinaryNotFound(err) {
 			return false, ErrCmuxNotFound
 		}
 		return false, nil
