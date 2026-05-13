@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/reaper"
@@ -73,7 +72,7 @@ func productionReaperFactory(_ context.Context, configPath string) (reaperRunner
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient()
+	cm := newWorkspaceClient(cfg, false)
 
 	// Validate already gates this — this re-parse is just to surface a
 	// typed time.Duration to the reaper. Empty / malformed values

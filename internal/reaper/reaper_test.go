@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/reaper"
 	"github.com/haruotsu/marunage/internal/store"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // PR-44 reaper test list (t_wada TDD; ticked off as the matching test

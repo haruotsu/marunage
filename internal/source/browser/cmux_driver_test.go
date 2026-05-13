@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/haruotsu/marunage/internal/cmux"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // scriptedRunner is a cmux.Runner test fake that returns canned (stdout,

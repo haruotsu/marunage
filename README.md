@@ -14,9 +14,11 @@ OSS OODA-loop runner for
 [Claude Code](https://www.anthropic.com/claude-code). It polls your inboxes
 (Gmail / Calendar / Slack / GitHub / Google Tasks / Notion / Markdown TODOs),
 triages each item with a customisable skill, and dispatches survivors into
-isolated interactive [`cmux`](https://github.com/manaflow-ai/cmux)
-workspaces — one Claude session per task, left alive after completion so
-you can step in at any time.
+isolated interactive terminal-multiplexer workspaces — one Claude session
+per task, left alive after completion so you can step in at any time. The
+backend is pluggable: choose between
+[`cmux`](https://github.com/manaflow-ai/cmux) (default) and
+[`herdr`](https://herdr.dev/) via `[execution] backend`.
 
 ## Invariants
 
@@ -34,29 +36,35 @@ you can step in at any time.
 flowchart LR
     D["Discovery (Observe)"]
     Q["Queue (Orient + Decide)<br/>SQLite · triage"]
-    E["Execution (Act)<br/>cmux + Claude"]
+    E["Execution (Act)<br/>cmux / herdr + Claude"]
     O["Observation<br/>Web UI · audit.log"]
 
     D --> Q --> E --> O
     O -.->|promote · reopen · stop| Q
 ```
 
-1 task = 1 cmux workspace = 1 interactive Claude session. The runtime never
-uses `claude -p` one-shots, so you can attach and continue the conversation
-after the task completes.
+1 task = 1 backend workspace = 1 interactive Claude session. The runtime
+never uses `claude -p` one-shots, so you can attach and continue the
+conversation after the task completes.
 
 ## Prerequisites
 
 | Tool | Required | Install |
 |------|----------|---------|
 | [Claude Code](https://claude.ai/download) (`claude`) | Always | Download from claude.ai or `npm i -g @anthropic-ai/claude-code` |
-| [cmux](https://github.com/manaflow-ai/cmux) | Always | See cmux README for install instructions |
+| [cmux](https://github.com/manaflow-ai/cmux) | When `[execution] backend = "cmux"` (default) | See cmux README for install instructions |
+| [herdr](https://herdr.dev/) | When `[execution] backend = "herdr"` | See [herdr README](https://github.com/ogulcancelik/herdr) for install instructions |
 | Go 1.25+ | To build from source | [go.dev/dl](https://go.dev/dl/) |
 | Python 3.11+ | Always | Usually pre-installed; `brew install python` / `apt install python3` |
 | `sqlite3` | Always | Usually pre-installed; `brew install sqlite` / `apt install sqlite3` |
 | `gh` (GitHub CLI) | GitHub source only | `brew install gh` / [cli.github.com](https://cli.github.com) |
 | `gws` (Google Workspace CLI) | Gmail / Calendar / Tasks only | See [gws README](https://github.com/haruotsu/gws) |
 | `jq` | Recommended | `brew install jq` / `apt install jq` |
+
+`[execution] backend` selects the terminal multiplexer that owns the
+per-task Claude sessions. `cmux` is the default; set `backend = "herdr"`
+to drive [herdr](https://herdr.dev/) instead. `marunage doctor` only
+requires the multiplexer you configured.
 
 Run `marunage doctor` after install to verify your setup.
 
@@ -118,6 +126,7 @@ interval = "10m"
 sources_enabled = ["markdown", "github"]
 
 [execution]
+backend = "cmux"             # cmux | herdr  (which terminal multiplexer owns the sessions)
 permission_mode = "bypass"   # bypass | default | acceptEdits | plan | custom
 allowed_cwd_prefixes = ["~/works", "~/src"]
 ```

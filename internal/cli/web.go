@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/completion"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
@@ -21,20 +20,23 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
 	"github.com/haruotsu/marunage/internal/web"
+	"github.com/haruotsu/marunage/internal/workspace"
 )
 
-// cmuxClientStreamer adapts cmux.Client into web.WorkspaceStreamer so the
-// web layer does not import the cmux package directly.
-type cmuxClientStreamer struct {
-	client cmux.Client
+// workspaceClientStreamer adapts a workspace.Client into
+// web.WorkspaceStreamer so the web layer can poll any configured
+// backend's pane contents (cmux read-screen, herdr pane read) through
+// the same interface.
+type workspaceClientStreamer struct {
+	client workspace.Client
 }
 
-func (s *cmuxClientStreamer) ReadOutput(ctx context.Context, workspaceID string) (string, error) {
-	return s.client.ReadOutput(ctx, cmux.Workspace{ID: workspaceID})
+func (s *workspaceClientStreamer) ReadOutput(ctx context.Context, workspaceID string) (string, error) {
+	return s.client.ReadOutput(ctx, workspace.Workspace{ID: workspaceID})
 }
 
-func (s *cmuxClientStreamer) Send(ctx context.Context, workspaceID string, text string) error {
-	return s.client.Send(ctx, cmux.Workspace{ID: workspaceID}, text)
+func (s *workspaceClientStreamer) Send(ctx context.Context, workspaceID string, text string) error {
+	return s.client.Send(ctx, workspace.Workspace{ID: workspaceID}, text)
 }
 
 // sqlLiveStreamProvider implements web.LiveStreamProvider by looking up
@@ -174,7 +176,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	taskRepo := store.NewTaskRepo(db)
 	reviewProvider := web.NewReviewProvider(taskRepo)
 	taskOps := web.NewSQLTaskOpsStore(db)
-	liveStreamer := &cmuxClientStreamer{client: cmux.NewClient()}
+	liveStreamer := &workspaceClientStreamer{client: newWorkspaceClient(cfg, false)}
 	liveProvider := &sqlLiveStreamProvider{store: taskDetailStore}
 
 	// Start the completion watcher so running tasks that have written their
@@ -217,7 +219,10 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 		return nil, nil, fmt.Errorf("web: build dispatcher: %w", err)
 	}
 
-	var dispatcher web.TaskDispatcher = &webDispatchAdapter{runner: dispRunner}
+	var dispatcher web.TaskDispatcher = &webDispatchAdapter{
+		runner:             dispRunner,
+		requireCmuxSession: cfg.EffectiveBackend() == "cmux",
+	}
 
 	expandedCwdPrefixes := make([]string, 0, len(cfg.Execution.AllowedCwdPrefixes))
 	for _, p := range cfg.Execution.AllowedCwdPrefixes {
@@ -317,21 +322,32 @@ func buildWebSourceRegistry(enabled []string, cfg config.Config) *source.Registr
 	return r
 }
 
-// webDispatchAdapter adapts a dispatchRunner to web.TaskDispatcher so the
-// web server's Dispatch button triggers real cmux-backed dispatch.
+// webDispatchAdapter adapts a dispatchRunner to web.TaskDispatcher so
+// the web server's Dispatch button triggers real backend-backed
+// dispatch.
 type webDispatchAdapter struct {
 	runner dispatchRunner
+	// requireCmuxSession is set when the configured backend is cmux:
+	// cmux's socket refuses external connections, so the web server
+	// must itself be running inside a cmux pane (CMUX_WORKSPACE_ID
+	// set) to dispatch. herdr exposes a persistent unix-socket server
+	// reachable from any caller on the host, so this gate is left
+	// false for herdr and the dispatch proceeds directly.
+	requireCmuxSession bool
 }
 
-// Dispatch calls the real dispatcher for the given task ID and maps errors to
-// the sentinel values web.mapOpsError recognises for HTTP status mapping.
+// Dispatch calls the real dispatcher for the given task ID and maps
+// errors to the sentinel values web.mapOpsError recognises for HTTP
+// status mapping.
 //
-// Design: orphaned-process dispatch is intentionally unsupported. The server
-// must be running inside an active cmux terminal session (CMUX_WORKSPACE_ID
-// set). If the session is gone, return ErrNoActiveSession so the caller gets
-// a clear 503 rather than a confusing cmux error.
+// Design: orphaned-process dispatch is intentionally unsupported for
+// the cmux backend — without a live CMUX_WORKSPACE_ID env var the
+// cmux daemon rejects the connection with "Access denied". We surface
+// that as ErrNoActiveSession so the caller gets a clear 503 instead
+// of a confusing wrapped cmux error. The herdr backend has no
+// equivalent gating, so requireCmuxSession=false skips the check.
 func (a *webDispatchAdapter) Dispatch(ctx context.Context, id int64) error {
-	if os.Getenv("CMUX_WORKSPACE_ID") == "" {
+	if a.requireCmuxSession && os.Getenv("CMUX_WORKSPACE_ID") == "" {
 		return web.ErrNoActiveSession
 	}
 	err := a.runner.Run(ctx, dispatch.RunOptions{ID: id})

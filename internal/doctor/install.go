@@ -143,6 +143,13 @@ var installHints = map[string]installHintRow{
 		},
 		url: "https://github.com/manaflow-ai/cmux",
 	},
+	"herdr": {
+		// herdr ships a one-line installer script and a homebrew cask
+		// elsewhere; pkgs intentionally stays empty so --fix prints the
+		// canonical URL rather than guessing a brew name that drifts.
+		pkgs: map[OSFamily]string{},
+		url:  "https://herdr.dev/",
+	},
 	"python": {
 		pkgs: map[OSFamily]string{
 			OSFamilyDarwin: "python@3.12",

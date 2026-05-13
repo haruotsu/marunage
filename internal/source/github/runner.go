@@ -10,7 +10,7 @@ import (
 // outside world: invoke `gh <args...>` and capture its stdout / stderr.
 // Splitting it out lets tests inject canned stdout for `gh search issues`
 // without ever spawning a real gh process. The shape mirrors
-// internal/cmux/runner.go so cross-package readers see the same vocabulary
+// internal/workspace/runner.go so cross-package readers see the same vocabulary
 // for "shell out to a tool with deadline support".
 type Runner interface {
 	// Run executes name with args and returns stdout and stderr separately.

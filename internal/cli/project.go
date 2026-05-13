@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/project"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // boardFetcher is the narrow surface newProjectRunCmd needs to read a
@@ -87,7 +87,7 @@ func productionProjectDispatch(ctx context.Context, configPath string, item proj
 		return fmt.Errorf("core.default_cwd %q does not exist or is not accessible: %w", cwd, statErr)
 	}
 
-	cm := cmux.NewClient()
+	cm := newWorkspaceClient(cfg, true)
 	ws, err := cm.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
 		CWD:     cwd,
 		Command: cfg.Execution.ClaudeCommand,

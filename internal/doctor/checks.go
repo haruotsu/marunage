@@ -34,7 +34,8 @@ type Check struct {
 func registeredChecks(_ config.Config) []Check {
 	return []Check{
 		{Name: "claude", RequiredFor: alwaysRequired, Eval: probeBinary("claude", noVersionFloor)},
-		{Name: "cmux", RequiredFor: alwaysRequired, Eval: probeBinary("cmux", noVersionFloor)},
+		{Name: "cmux", RequiredFor: backendIs("cmux"), Eval: probeBinary("cmux", noVersionFloor)},
+		{Name: "herdr", RequiredFor: backendIs("herdr"), Eval: probeBinary("herdr", noVersionFloor)},
 		{Name: "python", RequiredFor: alwaysRequired, Eval: probeBinary("python", pythonVersionFloor)},
 		{Name: "sqlite3", RequiredFor: alwaysRequired, Eval: probeBinary("sqlite3", noVersionFloor)},
 		{Name: "gh", RequiredFor: githubSourceEnabled, Eval: probeBinary("gh", noVersionFloor)},
@@ -42,6 +43,18 @@ func registeredChecks(_ config.Config) []Check {
 		{Name: "jq", RequiredFor: neverRequired, Eval: probeBinary("jq", noVersionFloor)},
 		{Name: "secrets", RequiredFor: alwaysRequired, Eval: probeSecrets},
 		{Name: "slack-mcp", RequiredFor: slackSourceEnabled, Eval: probeSlackMCP},
+	}
+}
+
+// backendIs returns a RequiredFor predicate that flips to true when the
+// effective execution backend matches name. cmux is the legacy default,
+// so a config.toml without a `[execution] backend` field still reports
+// cmux as required and herdr as optional (the herdr check stays in the
+// table so users on cmux see it labelled "optional" rather than
+// missing entirely).
+func backendIs(name string) func(cfg config.Config) bool {
+	return func(cfg config.Config) bool {
+		return cfg.EffectiveBackend() == name
 	}
 }
 

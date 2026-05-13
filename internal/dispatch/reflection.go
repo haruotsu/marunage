@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // Reflector is the PR-102 completion hook. It is invoked from the

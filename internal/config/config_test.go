@@ -22,6 +22,9 @@ func TestDefaultConfig(t *testing.T) {
 	if c.Secrets.Backend != "auto" {
 		t.Errorf("Secrets.Backend = %q; want %q", c.Secrets.Backend, "auto")
 	}
+	if c.Execution.Backend != "cmux" {
+		t.Errorf("Execution.Backend = %q; want %q (cmux is the default, herdr is opt-in)", c.Execution.Backend, "cmux")
+	}
 	if c.Execution.PermissionMode != "bypass" {
 		t.Errorf("Execution.PermissionMode = %q; want %q", c.Execution.PermissionMode, "bypass")
 	}
@@ -60,6 +63,31 @@ func TestDefaultConfig(t *testing.T) {
 
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Default().Validate() = %v; want nil", err)
+	}
+}
+
+// TestEffectiveBackend pins the back-compat fallback for older
+// config.toml files that predate the [execution] backend field. An
+// empty Backend must resolve to "cmux" so existing installations keep
+// behaving identically after the upgrade.
+func TestEffectiveBackend(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty falls back to cmux", "", "cmux"},
+		{"explicit cmux", "cmux", "cmux"},
+		{"explicit herdr", "herdr", "herdr"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default()
+			c.Execution.Backend = tc.in
+			if got := c.EffectiveBackend(); got != tc.want {
+				t.Errorf("EffectiveBackend() = %q; want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -105,6 +133,16 @@ func TestValidate(t *testing.T) {
 			name:    "execution.permission_mode must be known",
 			mutate:  func(c *Config) { c.Execution.PermissionMode = "yolo" },
 			wantErr: "execution.permission_mode",
+		},
+		{
+			name:    "execution.backend rejects unknown values",
+			mutate:  func(c *Config) { c.Execution.Backend = "screen" },
+			wantErr: "execution.backend",
+		},
+		{
+			name:    "execution.backend empty allowed (legacy config)",
+			mutate:  func(c *Config) { c.Execution.Backend = "" },
+			wantErr: "",
 		},
 		{
 			name: "execution.claude_command empty rejected for custom mode",

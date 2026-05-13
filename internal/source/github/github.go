@@ -12,7 +12,7 @@
 //   - Users already have gh installed for marunage doctor's GitHub source
 //     check, so there is no extra dependency.
 //   - The Runner abstraction (runner.go) keeps the dependency injection
-//     story identical to internal/cmux/runner.go, so a future PR that wants
+//     story identical to internal/workspace/runner.go, so a future PR that wants
 //     to swap in the API client can do so without touching every call site.
 //
 // Concurrency: the Plugin holds no mutable state — every method receives a

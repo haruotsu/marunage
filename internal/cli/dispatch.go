@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
@@ -87,7 +86,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
+	cm := newWorkspaceClient(cfg, true)
 
 	// Open the audit log alongside the SQLite store so requirement.md
 	// invariant #2 "No silent execution" is honoured for every dispatch.

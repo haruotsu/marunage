@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/policy"
 	"github.com/haruotsu/marunage/internal/store"
+	"github.com/haruotsu/marunage/internal/workspace/cmux"
 )
 
 // Store is the narrow read/write surface the dispatcher needs against

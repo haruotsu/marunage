@@ -13,9 +13,11 @@ English version: [README.md](./README.md)
 のための単一バイナリ OSS OODA ループ実行基盤です。Gmail / Calendar / Slack /
 GitHub / Google Tasks / Notion / Markdown TODO を巡回し、カスタマイズ可能な
 スキルで判定して、生き残ったタスクを分離された対話型
-[`cmux`](https://github.com/manaflow-ai/cmux) ワークスペースへ流し込みます。
+ターミナルマルチプレクサのワークスペースへ流し込みます。
 1 タスク = 1 Claude セッションで、完了後もセッションは残るので、いつでも
-介入できます。
+介入できます。マルチプレクサは差し替え可能で、
+[`cmux`](https://github.com/manaflow-ai/cmux)（デフォルト）と
+[`herdr`](https://herdr.dev/) を `[execution] backend` で選択できます。
 
 ## 不変条件
 
@@ -33,28 +35,35 @@ GitHub / Google Tasks / Notion / Markdown TODO を巡回し、カスタマイズ
 flowchart LR
     D["Discovery (Observe)"]
     Q["Queue (Orient + Decide)<br/>SQLite · triage"]
-    E["Execution (Act)<br/>cmux + Claude"]
+    E["Execution (Act)<br/>cmux / herdr + Claude"]
     O["Observation<br/>Web UI · audit.log"]
 
     D --> Q --> E --> O
     O -.->|promote · reopen · stop| Q
 ```
 
-1 task = 1 cmux ワークスペース = 1 対話型 Claude セッション。`claude -p` の
-ワンショットは使わないので、完了後に attach して会話を続けられます。
+1 タスク = 1 バックエンドワークスペース = 1 対話型 Claude セッション。
+`claude -p` のワンショットは使わないので、完了後に attach して会話を
+続けられます。
 
 ## 必要なツール
 
 | ツール | 必須条件 | インストール |
 |--------|----------|-------------|
 | [Claude Code](https://claude.ai/download) (`claude`) | 常に必須 | claude.ai からダウンロード または `npm i -g @anthropic-ai/claude-code` |
-| [cmux](https://github.com/manaflow-ai/cmux) | 常に必須 | cmux README の手順を参照 |
+| [cmux](https://github.com/manaflow-ai/cmux) | `[execution] backend = "cmux"`（デフォルト）のとき必須 | cmux README の手順を参照 |
+| [herdr](https://herdr.dev/) | `[execution] backend = "herdr"` のとき必須 | [herdr README](https://github.com/ogulcancelik/herdr) の手順を参照 |
 | Go 1.25+ | ソースからビルドする場合 | [go.dev/dl](https://go.dev/dl/) |
 | Python 3.11+ | 常に必須 | 多くの環境にプリインストール済み。`brew install python` / `apt install python3` |
 | `sqlite3` | 常に必須 | 多くの環境にプリインストール済み。`brew install sqlite` / `apt install sqlite3` |
 | `gh`（GitHub CLI） | GitHub ソース使用時のみ | `brew install gh` / [cli.github.com](https://cli.github.com) |
 | `gws`（Google Workspace CLI） | Gmail / Calendar / Tasks 使用時のみ | [gws README](https://github.com/haruotsu/gws) 参照 |
 | `jq` | 推奨 | `brew install jq` / `apt install jq` |
+
+`[execution] backend` で、タスクごとの Claude セッションを管理する
+ターミナルマルチプレクサを選択します。デフォルトは `cmux`、
+`backend = "herdr"` を指定すれば [herdr](https://herdr.dev/) で動作します。
+`marunage doctor` は設定したマルチプレクサのみを必須として要求します。
 
 インストール後に `marunage doctor` を実行すると、セットアップ状況を一括確認できます。
 
@@ -116,6 +125,7 @@ interval = "10m"
 sources_enabled = ["markdown", "github"]
 
 [execution]
+backend = "cmux"             # cmux | herdr  （タスク用セッションを動かすマルチプレクサ）
 permission_mode = "bypass"   # bypass | default | acceptEdits | plan | custom
 allowed_cwd_prefixes = ["~/works", "~/src"]
 ```
