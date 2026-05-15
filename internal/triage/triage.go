@@ -56,6 +56,15 @@ type Decision struct {
 	// Reason is the 1-sentence rationale recorded into judgment_reason
 	// for the audit trail in `marunage review`. Required.
 	Reason string `json:"reason"`
+	// Title is the optional rewritten task title in "対象 + 動詞" form
+	// (e.g. "佐藤さんに来週MTG日程を返信"). Source plugins emit a raw
+	// first line as the initial title (Slack `splitTitleBody` etc.)
+	// which is often opaque in the list view; when the triage skill
+	// can derive a clearer actionable summary it returns it here, and
+	// Apply overwrites tasks.title via Store.UpdateTitle on the task
+	// branch only. Empty / absent leaves the raw title untouched so
+	// older SKILL.md outputs without this field stay backward-compatible.
+	Title string `json:"title,omitempty"`
 	// Priority carries the skill's optional priority hint; only
 	// meaningful for task verdicts. Phase 1 of marunage does not
 	// surface priority into the dispatcher's queue ordering yet, so
@@ -68,11 +77,12 @@ type Decision struct {
 // Store is the narrow write surface Apply needs against the tasks
 // table. Keeping it as an interface (rather than the concrete
 // *store.TaskRepo) is the test seam: production wires the real repo,
-// tests can swap in a fake. Both methods are members of *store.TaskRepo
+// tests can swap in a fake. All methods are members of *store.TaskRepo
 // so the concrete type satisfies it implicitly.
 type Store interface {
 	MarkSkippedWithReason(ctx context.Context, id int64, reason string) error
 	AppendJudgmentReason(ctx context.Context, id int64, suffix string) error
+	UpdateTitle(ctx context.Context, id int64, title string) error
 }
 
 // Apply persists the triage verdict for row id. A "skip" decision
@@ -120,6 +130,14 @@ func Apply(ctx context.Context, s Store, id int64, d Decision) error {
 	case DecisionTask:
 		if err := s.AppendJudgmentReason(ctx, id, reason); err != nil {
 			return fmt.Errorf("triage apply task: %w", err)
+		}
+		// Optional title rewrite. Run through Redact for the same
+		// secret-defense reason the reason path does — the LLM may
+		// have quoted message body content into the suggested title.
+		if d.Title != "" {
+			if err := s.UpdateTitle(ctx, id, logging.Redact(d.Title)); err != nil {
+				return fmt.Errorf("triage apply title: %w", err)
+			}
 		}
 		return nil
 	default:
