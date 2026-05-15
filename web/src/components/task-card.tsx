@@ -1,5 +1,6 @@
 'use client'
 import Link from 'next/link'
+import { Trash2 } from 'lucide-react'
 import { StatusBadge } from './status-badge'
 import { formatRelativeTime } from '@/lib/utils'
 import type { Task } from '@/lib/types'
@@ -9,9 +10,10 @@ interface TaskCardProps {
   onDispatch?: (id: number) => void
   onPromote?: (id: number) => void
   onReopen?: (id: number) => void
+  onDelete?: (id: number) => void
 }
 
-export function TaskCard({ task, onDispatch, onPromote, onReopen }: TaskCardProps) {
+export function TaskCard({ task, onDispatch, onPromote, onReopen, onDelete }: TaskCardProps) {
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-start justify-between gap-2">
@@ -58,6 +60,20 @@ export function TaskCard({ task, onDispatch, onPromote, onReopen }: TaskCardProp
               className="rounded px-2 py-1 text-xs bg-zinc-50 text-zinc-700 hover:bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
             >
               Reopen
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              aria-label="Delete task"
+              onClick={() => {
+                if (window.confirm(`Delete task "${task.title}"?`)) {
+                  onDelete(task.id)
+                }
+              }}
+              className="rounded px-2 py-1 text-xs bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
         </div>

@@ -23,8 +23,18 @@ vi.mock('next/navigation', () => ({
 }))
 
 vi.mock('@/components/task-card', () => ({
-  TaskCard: ({ task }: { task: Task }) => (
-    <div data-testid="task-card">{task.title}</div>
+  TaskCard: ({ task, onDelete }: { task: Task; onDelete?: (id: number) => void }) => (
+    <div data-testid="task-card">
+      {task.title}
+      {onDelete && (
+        <button
+          data-testid={`delete-btn-${task.id}`}
+          onClick={() => onDelete(task.id)}
+        >
+          Delete {task.id}
+        </button>
+      )}
+    </div>
   ),
 }))
 
@@ -159,5 +169,42 @@ describe('TaskListView', () => {
     await waitFor(() => {
       expect(screen.getByText('Failed to load tasks')).toBeTruthy()
     })
+  })
+
+  it('removes a task from the list after successful inline delete', async () => {
+    const tasks = [
+      makeTask({ id: 1, title: 'Alpha' }),
+      makeTask({ id: 2, title: 'Beta' }),
+    ]
+    mockGetTasks.mockResolvedValue({ tasks, total: 2 })
+    mockDeleteTask.mockResolvedValue(undefined)
+    render(<TaskListView />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId('task-card')).toHaveLength(2)
+    })
+    fireEvent.click(screen.getByTestId('delete-btn-1'))
+    await waitFor(() => {
+      expect(mockDeleteTask).toHaveBeenCalledWith(1)
+    })
+    await waitFor(() => {
+      expect(screen.queryByText('Alpha')).toBeNull()
+    })
+    expect(screen.getByText('Beta')).toBeTruthy()
+    expect(screen.getByText('(1)')).toBeTruthy()
+  })
+
+  it('shows error and keeps the task when inline delete fails', async () => {
+    const tasks = [makeTask({ id: 1, title: 'Alpha' })]
+    mockGetTasks.mockResolvedValue({ tasks, total: 1 })
+    mockDeleteTask.mockRejectedValue(new Error('delete failed'))
+    render(<TaskListView />)
+    await waitFor(() => {
+      expect(screen.getByTestId('delete-btn-1')).toBeTruthy()
+    })
+    fireEvent.click(screen.getByTestId('delete-btn-1'))
+    await waitFor(() => {
+      expect(screen.getByText('delete failed')).toBeTruthy()
+    })
+    expect(screen.getByText('Alpha')).toBeTruthy()
   })
 })

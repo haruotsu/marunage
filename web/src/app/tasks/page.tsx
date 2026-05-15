@@ -244,6 +244,7 @@ export function TaskListView() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
     getTasks()
@@ -255,6 +256,18 @@ export function TaskListView() {
         setError(e instanceof Error ? e.message : 'Failed to load tasks')
       })
       .finally(() => setLoading(false))
+  }, [])
+
+  const handleDelete = useCallback((id: number) => {
+    setActionError(null)
+    deleteTask(id)
+      .then(() => {
+        setTasks((prev) => prev.filter((t) => t.id !== id))
+        setTotal((prev) => Math.max(0, prev - 1))
+      })
+      .catch((e: unknown) => {
+        setActionError(e instanceof Error ? e.message : 'Delete failed')
+      })
   }, [])
 
   if (loading) {
@@ -280,12 +293,17 @@ export function TaskListView() {
           Tasks <span className="text-sm font-normal text-zinc-500">({total})</span>
         </h1>
       </div>
+      {actionError && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/10 dark:text-red-400">
+          {actionError}
+        </div>
+      )}
       {tasks.length === 0 ? (
         <div className="py-12 text-center text-sm text-zinc-500">No tasks found.</div>
       ) : (
         <div className="space-y-3">
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} />
+            <TaskCard key={task.id} task={task} onDelete={handleDelete} />
           ))}
         </div>
       )}
