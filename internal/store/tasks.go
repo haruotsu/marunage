@@ -1039,6 +1039,44 @@ func (r *TaskRepo) TransitionStatus(ctx context.Context, id int64, newStatus str
 	return r.UpdateStatus(ctx, id, newStatus)
 }
 
+// UpdateTitle overwrites the title column for a single row. Used by the
+// triage hook (internal/triage.Apply) so the marunage-triage skill can
+// rewrite the raw, source-plugin-supplied title (typically the first
+// line of a Slack message / email subject) into a "対象 + 動詞" form
+// that lets the operator judge the task from the list view alone
+// without opening detail.
+//
+// Empty title rejects with ErrTitleRequired to mirror Insert: a row
+// with title=” would surface as a blank line in the dashboard and
+// defeat the whole point of the rewrite. Missing id surfaces ErrNotFound
+// rather than a silent no-op so a triage hook firing after the row was
+// deleted fails loud at the call site.
+//
+// IDEMPOTENCY: UpdateTitle overwrites unconditionally. Re-applying the
+// same title is benign; applying a different title (e.g. SKILL.md was
+// edited between discovery runs) replaces the previous value. The raw
+// source title is not preserved — Reversibility is satisfied at the
+// upstream source level (external_url) per the package philosophy
+// documented on Delete below.
+func (r *TaskRepo) UpdateTitle(ctx context.Context, id int64, title string) error {
+	if title == "" {
+		return ErrTitleRequired
+	}
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE tasks SET title = ? WHERE id = ?", title, id)
+	if err != nil {
+		return fmt.Errorf("update title: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update title rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Delete removes the row with the given id regardless of status. Callers
 // (the `marunage rm` CLI, the reaper) get ErrNotFound when the id does
 // not exist so a stale id in a script does not silently no-op.

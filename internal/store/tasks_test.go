@@ -1919,3 +1919,69 @@ func TestTaskRepoListCreatedAfterZeroMeansNoFilter(t *testing.T) {
 		t.Errorf("zero CreatedAfter: got %d rows; want 2", len(got))
 	}
 }
+
+// UpdateTitle: triage が「対象 + 動詞」形式に書き換えた改善タイトルで
+// 既存行を上書きするための writer。Source プラグインが入れた raw 1行
+// (例: Slack 本文の先頭行) を、一覧で「何にどう対応する計画か」が
+// 一目で分かるタイトルに矯正する用途で triage.Apply から呼ばれる。
+func TestTaskRepoUpdateTitleSucceeds(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack",
+		Title:  "来週のMTGについて確認したい件",
+		Body:   "佐藤さん、来週のMTGの件で...",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	const newTitle = "佐藤さんに来週MTG日程を返信"
+	if err := f.repo.UpdateTitle(f.ctx, id, newTitle); err != nil {
+		t.Fatalf("UpdateTitle: %v", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Title != newTitle {
+		t.Errorf("title = %q; want %q", got.Title, newTitle)
+	}
+	// Body / Status は触らない。
+	if got.Body == "" {
+		t.Errorf("body unexpectedly cleared by UpdateTitle")
+	}
+	if got.Status != store.StatusPending {
+		t.Errorf("status mutated: %q", got.Status)
+	}
+}
+
+// 空タイトルは Insert 時の ErrTitleRequired と対称に拒否する。
+// triage.Apply 側は空タイトル時に UpdateTitle を呼ばない実装にするので
+// 通常はここに到達しないが、直接呼ばれた場合の防御。
+func TestTaskRepoUpdateTitleRejectsEmpty(t *testing.T) {
+	f := newRepoFixture(t)
+	id, err := f.repo.Insert(f.ctx, store.Task{
+		Source: "slack", Title: "original",
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := f.repo.UpdateTitle(f.ctx, id, ""); !errors.Is(err, store.ErrTitleRequired) {
+		t.Fatalf("UpdateTitle(empty): err = %v; want ErrTitleRequired", err)
+	}
+	got, err := f.repo.Get(f.ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Title != "original" {
+		t.Errorf("row touched despite rejected call: title = %q", got.Title)
+	}
+}
+
+// 行が消えた状態で triage が遅れて発火しても silent no-op にしない。
+// MarkSkippedWithReason / SetReflection と同じく ErrNotFound を返す。
+func TestTaskRepoUpdateTitleMissingReturnsErrNotFound(t *testing.T) {
+	f := newRepoFixture(t)
+	if err := f.repo.UpdateTitle(f.ctx, 99999, "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateTitle(missing): err = %v; want ErrNotFound", err)
+	}
+}
