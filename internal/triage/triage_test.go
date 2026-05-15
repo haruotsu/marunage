@@ -12,13 +12,15 @@ import (
 )
 
 // fakeStore captures the calls Apply makes so the tests can assert
-// the (status transition, judgment_reason write) pair without
-// spinning up SQLite.
+// the (status transition, judgment_reason write, title overwrite)
+// triplet without spinning up SQLite.
 type fakeStore struct {
 	skipped  []recorded
 	appended []recorded
+	titles   []recorded
 	skipErr  error
 	appErr   error
+	titleErr error
 }
 
 type recorded struct {
@@ -34,6 +36,11 @@ func (s *fakeStore) MarkSkippedWithReason(_ context.Context, id int64, reason st
 func (s *fakeStore) AppendJudgmentReason(_ context.Context, id int64, suffix string) error {
 	s.appended = append(s.appended, recorded{id, suffix})
 	return s.appErr
+}
+
+func (s *fakeStore) UpdateTitle(_ context.Context, id int64, title string) error {
+	s.titles = append(s.titles, recorded{id, title})
+	return s.titleErr
 }
 
 // PR-72 TR1: a "task" decision records the triage reason on the row
@@ -256,5 +263,128 @@ func TestApplyPropagatesNotFoundOnTaskPath(t *testing.T) {
 	})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Apply(task on missing id): err = %v; want errors.Is(err, store.ErrNotFound)", err)
+	}
+}
+
+// task 判定で Title が指定されていれば、source プラグインが入れた
+// raw タイトルを「対象 + 動詞」形式の改善タイトルで上書きする。
+// 一覧で「何にどう対応する計画か」が一目で分かるようにするための
+// 主目的の挙動。
+func TestApplyTaskDecisionWithTitleOverwritesTitle(t *testing.T) {
+	s := &fakeStore{}
+	const newTitle = "佐藤さんに来週MTG日程を返信"
+	err := triage.Apply(context.Background(), s, 11, triage.Decision{
+		Decision: triage.DecisionTask,
+		Reason:   "rule 1: @me が直接メンションされている",
+		Title:    newTitle,
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(s.appended) != 1 {
+		t.Fatalf("AppendJudgmentReason called %d times; want 1", len(s.appended))
+	}
+	if len(s.titles) != 1 {
+		t.Fatalf("UpdateTitle called %d times; want 1", len(s.titles))
+	}
+	got := s.titles[0]
+	if got.id != 11 {
+		t.Errorf("UpdateTitle id = %d; want 11", got.id)
+	}
+	if got.reason != newTitle {
+		t.Errorf("UpdateTitle title = %q; want %q", got.reason, newTitle)
+	}
+}
+
+// Title が空の task 判定は UpdateTitle を呼ばない。後方互換: 旧 SKILL.md
+// (title フィールド未対応) の Discovery 出力は Title="" でデコードされる
+// ので、その場合は raw タイトルをそのまま残す。
+func TestApplyTaskDecisionEmptyTitleSkipsUpdateTitle(t *testing.T) {
+	s := &fakeStore{}
+	err := triage.Apply(context.Background(), s, 12, triage.Decision{
+		Decision: triage.DecisionTask,
+		Reason:   "rule 1: direct mention",
+		Title:    "",
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(s.titles) != 0 {
+		t.Errorf("UpdateTitle called %d times on empty title; want 0", len(s.titles))
+	}
+	if len(s.appended) != 1 {
+		t.Errorf("AppendJudgmentReason called %d times; want 1", len(s.appended))
+	}
+}
+
+// skip 判定では Title が指定されていても無視する。skip された行は
+// 一覧の上位に出ない / 操作されないので、タイトル整形コストを払う
+// 意味がない。
+func TestApplySkipDecisionIgnoresTitle(t *testing.T) {
+	s := &fakeStore{}
+	err := triage.Apply(context.Background(), s, 13, triage.Decision{
+		Decision: triage.DecisionSkip,
+		Reason:   "rule 4: FYI broadcast",
+		Title:    "ignored title",
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(s.titles) != 0 {
+		t.Errorf("UpdateTitle called %d times on skip; want 0", len(s.titles))
+	}
+	if len(s.skipped) != 1 {
+		t.Errorf("MarkSkippedWithReason called %d times; want 1", len(s.skipped))
+	}
+}
+
+// Reason と同じく Title も logging.Redact を通してから store に渡す。
+// LLM が message body を quote した結果として Bearer / GitHub PAT /
+// Slack token を埋めてしまっても tasks.title に永続化させない。
+func TestApplyRedactsSecretsInTitle(t *testing.T) {
+	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+	s := &fakeStore{}
+	err := triage.Apply(context.Background(), s, 14, triage.Decision{
+		Decision: triage.DecisionTask,
+		Reason:   "rule 1: direct mention",
+		Title:    "API trace で " + leaked + " を確認",
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(s.titles) != 1 {
+		t.Fatalf("UpdateTitle called %d times; want 1", len(s.titles))
+	}
+	if strings.Contains(s.titles[0].reason, leaked) {
+		t.Errorf("title persisted leaked secret %q in:\n%s", leaked, s.titles[0].reason)
+	}
+}
+
+// UpdateTitle が store エラーを返したら Apply 全体を失敗させる。
+// reason は記録できたがタイトルだけ更新失敗、という silent partial state を
+// 残さないため。Discovery 側はリトライ / オペレータ通知を選択できる。
+func TestApplyPropagatesUpdateTitleStoreError(t *testing.T) {
+	wantErr := errors.New("disk full")
+	s := &fakeStore{titleErr: wantErr}
+	err := triage.Apply(context.Background(), s, 15, triage.Decision{
+		Decision: triage.DecisionTask,
+		Reason:   "rule 1: direct mention",
+		Title:    "新タイトル",
+	})
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Apply(task with title err): err = %v; want it to wrap %v", err, wantErr)
+	}
+}
+
+// SKILL.md の JSON-Lines 出力に title フィールドが含まれていれば
+// Decision に正しくデコードされること。ExternalID テストと同型。
+func TestDecisionDecodesTitleFromSkillJSON(t *testing.T) {
+	const payload = `{"external_id": "T123.456", "decision": "task", "reason": "rule 1", "title": "佐藤さんに返信", "priority": 1}`
+	var d triage.Decision
+	if err := json.Unmarshal([]byte(payload), &d); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if d.Title != "佐藤さんに返信" {
+		t.Errorf("Title = %q; want %q", d.Title, "佐藤さんに返信")
 	}
 }
