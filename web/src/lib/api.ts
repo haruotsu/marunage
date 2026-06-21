@@ -61,12 +61,14 @@ export async function getJournal(date: string): Promise<JournalEntry[]> {
   return resp.entries
 }
 
-export async function getTasks(): Promise<TaskListResponse> {
+export async function getTasks(status?: string): Promise<TaskListResponse> {
   if (USE_MOCK) {
     const { mockTasks } = await import('./mock')
-    return { tasks: mockTasks, total: mockTasks.length }
+    const tasks = status ? mockTasks.filter((t) => t.status === status) : mockTasks
+    return { tasks, total: tasks.length }
   }
-  return apiFetch<TaskListResponse>('/api/tasks')
+  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
+  return apiFetch<TaskListResponse>(`/api/tasks${qs}`)
 }
 
 export async function getTask(id: number): Promise<TaskDetail> {

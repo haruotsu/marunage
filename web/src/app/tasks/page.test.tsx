@@ -9,7 +9,7 @@ const mockDeleteTask = vi.fn()
 const mockPush = vi.fn()
 
 vi.mock('@/lib/api', () => ({
-  getTasks: () => mockGetTasks(),
+  getTasks: (...args: unknown[]) => mockGetTasks(...args),
   getTask: (...args: unknown[]) => mockGetTask(...args),
   dispatchTask: vi.fn(),
   promoteTask: vi.fn(),
@@ -107,8 +107,10 @@ describe('TaskDetailContent delete', () => {
 })
 
 describe('TaskListView', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockGetTasks.mockReset()
+    const { useSearchParams } = await import('next/navigation')
+    vi.mocked(useSearchParams).mockReturnValue({ get: (_key: string) => null } as ReturnType<typeof useSearchParams>)
   })
 
   it('shows loading spinner while fetching', () => {
@@ -159,5 +161,23 @@ describe('TaskListView', () => {
     await waitFor(() => {
       expect(screen.getByText('Failed to load tasks')).toBeTruthy()
     })
+  })
+
+  it('passes the ?status= filter to getTasks and shows a filter chip', async () => {
+    const { useSearchParams } = await import('next/navigation')
+    vi.mocked(useSearchParams).mockReturnValue({
+      get: (key: string) => (key === 'status' ? 'skipped' : null),
+    } as ReturnType<typeof useSearchParams>)
+    mockGetTasks.mockResolvedValue({
+      tasks: [makeTask({ id: 9, title: 'Promo', status: 'skipped' })],
+      total: 1,
+    })
+
+    render(<TaskListView />)
+
+    await waitFor(() => {
+      expect(mockGetTasks).toHaveBeenCalledWith('skipped')
+    })
+    expect(screen.getByText('filtered by')).toBeTruthy()
   })
 })
