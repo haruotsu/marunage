@@ -12,12 +12,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
-	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
+	"github.com/haruotsu/marunage/internal/exec"
+	"github.com/haruotsu/marunage/internal/exec/backend"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/loop"
+	"github.com/haruotsu/marunage/internal/manage"
 	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/reaper"
 	"github.com/haruotsu/marunage/internal/render"
@@ -79,7 +80,13 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	repo := store.NewTaskRepo(db)
 	kv := store.NewKVStateRepo(db)
-	executor := execcmux.New(cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe())))
+	// Config-driven backend selection (redesign §4/§6): one executor instance
+	// serves both dispatch and the reaper's session lister.
+	executor, err := backend.New(cfg.Execution.Executor)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("build executor: %w", err)
+	}
 
 	auditPath := filepath.Join(filepath.Dir(dbPath), "logs", "audit.log")
 	var auditor config.Auditor = config.NopAuditor{}
@@ -153,9 +160,18 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		return nil, nil, fmt.Errorf("parse execution.reaper_stuck_threshold %q: %w",
 			cfg.Execution.ReaperStuckThreshold, err)
 	}
+	// The reaper only needs the session-lister capability; the configured
+	// backend (cmux/tmux) provides it. A backend that cannot list sessions
+	// (e.g. local) is rejected loudly rather than silently skipping orphan
+	// recovery.
+	lister, ok := executor.(exec.Lister)
+	if !ok {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("executor %q does not support session listing required by the reaper", cfg.Execution.Executor)
+	}
 	reap, err := reaper.New(
 		reaper.WithStore(repo),
-		reaper.WithExecutor(execcmux.New(cmux.NewClient())),
+		reaper.WithExecutor(lister),
 		reaper.WithStuckThreshold(threshold),
 		reaper.WithAuditor(auditor),
 	)
@@ -186,6 +202,31 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 			loopOpts = append(loopOpts, loop.WithDispatchInterval(di))
 		}
 	}
+
+	// Turn on the collect→manage→persist pipeline when the management layer is
+	// enabled (redesign §2/§8 PR-R05). The planner reuses the same cwd
+	// allowlist / default cwd / lock_keys the dispatcher enforces so a row the
+	// manager clears as ready cannot then fail the dispatcher's cwd gate, and
+	// the verdict→status mapping comes from [manage.verdicts] (原則1). When
+	// disabled, the loop keeps the legacy discover-and-insert path.
+	if cfg.Manage.Enabled {
+		rules, rErr := manage.RulesFromConfig(cfg.Manage.Rules)
+		if rErr != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("build manage rules: %w", rErr)
+		}
+		loopOpts = append(loopOpts,
+			loop.WithManageStore(repo),
+			loop.WithManageOptions(
+				manage.WithRules(rules),
+				manage.WithRegistry(manage.VerdictPoliciesFromConfig(cfg.Manage.Verdicts)),
+				manage.WithAllowedCwdPrefixes(expandedCwdPrefixes),
+				manage.WithDefaultCwd(defaultCwd),
+				manage.WithLockKeys(cfg.Execution.LockKeys),
+			),
+		)
+	}
+
 	l, err := loop.New(loopOpts...)
 	if err != nil {
 		_ = db.Close()

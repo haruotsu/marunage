@@ -9,10 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
-	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
+	"github.com/haruotsu/marunage/internal/exec/backend"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
@@ -88,7 +87,14 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	executor := execcmux.New(cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe())))
+	// Backend selection is config-driven (redesign §4/§6): backend.New maps
+	// [execution].executor onto the concrete exec.Executor (cmux today, tmux /
+	// local as they land) so cmd never hardcodes a backend.
+	executor, err := backend.New(cfg.Execution.Executor)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("build executor: %w", err)
+	}
 
 	// Open the audit log alongside the SQLite store so requirement.md
 	// invariant #2 "No silent execution" is honoured for every dispatch.
