@@ -6,25 +6,26 @@ import (
 	"github.com/haruotsu/marunage/internal/store"
 )
 
-func TestParseGitHubRepo(t *testing.T) {
+func TestParseRepoURL(t *testing.T) {
 	cases := []struct {
-		url         string
-		owner, repo string
-		ok          bool
+		url               string
+		host, owner, repo string
+		ok                bool
 	}{
-		{"https://github.com/haruotsu/marunage/issues/42", "haruotsu", "marunage", true},
-		{"https://github.com/haruotsu/marunage/pull/7", "haruotsu", "marunage", true},
-		{"https://github.com/haruotsu/marunage", "haruotsu", "marunage", true},
-		{"https://github.com/haruotsu/marunage.git", "haruotsu", "marunage", true},
-		{"https://gitlab.com/haruotsu/marunage/issues/1", "", "", false},
-		{"https://github.com/haruotsu", "", "", false},
-		{"", "", "", false},
+		{"https://github.com/haruotsu/marunage/issues/42", "github.com", "haruotsu", "marunage", true},
+		{"https://github.com/haruotsu/marunage/pull/7", "github.com", "haruotsu", "marunage", true},
+		{"https://github.com/haruotsu/marunage", "github.com", "haruotsu", "marunage", true},
+		{"https://github.com/haruotsu/marunage.git", "github.com", "haruotsu", "marunage", true},
+		// GitHub Enterprise Server: host is not github.com.
+		{"https://ghe.corp.example/team/service/issues/3", "ghe.corp.example", "team", "service", true},
+		{"https://github.com/haruotsu", "", "", "", false},
+		{"", "", "", "", false},
 	}
 	for _, c := range cases {
-		owner, repo, ok := parseGitHubRepo(c.url)
-		if ok != c.ok || owner != c.owner || repo != c.repo {
-			t.Errorf("parseGitHubRepo(%q) = (%q,%q,%v); want (%q,%q,%v)",
-				c.url, owner, repo, ok, c.owner, c.repo, c.ok)
+		host, owner, repo, ok := parseRepoURL(c.url)
+		if ok != c.ok || host != c.host || owner != c.owner || repo != c.repo {
+			t.Errorf("parseRepoURL(%q) = (%q,%q,%q,%v); want (%q,%q,%q,%v)",
+				c.url, host, owner, repo, ok, c.host, c.owner, c.repo, c.ok)
 		}
 	}
 }
@@ -32,21 +33,30 @@ func TestParseGitHubRepo(t *testing.T) {
 func TestResolveCwd(t *testing.T) {
 	const root = "/home/u/src"
 	clone := root + "/github.com/haruotsu/marunage"
-	dirExists := func(p string) bool { return p == clone }
+	gheClone := root + "/ghe.corp.example/team/service"
+	dirExists := func(p string) bool { return p == clone || p == gheClone }
 
 	t.Run("explicit cwd wins", func(t *testing.T) {
-		task := store.Task{CWD: "/explicit/path", ExternalURL: "https://github.com/haruotsu/marunage/issues/1"}
+		task := store.Task{Source: "github", CWD: "/explicit/path", ExternalURL: "https://github.com/haruotsu/marunage/issues/1"}
 		cwd, note := resolveCwd(task, "/default", root, "ghq", dirExists)
 		if cwd != "/explicit/path" || note != "" {
 			t.Fatalf("got (%q,%q)", cwd, note)
 		}
 	})
 
-	t.Run("ghq resolves a cloned repo", func(t *testing.T) {
+	t.Run("ghq resolves a cloned github.com repo", func(t *testing.T) {
 		task := store.Task{Source: "github", ExternalURL: "https://github.com/haruotsu/marunage/issues/1"}
 		cwd, note := resolveCwd(task, "/default", root, "ghq", dirExists)
 		if cwd != clone || note != "" {
 			t.Fatalf("got (%q,%q); want (%q,\"\")", cwd, note, clone)
+		}
+	})
+
+	t.Run("ghq resolves a cloned GHES repo by host", func(t *testing.T) {
+		task := store.Task{Source: "github", ExternalURL: "https://ghe.corp.example/team/service/pull/9"}
+		cwd, note := resolveCwd(task, "/default", root, "ghq", dirExists)
+		if cwd != gheClone || note != "" {
+			t.Fatalf("got (%q,%q); want (%q,\"\")", cwd, note, gheClone)
 		}
 	})
 
@@ -58,8 +68,8 @@ func TestResolveCwd(t *testing.T) {
 		}
 	})
 
-	t.Run("non-github task uses default", func(t *testing.T) {
-		task := store.Task{Source: "gmail", ExternalURL: "https://mail.google.com/x"}
+	t.Run("non-github source is never probed", func(t *testing.T) {
+		task := store.Task{Source: "gmail", ExternalURL: "https://mail.google.com/mail/u/0"}
 		cwd, note := resolveCwd(task, "/default", root, "ghq", dirExists)
 		if cwd != "/default" || note != "" {
 			t.Fatalf("got (%q,%q)", cwd, note)
