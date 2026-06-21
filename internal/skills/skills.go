@@ -41,6 +41,13 @@ var RequiredAutoReplySections = []string{
 	"Draft Mode",
 }
 
+// RequiredManageSections enumerates the H2 headers the management-layer
+// SKILL.md must contain (PR-R06). 判定ロジック carries the "今着手すべきか"
+// criteria; 出力フォーマット pins the JSON the LLM scorer parses. Dropping
+// either would leave the scorer with no contract to fall back from, so the
+// installer rejects it — same guarantee as the triage skill.
+var RequiredManageSections = []string{"判定ロジック", "出力フォーマット"}
+
 // triageSkillName is the on-disk directory name the validation step
 // targets. We pin it in one place so renaming the embedded skill
 // directory automatically propagates here.
@@ -48,6 +55,10 @@ const triageSkillName = "marunage-triage"
 
 // autoReplySkillName is the on-disk directory name for the autoreply skill.
 const autoReplySkillName = "marunage-autoreply"
+
+// manageSkillName is the on-disk directory name for the management-layer
+// skill the LLM scoring pass loads (PR-R06).
+const manageSkillName = "marunage-manage"
 
 // SkillReport is the per-skill outcome row in InstallResult. The Old/New
 // version pair powers `--check-updates`-style reporting; on a fresh
@@ -247,6 +258,9 @@ func Install(opts InstallOptions) (InstallResult, error) {
 		if err := validateInstalledAutoReply(opts.Target); err != nil {
 			return res, err
 		}
+		if err := validateInstalledManage(opts.Target); err != nil {
+			return res, err
+		}
 	}
 
 	return res, nil
@@ -406,6 +420,22 @@ func validateInstalledAutoReply(target string) error {
 		return fmt.Errorf("read installed autoreply: %w", err)
 	}
 	return ValidateRequiredSections(body, RequiredAutoReplySections)
+}
+
+// validateInstalledManage runs the required-section check on the post-install
+// on-disk management SKILL.md. Absent file is allowed so --from-dir sources
+// that ship only other skills are not broken, mirroring the triage/autoreply
+// validators.
+func validateInstalledManage(target string) error {
+	p := filepath.Join(target, manageSkillName, "SKILL.md")
+	body, err := os.ReadFile(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read installed manage: %w", err)
+	}
+	return ValidateRequiredSections(body, RequiredManageSections)
 }
 
 // displayVersion turns the (oldVersion, hasExisting) pair into the

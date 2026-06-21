@@ -19,7 +19,7 @@ import (
 // produce a binary that "installs" zero skills.
 func TestEmbeddedFS_ContainsRequiredSkills(t *testing.T) {
 	root := EmbeddedFS()
-	for _, name := range []string{"marunage-autoreply", "marunage-triage", "marunage-execute", "marunage-reflect"} {
+	for _, name := range []string{"marunage-autoreply", "marunage-triage", "marunage-execute", "marunage-reflect", "marunage-manage"} {
 		path := name + "/SKILL.md"
 		f, err := root.Open(path)
 		if err != nil {
@@ -58,6 +58,36 @@ func TestEmbeddedAutoReply_PassRequiredSectionValidation(t *testing.T) {
 	}
 }
 
+// TestEmbeddedManage_PassRequiredSectionValidation pins that the OSS-shipped
+// management SKILL.md carries the 判定ロジック / 出力フォーマット sections the
+// LLM scoring pass relies on (PR-R06).
+func TestEmbeddedManage_PassRequiredSectionValidation(t *testing.T) {
+	root := EmbeddedFS()
+	body, err := fs.ReadFile(root, "marunage-manage/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded manage: %v", err)
+	}
+	if err := ValidateRequiredSections(body, RequiredManageSections); err != nil {
+		t.Errorf("embedded marunage-manage SKILL.md: %v", err)
+	}
+}
+
+// TestInstall_ManageMissingRequiredSection_Fails pins that Install fails
+// loudly when the management SKILL.md is missing a required section.
+func TestInstall_ManageMissingRequiredSection_Fails(t *testing.T) {
+	src := fstest.MapFS{
+		"marunage-manage/SKILL.md": &fstest.MapFile{
+			Data: []byte("<!-- version: 0.1.0 -->\n# manage\n## 判定ロジック\nok\n"),
+		},
+	}
+	target := filepath.Join(t.TempDir(), ".claude", "skills")
+
+	_, err := Install(InstallOptions{Target: target, Source: src})
+	if !errors.Is(err, ErrMissingSection) {
+		t.Errorf("err = %v; want errors.Is(_, ErrMissingSection)", err)
+	}
+}
+
 // TestInstall_AutoReplyMissingRequiredSection_Fails pins that Install fails
 // loudly when the autoreply SKILL.md is missing a required section.
 func TestInstall_AutoReplyMissingRequiredSection_Fails(t *testing.T) {
@@ -89,7 +119,7 @@ func TestInstall_FreshTarget_CopiesAllSkillsFromEmbed(t *testing.T) {
 	}
 
 	got := names(res.Installed)
-	want := []string{"marunage-autoreply", "marunage-execute", "marunage-reflect", "marunage-triage"}
+	want := []string{"marunage-autoreply", "marunage-execute", "marunage-manage", "marunage-reflect", "marunage-triage"}
 	if !equalSorted(got, want) {
 		t.Errorf("Installed names = %v; want %v", got, want)
 	}
@@ -191,7 +221,7 @@ func TestInstall_ExistingSameVersion_IsIdempotent(t *testing.T) {
 		t.Errorf("second Install reported Updated=%v; want empty (same version)", names(res.Updated))
 	}
 	got := names(res.Skipped)
-	want := []string{"marunage-autoreply", "marunage-execute", "marunage-reflect", "marunage-triage"}
+	want := []string{"marunage-autoreply", "marunage-execute", "marunage-manage", "marunage-reflect", "marunage-triage"}
 	if !equalSorted(got, want) {
 		t.Errorf("Skipped = %v; want %v", got, want)
 	}

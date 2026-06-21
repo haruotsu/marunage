@@ -210,20 +210,14 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	// the verdict→status mapping comes from [manage.verdicts] (原則1). When
 	// disabled, the loop keeps the legacy discover-and-insert path.
 	if cfg.Manage.Enabled {
-		rules, rErr := manage.RulesFromConfig(cfg.Manage.Rules)
-		if rErr != nil {
+		manageOpts, moErr := manageOptions(cfg, expandedCwdPrefixes, defaultCwd)
+		if moErr != nil {
 			_ = db.Close()
-			return nil, nil, fmt.Errorf("build manage rules: %w", rErr)
+			return nil, nil, moErr
 		}
 		loopOpts = append(loopOpts,
 			loop.WithManageStore(repo),
-			loop.WithManageOptions(
-				manage.WithRules(rules),
-				manage.WithRegistry(manage.VerdictPoliciesFromConfig(cfg.Manage.Verdicts)),
-				manage.WithAllowedCwdPrefixes(expandedCwdPrefixes),
-				manage.WithDefaultCwd(defaultCwd),
-				manage.WithLockKeys(cfg.Execution.LockKeys),
-			),
+			loop.WithManageOptions(manageOpts...),
 		)
 	}
 
@@ -240,6 +234,49 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		return db.Close()
 	}
 	return l, closer, nil
+}
+
+// manageOptions assembles the planner options the loop hands to manage.Plan
+// each tick. It is a standalone function (not inlined in buildLoop) so the
+// llm_scoring on/off wiring — the core PR-R06 switch — is unit-testable
+// without standing up a whole loop.
+//
+// llm_scoring is the off switch (redesign §9.1). The default is ON
+// (config.Default / redesign §6): on injects the Claude-backed scorer, which
+// loads the user's marunage-manage SKILL.md and batches one `claude -p` call
+// per tick. Off leaves the planner on the deterministic stub scorer —
+// byte-identical to PR-R03/R05.
+func manageOptions(cfg config.Config, cwdPrefixes []string, defaultCwd string) ([]manage.Option, error) {
+	rules, err := manage.RulesFromConfig(cfg.Manage.Rules)
+	if err != nil {
+		return nil, fmt.Errorf("build manage rules: %w", err)
+	}
+	opts := []manage.Option{
+		manage.WithRules(rules),
+		manage.WithRegistry(manage.VerdictPoliciesFromConfig(cfg.Manage.Verdicts)),
+		manage.WithAllowedCwdPrefixes(cwdPrefixes),
+		manage.WithDefaultCwd(defaultCwd),
+		manage.WithLockKeys(cfg.Execution.LockKeys),
+	}
+	if cfg.Manage.LLMScoring {
+		opts = append(opts, manage.WithLLMScorer(manage.NewClaudeScorer(
+			manage.WithScorerSkillPath(manageSkillPath()),
+		)))
+	}
+	return opts, nil
+}
+
+// manageSkillPath resolves the on-disk marunage-manage SKILL.md the LLM
+// scorer prepends to its prompt. Best-effort: an unresolvable HOME yields the
+// empty string, and the scorer degrades to its built-in instruction rather
+// than failing the loop — installing the skill (`setup --skills`) restores the
+// user-customised criteria.
+func manageSkillPath() string {
+	dir, err := skillsTargetDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "marunage-manage", "SKILL.md")
 }
 
 // registerEnabledSources walks discovery.sources_enabled and attaches
