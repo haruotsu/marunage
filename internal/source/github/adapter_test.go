@@ -62,8 +62,11 @@ func TestAdapterSinceForwardsCheckpoint(t *testing.T) {
 		t.Fatalf("Since: %v", err)
 	}
 	for _, c := range fr.calls {
-		if c.Args[2] != "is:open assignee:@me updated:>=2026-01-01T00:00:00Z" {
+		if c.Args[2] != "assignee:@me updated:>=2026-01-01T00:00:00Z" {
 			t.Errorf("query = %q", c.Args[2])
+		}
+		if !hasFlagValue(c.Args, "--state", "open") {
+			t.Errorf("missing --state open: %v", c.Args)
 		}
 	}
 }
