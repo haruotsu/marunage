@@ -521,7 +521,8 @@ func (l *Loop) persistDecision(ctx context.Context, d manage.PlannedCandidate, p
 	c := d.Candidate
 	// Upstream completion wins over the verdict's status: an already-done
 	// item must not re-enter the queue as pending (mirrors the legacy
-	// taskFromSource Done handling).
+	// taskFromSource Done handling), and it carries no plan label because the
+	// management verdict is moot for something already finished upstream.
 	status := d.Status
 	if c.Done {
 		status = store.StatusDone
@@ -551,6 +552,9 @@ func (l *Loop) persistDecision(ctx context.Context, d manage.PlannedCandidate, p
 		}
 	}
 
+	if c.Done {
+		return
+	}
 	if err := l.manageStore.SetPlan(ctx, id, string(d.Verdict), d.Reason, d.Score, d.Rank, plannedAt); err != nil {
 		l.auditManageFail(c.Source, fmt.Sprintf("set plan %q: %v", c.ExternalID, err))
 	}

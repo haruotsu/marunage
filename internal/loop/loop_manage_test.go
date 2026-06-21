@@ -151,6 +151,11 @@ func TestRunOnce_ManagePipeline_DonePreservesDone(t *testing.T) {
 	if row.Status != store.StatusDone {
 		t.Errorf("Status = %q; want done", row.Status)
 	}
+	// A finished item carries no plan label: the management verdict is moot
+	// for something already complete upstream.
+	if row.PlanLabel != "" {
+		t.Errorf("PlanLabel = %q; want empty for an upstream-done item", row.PlanLabel)
+	}
 }
 
 // Every decision is persisted (invariant #1 No silent loss): a ready row and a
