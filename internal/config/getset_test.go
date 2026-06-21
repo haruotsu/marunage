@@ -77,6 +77,15 @@ func TestGetSetMapFieldDirectsToEdit(t *testing.T) {
 	if !strings.Contains(serr.Error(), "marunage config edit") {
 		t.Errorf("Set err = %v; want guidance to use 'marunage config edit'", serr)
 	}
+
+	// manage.verdicts is also a map; the same edit-instead-of-set guidance
+	// must apply so the inline-table mapping is only changed via the editor.
+	if _, err := Get(c, "manage.verdicts"); err == nil || !strings.Contains(err.Error(), "marunage config edit") {
+		t.Errorf("Get(manage.verdicts) = %v; want edit guidance", err)
+	}
+	if err := Set(&c, "manage.verdicts", "ready=pending"); err == nil || !strings.Contains(err.Error(), "marunage config edit") {
+		t.Errorf("Set(manage.verdicts) = %v; want edit guidance", err)
+	}
 }
 
 func TestSet(t *testing.T) {
@@ -166,6 +175,36 @@ func TestSet(t *testing.T) {
 			check: func(t *testing.T, c Config) {
 				if len(c.Execution.AutoAcceptTools) != 0 {
 					t.Errorf("AutoAcceptTools = %v; want empty", c.Execution.AutoAcceptTools)
+				}
+			},
+		},
+		{
+			name:  "execution.executor",
+			key:   "execution.executor",
+			value: "local",
+			check: func(t *testing.T, c Config) {
+				if c.Execution.Executor != "local" {
+					t.Errorf("Execution.Executor = %q; want local", c.Execution.Executor)
+				}
+			},
+		},
+		{
+			name:  "manage.enabled",
+			key:   "manage.enabled",
+			value: "false",
+			check: func(t *testing.T, c Config) {
+				if c.Manage.Enabled {
+					t.Error("Manage.Enabled = true; want false")
+				}
+			},
+		},
+		{
+			name:  "manage.rules.boost_if_due_within",
+			key:   "manage.rules.boost_if_due_within",
+			value: "6h",
+			check: func(t *testing.T, c Config) {
+				if c.Manage.Rules.BoostIfDueWithin != "6h" {
+					t.Errorf("Manage.Rules.BoostIfDueWithin = %q; want 6h", c.Manage.Rules.BoostIfDueWithin)
 				}
 			},
 		},
@@ -266,6 +305,8 @@ func TestSetRejectsInvalidValues(t *testing.T) {
 		{"string slice invalid JSON syntax", "execution.auto_accept_tools", "[invalid"},
 		{"string slice non-string JSON array", "execution.auto_accept_tools", "[1, 2, 3]"},
 		{"string slice nested JSON array", "execution.auto_accept_tools", `[["a"]]`},
+		{"executor out of range", "execution.executor", "podman"},
+		{"manage.rules.boost_if_due_within bad duration", "manage.rules.boost_if_due_within", "soon"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
