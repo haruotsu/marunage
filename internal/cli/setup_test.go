@@ -358,20 +358,21 @@ func TestSetup_Skills_RecordsAuditLines(t *testing.T) {
 			installs = append(installs, l)
 		}
 	}
-	if len(installs) != 4 {
-		t.Fatalf("setup.skills.install count = %d; want 4 (one per bundled skill); lines=%+v",
+	if len(installs) != 5 {
+		t.Fatalf("setup.skills.install count = %d; want 5 (one per bundled skill); lines=%+v",
 			len(installs), lines)
 	}
 
 	wantNames := map[string]bool{
 		"marunage-autoreply": true,
 		"marunage-execute":   true,
+		"marunage-manage":    true,
 		"marunage-reflect":   true,
 		"marunage-triage":    true,
 	}
 	for _, l := range installs {
 		if !wantNames[l.Name] {
-			t.Errorf("unexpected install Name=%q (want one of marunage-autoreply/-execute/-reflect/-triage)", l.Name)
+			t.Errorf("unexpected install Name=%q (want one of marunage-autoreply/-execute/-manage/-reflect/-triage)", l.Name)
 		}
 		want := filepath.Join(home, ".claude", "skills", l.Name, "SKILL.md")
 		if l.Path != want {
@@ -425,12 +426,12 @@ func TestSetup_Skills_AuditOnSkipAndUpdate(t *testing.T) {
 			updates++
 		}
 	}
-	if installs != 4 {
-		t.Errorf("install count = %d; want 4 (initial seed)", installs)
+	if installs != 5 {
+		t.Errorf("install count = %d; want 5 (initial seed)", installs)
 	}
-	// rerun: 4 skip; force: 3 skip (autoreply/execute/reflect unchanged) + 1 update (triage).
-	if skips != 7 {
-		t.Errorf("skip count = %d; want 7 (4 rerun + 3 force-on-unchanged)", skips)
+	// rerun: 5 skip; force: 4 skip (autoreply/execute/manage/reflect unchanged) + 1 update (triage).
+	if skips != 9 {
+		t.Errorf("skip count = %d; want 9 (5 rerun + 4 force-on-unchanged)", skips)
 	}
 	if updates != 1 {
 		t.Errorf("update count = %d; want 1 (only edited triage)", updates)
