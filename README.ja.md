@@ -11,11 +11,13 @@ English version: [README.md](./README.md)
 
 `marunage`（「丸投げ」由来）は、[Claude Code](https://www.anthropic.com/claude-code)
 のための単一バイナリ OSS OODA ループ実行基盤です。Gmail / Calendar / Slack /
-GitHub / Google Tasks / Notion / Markdown TODO を巡回し、カスタマイズ可能な
-スキルで判定して、生き残ったタスクを分離された対話型
-[`cmux`](https://github.com/manaflow-ai/cmux) ワークスペースへ流し込みます。
-1 タスク = 1 Claude セッションで、完了後もセッションは残るので、いつでも
-介入できます。
+GitHub / Google Tasks / Notion / Markdown TODO を**収集層**で巡回し、各アイテムを
+**管理層**で「いまやるべき（`ready`）／あとで（`hold`・`defer`）／人間がやるべき
+（`needs-human`）／そもそもやらない（`drop`）」に仕分けし、`ready` だけを
+差し替え可能な**実行層**へ流し込みます。既定は分離された対話型
+[`cmux`](https://github.com/manaflow-ai/cmux) ワークスペース（`tmux` やローカル
+プロセスにも切替可）で、1 タスク = 1 Claude セッション。完了後もセッションは
+残るので、いつでも介入できます。
 
 ## 不変条件
 
@@ -29,19 +31,41 @@ GitHub / Google Tasks / Notion / Markdown TODO を巡回し、カスタマイズ
 
 ## How it works
 
+marunage は単一の SQLite 正本（`~/.marunage/tasks.db`）を囲む 3 層構成です:
+
 ```mermaid
 flowchart LR
-    D["Discovery (Observe)"]
-    Q["Queue (Orient + Decide)<br/>SQLite · triage"]
-    E["Execution (Act)<br/>cmux + Claude"]
-    O["Observation<br/>Web UI · audit.log"]
+    C["収集層<br/>internal/collect<br/>sources + early triage"]
+    M["管理層<br/>internal/manage<br/>rules + LLM scoring → verdict"]
+    X["実行層<br/>internal/exec<br/>cmux · tmux · local"]
+    O["観察<br/>Web UI · audit.log"]
 
-    D --> Q --> E --> O
-    O -.->|promote · reopen · stop| Q
+    C -->|"[]Candidate"| M -->|"ready, ranked"| X --> O
+    O -.->|promote · reopen · stop| M
 ```
 
-1 task = 1 cmux ワークスペース = 1 対話型 Claude セッション。`claude -p` の
+- **収集層**（`internal/collect`）は有効化された各ソースから生メッセージを集めて
+  `Candidate` に正規化し、明らかなノイズ（広告・GitHub 通知メール）は LLM を
+  呼ぶ前に early triage で `drop` します。
+- **管理層**（`internal/manage`）が第二の関門です。決定的なルールエンジン
+  （依存・締切・cwd ポリシー・重複・ロック）と任意の LLM スコアリングが、各候補に
+  **verdict**（`ready` / `hold` / `defer` / `needs-human` / `drop`）を下し、`ready` を
+  順位づけします。dispatch されるのは `ready` のみで、それ以外は保留・エスカレート・
+  skip され、決して silently には失われません（No silent loss）。
+- **実行層**（`internal/exec`）は backend 非依存の `Executor` インターフェース越しに
+  `ready` タスクを実行します。既定 backend は cmux で、`tmux` / `local` も同梱、
+  `[execution] executor` で選択します。
+
+1 タスク = 1 ワークスペース = 1 対話型 Claude セッション。`claude -p` の
 ワンショットは使わないので、完了後に attach して会話を続けられます。
+
+| verdict | 意味 | 落ち先 |
+| ------- | ---- | ------ |
+| `ready` | いまやる — rank 順に dispatch | `pending`（dispatch 対象） |
+| `hold` | 依存待ち。条件成立で自動昇格 | `pending`（保留） |
+| `defer` | 価値はあるが今じゃない | `pending`（保留） |
+| `needs-human` | 情報不足／人間・承認案件 | `waiting_human` |
+| `drop` | スコープ外・重複・ノイズ | `skipped` |
 
 ## 必要なツール
 
@@ -115,10 +139,19 @@ backend = "auto"   # keyring → pass → age → 0600 file → env
 interval = "10m"
 sources_enabled = ["markdown", "github"]
 
+[manage]
+enabled = true
+llm_scoring = false   # 既定はルールのみ。LLM で ready 順序づけする場合 true
+
 [execution]
+executor = "cmux"            # cmux | tmux | local
 permission_mode = "bypass"   # bypass | default | acceptEdits | plan | custom
 allowed_cwd_prefixes = ["~/works", "~/src"]
 ```
+
+管理層の verdict → status マッピングやルールのトグルは `[manage.rules]` /
+`[manage.verdicts]` 配下にあります。LLM スコアリングは `marunage setup --skills` で
+導入されるカスタマイズ可能な `marunage-manage` スキルを使います。
 
 シークレットは `config.toml` には一切書きません。
 
