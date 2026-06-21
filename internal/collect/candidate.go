@@ -59,7 +59,11 @@ type Candidate struct {
 
 	// Reason is the human-readable rationale for a non-empty Verdict,
 	// recorded for the `marunage review` audit trail. Empty when Verdict
-	// is undecided.
+	// is undecided. Early triage only ever sets it from static Rule.Reason
+	// strings, so it carries no message content today; any wiring that
+	// persists this Reason to a sink (the cmd path in PR-R05) MUST route
+	// it through logging.Redact first, exactly as Apply does — never trust
+	// it to be secret-free, since a custom rule could embed message text.
 	Reason string
 }
 

@@ -150,17 +150,24 @@ func (g *gatherer) fetch(ctx context.Context, p source.Plugin, cp Checkpoint) ([
 }
 
 // advanceCheckpoint stamps the per-source checkpoint with the current
-// clock as RFC3339Nano, matching the loop package's format so the value
-// a Sincer reads back next run is the wall-clock time of the last
-// successful fetch. A nil checkpoint store (a caller that opted out)
-// makes this a no-op.
+// clock as RFC3339Nano, matching the loop package's format so the value a
+// Sincer reads back next run is the wall-clock time of the last
+// successful fetch. It runs for every source, including List-only ones
+// whose checkpoint is never read back — mirroring loop.discoverOne, which
+// advances unconditionally, so Discovery behaviour stays unchanged. A nil
+// checkpoint store (a caller that opted out) makes this a no-op.
+//
+// Severity note: unlike loop.advanceCheckpoint (best-effort, audit-only),
+// Gather surfaces a Set failure to its caller via the joined error. The
+// candidates are already in the result slice, so this never loses a task
+// (invariant #1); a failed advance only means the next run may re-fetch
+// items the dedupe at insert time tolerates. Surfacing — rather than
+// swallowing — lets the cmd wiring (PR-R05) decide whether to audit and
+// continue, keeping collect free of an auditor dependency.
 func (g *gatherer) advanceCheckpoint(ctx context.Context, cp Checkpoint, name string) error {
 	if cp == nil {
 		return nil
 	}
 	value := g.now().UTC().Format(time.RFC3339Nano)
-	if err := cp.Set(ctx, CheckpointKeyPrefix+name, value); err != nil {
-		return err
-	}
-	return nil
+	return cp.Set(ctx, CheckpointKeyPrefix+name, value)
 }

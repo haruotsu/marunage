@@ -22,7 +22,12 @@ type Rule struct {
 	// is VerdictDrop, but the type is open so a future rule could route a
 	// match to needs-human, etc.
 	Verdict Verdict
-	// Reason is the rationale recorded alongside the Verdict.
+	// Reason is the rationale recorded alongside the Verdict. Keep it a
+	// static identifier (the rule name and why it fired) — do NOT embed
+	// the candidate's title/body, which may contain secrets. The built-in
+	// DefaultRules follow this; a custom rule passed via WithRules that
+	// interpolates message content risks leaking it into any sink that
+	// later persists Candidate.Reason without redaction.
 	Reason string
 }
 

@@ -251,6 +251,116 @@ func TestGatherKeepsOrdinaryGmail(t *testing.T) {
 	}
 }
 
+// A checkpoint Set failure must not lose the candidates already fetched
+// (invariant #1); the error is surfaced via the joined error so the
+// caller can decide to audit-and-continue.
+func TestGatherCheckpointWriteFailureSurfacesButKeepsCandidates(t *testing.T) {
+	cp := newFakeCheckpoint()
+	cp.setErr = errors.New("disk full")
+	p := &fakeSincer{
+		fakePlugin: fakePlugin{name: "gmail"},
+		sinceTasks: []source.Task{{ExternalID: "m1", Title: "hi"}},
+	}
+	got, err := collect.Gather(context.Background(), []source.Plugin{p}, cp)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("err = %v; want it to surface the checkpoint Set failure", err)
+	}
+	if len(got) != 1 || got[0].ExternalID != "m1" {
+		t.Errorf("got %+v; want the fetched candidate retained despite the write failure", got)
+	}
+}
+
+// A checkpoint read failure that is NOT ErrKVNotFound is fatal for that
+// source (we cannot safely run an incremental Since without it), but it
+// is isolated to that source.
+func TestGatherCheckpointReadErrorIsolatesSource(t *testing.T) {
+	cp := newFakeCheckpoint()
+	cp.getErr = errors.New("db locked")
+	bad := &fakeSincer{fakePlugin: fakePlugin{name: "gmail"}}
+	good := &fakePlugin{name: "markdown", tasks: []source.Task{{ExternalID: "x", Title: "ok"}}}
+	got, err := collect.Gather(context.Background(), []source.Plugin{bad, good}, cp)
+	if err == nil || !strings.Contains(err.Error(), "gmail") || !strings.Contains(err.Error(), "db locked") {
+		t.Fatalf("err = %v; want the gmail checkpoint read failure surfaced", err)
+	}
+	if bad.sinceCalled {
+		t.Errorf("Since should not run when the checkpoint read failed")
+	}
+	if len(got) != 1 || got[0].ExternalID != "x" {
+		t.Errorf("got %+v; want the healthy source's candidate to survive", got)
+	}
+}
+
+// The gmail adapter stores labels as []string, but a value round-tripped
+// through JSON arrives as []any; both must trip the promotions rule.
+func TestGatherDropsGmailPromotionsWithJSONLabelShape(t *testing.T) {
+	p := &fakePlugin{name: "gmail", tasks: []source.Task{{
+		ExternalID:  "promo-json",
+		Title:       "deal",
+		RawMetadata: map[string]any{"labels": []any{"INBOX", "CATEGORY_PROMOTIONS"}},
+	}}}
+	got, err := collect.Gather(context.Background(), []source.Plugin{p}, newFakeCheckpoint())
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if got[0].Verdict != collect.VerdictDrop {
+		t.Errorf("Verdict = %q; want drop for a []any-shaped promotions label", got[0].Verdict)
+	}
+}
+
+// A cancelled context stops the iteration before any source runs and the
+// cancellation surfaces in the error.
+func TestGatherStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &fakePlugin{name: "markdown", tasks: []source.Task{{ExternalID: "x", Title: "ok"}}}
+	got, err := collect.Gather(ctx, []source.Plugin{p}, newFakeCheckpoint())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v; want context.Canceled", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %+v; want no candidates after a cancelled context", got)
+	}
+}
+
+// Each Sincer source advances its own checkpoint independently; a failing
+// source's checkpoint is left untouched (fetch errors before the advance).
+func TestGatherAdvancesEachSourceCheckpointIndependently(t *testing.T) {
+	cp := newFakeCheckpoint()
+	fixed := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	ok := &fakeSincer{
+		fakePlugin: fakePlugin{name: "gmail"},
+		sinceTasks: []source.Task{{ExternalID: "m1", Title: "hi"}},
+	}
+	failing := &fakeSincer{fakePlugin: fakePlugin{name: "slack"}, sinceErr: errors.New("boom")}
+	_, err := collect.Gather(context.Background(), []source.Plugin{ok, failing}, cp,
+		collect.WithClock(func() time.Time { return fixed }))
+	if err == nil {
+		t.Fatalf("err = nil; want the slack Since failure surfaced")
+	}
+	if _, advanced := cp.data[collect.CheckpointKeyPrefix+"gmail"]; !advanced {
+		t.Errorf("gmail checkpoint not advanced; sets=%+v", cp.sets)
+	}
+	if _, advanced := cp.data[collect.CheckpointKeyPrefix+"slack"]; advanced {
+		t.Errorf("failing slack source must not advance its checkpoint")
+	}
+}
+
+// List-only sources also advance their checkpoint, matching loop's
+// unconditional advance even though the value is never read back.
+func TestGatherAdvancesCheckpointForListOnlySource(t *testing.T) {
+	cp := newFakeCheckpoint()
+	fixed := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	p := &fakePlugin{name: "markdown", tasks: []source.Task{{ExternalID: "x", Title: "ok"}}}
+	_, err := collect.Gather(context.Background(), []source.Plugin{p}, cp,
+		collect.WithClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if _, advanced := cp.data[collect.CheckpointKeyPrefix+"markdown"]; !advanced {
+		t.Errorf("list-only source checkpoint not advanced; sets=%+v", cp.sets)
+	}
+}
+
 func TestGatherWithRulesOverridesDefaults(t *testing.T) {
 	dropAll := collect.Rule{
 		Name:    "drop-everything",

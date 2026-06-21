@@ -8,29 +8,9 @@ import (
 	"github.com/haruotsu/marunage/internal/store"
 )
 
-// Decision is the per-row verdict the embedded marunage-triage skill
-// emits during early triage. It was relocated here from the former
-// internal/triage package (redesign §7: "internal/triage → collect の
-// 早期 triage"): collect is the most upstream layer, so the early-triage
-// persistence hook belongs alongside the Candidate / Verdict types it
-// shares with the downstream manage layer.
-//
-// The skill itself runs inside a Claude session (it lives in
-// internal/skills/embedded/marunage-triage/SKILL.md and is delivered to
-// ~/.claude/skills/ by `marunage setup --skills`); the Go side here is
-// intentionally narrow — Decision decodes one JSON-Lines output line and
-// Apply persists the verdict.
-//
-// Note the deliberate distinction between Decision and Verdict (verdict.go):
-// Decision is the skill's binary keep/drop output (task/skip), whereas
-// Verdict is the five-label classification (ready/hold/defer/needs-human/
-// drop) that early triage and the manage layer share. A DecisionSkip maps
-// to VerdictDrop; a DecisionTask leaves the candidate for the manage layer
-// to classify further.
-
-// Verdict strings mirror the JSON values the embedded marunage-triage
-// SKILL.md emits. Centralising them here keeps the skill output and the
-// persistence hook from drifting.
+// DecisionTask / DecisionSkip mirror the JSON values the embedded
+// marunage-triage SKILL.md emits. Centralising them here keeps the skill
+// output and the persistence hook from drifting.
 const (
 	DecisionTask = "task"
 	DecisionSkip = "skip"
@@ -42,10 +22,26 @@ const (
 // failing loud beats silently choosing one branch.
 var ErrInvalidDecision = fmt.Errorf("collect: decision must be %q or %q", DecisionTask, DecisionSkip)
 
-// Decision is the per-row verdict the skill emits. The field shape
-// mirrors the documented JSON-Lines schema in
-// internal/skills/embedded/marunage-triage/SKILL.md so the discovery
-// layer can json.Unmarshal directly into this struct.
+// Decision is the per-row verdict the embedded marunage-triage skill
+// emits during early triage. The field shape mirrors the documented
+// JSON-Lines schema in internal/skills/embedded/marunage-triage/SKILL.md
+// so the discovery layer can json.Unmarshal directly into this struct.
+// The skill runs inside a Claude session; the Go side here is
+// intentionally narrow — Decision decodes one output line and Apply
+// persists the verdict. It was relocated from the former internal/triage
+// package (redesign §7) so the early-triage persistence hook lives in the
+// most upstream layer, beside the Candidate / Verdict types it shares with
+// the downstream manage layer.
+//
+// Decision and Verdict (verdict.go) are deliberately distinct vocabularies:
+// Decision is the skill's binary keep/drop output (task/skip), whereas
+// Verdict is the five-label classification early triage and manage share.
+// Conceptually DecisionSkip corresponds to VerdictDrop and DecisionTask to
+// "undecided, let manage classify", but the two paths are NOT yet wired
+// together: Apply persists a Decision directly, while Gather's rule-based
+// early triage (classify) stamps a Verdict. Reconciling the skill path
+// onto Verdict is left to a later PR (R05 wiring); until then this
+// distinction is the seam to keep them from being conflated.
 type Decision struct {
 	// ExternalID echoes the source-side identifier (Slack ts, GitHub
 	// issue number, etc.). Apply does not consume it directly — the row
