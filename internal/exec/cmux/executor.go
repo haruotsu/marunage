@@ -13,14 +13,6 @@ package cmux
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"syscall"
 	"time"
 
 	cmuxclient "github.com/haruotsu/marunage/internal/cmux"
@@ -63,27 +55,17 @@ func WithAwaitTimeout(d time.Duration) Option {
 	return func(e *Executor) { e.awaitTimeout = d }
 }
 
-const (
-	defaultPollInterval = 500 * time.Millisecond
-	// sentinelFile mirrors internal/completion.sentinelFile. The two are
-	// independent string constants on purpose: completion owns the
-	// production detection path today, and AwaitExit is the same contract
-	// re-expressed behind the Executor for the R05 pipeline. They must
-	// agree on the filename, which the dispatcher's prompt also embeds.
-	sentinelFile     = ".exit_code"
-	maxSentinelBytes = 64
+const defaultPollInterval = 500 * time.Millisecond
+
+// ErrAwaitTimeout and ErrNoSentinelDir are re-exported from the shared exec
+// package so existing cmux callers keep matching execcmux.ErrAwaitTimeout /
+// execcmux.ErrNoSentinelDir via errors.Is, while AwaitExit delegates the
+// actual sentinel polling to exec.AwaitSentinel (the same logic every
+// sentinel-based backend shares).
+var (
+	ErrAwaitTimeout  = exec.ErrAwaitTimeout
+	ErrNoSentinelDir = exec.ErrNoSentinelDir
 )
-
-// ErrAwaitTimeout is returned by AwaitExit when WithAwaitTimeout elapses
-// before the sentinel appears. Distinct from context cancellation so a
-// caller can tell "the session is taking too long" from "we were asked
-// to stop".
-var ErrAwaitTimeout = errors.New("exec/cmux: timed out waiting for exit sentinel")
-
-// ErrNoSentinelDir is returned by AwaitExit when the Session carries no
-// SentinelDir handle, so there is no file to poll. Surfacing it loudly
-// keeps a mis-wired caller from silently blocking forever.
-var ErrNoSentinelDir = errors.New("exec/cmux: session has no sentinel directory")
 
 // New wraps client in an Executor. The client carries its own runner and
 // readiness probe (the CLI wires cmux.NewClaudeReadinessProbe), so the
@@ -210,36 +192,7 @@ func (e *Executor) Stream(ctx context.Context, s exec.Session) (<-chan []byte, e
 // exit code is returned even when non-zero; a non-nil error is reserved
 // for I/O / timeout / cancellation.
 func (e *Executor) AwaitExit(ctx context.Context, s exec.Session) (int, error) {
-	dir := e.sentinelDir(s)
-	if dir == "" {
-		return 0, ErrNoSentinelDir
-	}
-	path := filepath.Join(dir, sentinelFile)
-
-	var deadline time.Time
-	if e.awaitTimeout > 0 {
-		deadline = time.Now().Add(e.awaitTimeout)
-	}
-
-	ticker := time.NewTicker(e.pollInterval)
-	defer ticker.Stop()
-	for {
-		code, ok, err := readExitCode(path)
-		if err != nil {
-			return 0, err
-		}
-		if ok {
-			return code, nil
-		}
-		if !deadline.IsZero() && !time.Now().Before(deadline) {
-			return 0, ErrAwaitTimeout
-		}
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return exec.AwaitSentinel(ctx, e.sentinelDir(s), e.pollInterval, e.awaitTimeout)
 }
 
 // workspace reconstructs the cmux handle from an exec.Session. Only the ID
@@ -260,46 +213,6 @@ func (e *Executor) sentinelDir(s exec.Session) string {
 		return h.SentinelDir
 	}
 	return ""
-}
-
-// readExitCode attempts a single bounded, symlink-refusing read of the
-// sentinel. It returns (code, true, nil) once the file is present and
-// parses, (0, false, nil) while it is still absent, and a non-nil error
-// only for a genuine I/O / parse failure. The O_NOFOLLOW + size cap mirror
-// internal/completion's hardening so a prompt-injected Claude cannot make
-// AwaitExit follow a symlink or slurp a huge file.
-func readExitCode(path string) (int, bool, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, false, nil
-		}
-		if errors.Is(err, syscall.ELOOP) {
-			return 0, false, fmt.Errorf("exec/cmux: refused symlink at %s", filepath.Base(path))
-		}
-		return 0, false, err
-	}
-	defer func() { _ = f.Close() }()
-
-	info, err := f.Stat()
-	if err != nil {
-		return 0, false, err
-	}
-	if !info.Mode().IsRegular() {
-		return 0, false, fmt.Errorf("exec/cmux: %s is not a regular file", filepath.Base(path))
-	}
-	if info.Size() > maxSentinelBytes {
-		return 0, false, fmt.Errorf("exec/cmux: %s exceeds %d bytes", filepath.Base(path), maxSentinelBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxSentinelBytes+1))
-	if err != nil {
-		return 0, false, err
-	}
-	code, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, false, fmt.Errorf("exec/cmux: parse %s: %w", filepath.Base(path), err)
-	}
-	return code, true, nil
 }
 
 // Compile-time proof the Executor honours every interface it advertises.

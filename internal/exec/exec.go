@@ -48,9 +48,11 @@ type Executor interface {
 }
 
 // Attachable is the optional capability for backends that can hand a
-// human an interactive view of a running session. cmux / tmux return a
-// deeplink; a bare local process cannot and simply does not implement
-// this interface.
+// human an interactive view of a running session. The returned string is
+// opaque attach instructions: cmux returns a URI deeplink, tmux returns a
+// runnable `tmux attach` command. A consumer must render it as plain text
+// rather than assume a clickable URI. A bare local process cannot attach
+// and simply does not implement this interface.
 type Attachable interface {
 	Attach(ctx context.Context, s Session) (deeplink string, err error)
 }
