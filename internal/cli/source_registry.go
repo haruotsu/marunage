@@ -89,7 +89,10 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			return fmt.Errorf("register github: %w", err)
 		}
 	case "calendar":
-		if err := calendar.RegisterBuiltin(r); err != nil {
+		// Wire the gws-CLI-backed client (mirrors gmail). Without WithClient
+		// the plugin has no client and every List fails with
+		// calendar.ErrClientRequired, so discovery could never read events.
+		if err := calendar.RegisterBuiltin(r, calendar.WithClient(calendar.NewGWSClient())); err != nil {
 			return fmt.Errorf("register calendar: %w", err)
 		}
 	case "googletasks":

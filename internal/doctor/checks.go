@@ -39,7 +39,7 @@ func registeredChecks(_ config.Config) []Check {
 		{Name: "python", RequiredFor: alwaysRequired, Eval: probeBinary("python", pythonVersionFloor)},
 		{Name: "sqlite3", RequiredFor: alwaysRequired, Eval: probeBinary("sqlite3", noVersionFloor)},
 		{Name: "gh", RequiredFor: githubSourceEnabled, Eval: probeBinary("gh", noVersionFloor)},
-		{Name: "gws", RequiredFor: googleSourceEnabled, Eval: probeBinary("gws", noVersionFloor)},
+		{Name: "gws", RequiredFor: googleSourceEnabled, Eval: probeGWS},
 		{Name: "jq", RequiredFor: neverRequired, Eval: probeBinary("jq", noVersionFloor)},
 		{Name: "secrets", RequiredFor: alwaysRequired, Eval: probeSecrets},
 		{Name: "slack-mcp", RequiredFor: slackSourceEnabled, Eval: probeSlackMCP},
@@ -176,6 +176,37 @@ var (
 // probeBinary returns an Eval body that performs a generic "binary on PATH
 // + optional version floor" check. The version floor is checked only when
 // floor != nil; otherwise we report success as soon as the binary is found.
+// probeGWS extends the plain binary check with an auth-state probe. gws being
+// on PATH is necessary but not sufficient: the gmail/calendar sources shell
+// out to it and fail at runtime when no login has happened. So when the binary
+// is present and a GWS probe is wired, we also verify a credential exists and
+// otherwise fail with the exact (scope-narrowed) login command — surfacing the
+// gap at `doctor` time instead of mid-discovery.
+func probeGWS(ctx context.Context, in Inputs) CheckOutcome {
+	base := probeBinary("gws", noVersionFloor)(ctx, in)
+	if !base.OK || in.GWS == nil {
+		return base
+	}
+	authed, account, err := in.GWS.Authenticated(ctx)
+	if err != nil {
+		base.Detail = fmt.Sprintf("%s; auth state could not be verified: %v", base.Detail, err)
+		return base
+	}
+	if !authed {
+		return CheckOutcome{
+			OK:      false,
+			Version: base.Version,
+			Detail:  base.Detail + " but not authenticated",
+			Hint:    "run `gws auth login --services gmail,calendar,tasks` (narrow scopes avoid the invalid_scope error from gws's full set)",
+		}
+	}
+	detail := base.Detail + "; authenticated"
+	if account != "" {
+		detail = fmt.Sprintf("%s as %s", detail, account)
+	}
+	return CheckOutcome{OK: true, Version: base.Version, Detail: detail}
+}
+
 func probeBinary(name string, floor versionFloor) func(context.Context, Inputs) CheckOutcome {
 	return func(ctx context.Context, in Inputs) CheckOutcome {
 		path, ok := in.Runner.LookPath(name)
