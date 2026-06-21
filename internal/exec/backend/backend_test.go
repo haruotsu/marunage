@@ -7,6 +7,7 @@ import (
 	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/exec/backend"
 	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
+	execherdr "github.com/haruotsu/marunage/internal/exec/herdr"
 	exectmux "github.com/haruotsu/marunage/internal/exec/tmux"
 )
 
@@ -32,6 +33,16 @@ func TestNewSelectsTmux(t *testing.T) {
 	}
 }
 
+func TestNewSelectsHerdr(t *testing.T) {
+	e, err := backend.New("herdr")
+	if err != nil {
+		t.Fatalf("New(herdr): %v", err)
+	}
+	if _, ok := e.(*execherdr.Executor); !ok {
+		t.Errorf("New(herdr) = %T; want *execherdr.Executor", e)
+	}
+}
+
 func TestNewRejectsUnknown(t *testing.T) {
 	_, err := backend.New("podman")
 	if !errors.Is(err, backend.ErrUnknownExecutor) {
@@ -44,7 +55,7 @@ func TestNewRejectsUnknown(t *testing.T) {
 // (the reaper needs Lister, the web stream needs OutputReader). A backend
 // that silently dropped a capability would break those consumers at runtime.
 func TestNewReturnsCapabilityRichBackends(t *testing.T) {
-	for _, name := range []string{"cmux", "tmux"} {
+	for _, name := range []string{"cmux", "tmux", "herdr"} {
 		e, err := backend.New(name)
 		if err != nil {
 			t.Fatalf("New(%q): %v", name, err)

@@ -35,6 +35,7 @@ func registeredChecks(_ config.Config) []Check {
 	return []Check{
 		{Name: "claude", RequiredFor: alwaysRequired, Eval: probeBinary("claude", noVersionFloor)},
 		{Name: "cmux", RequiredFor: alwaysRequired, Eval: probeBinary("cmux", noVersionFloor)},
+		{Name: "herdr", RequiredFor: herdrExecutorSelected, Eval: probeBinary("herdr", noVersionFloor)},
 		{Name: "python", RequiredFor: alwaysRequired, Eval: probeBinary("python", pythonVersionFloor)},
 		{Name: "sqlite3", RequiredFor: alwaysRequired, Eval: probeBinary("sqlite3", noVersionFloor)},
 		{Name: "gh", RequiredFor: githubSourceEnabled, Eval: probeBinary("gh", noVersionFloor)},
@@ -60,6 +61,14 @@ func registeredToolNames() []string {
 // table aligned and self-documenting.
 func alwaysRequired(_ config.Config) bool { return true }
 func neverRequired(_ config.Config) bool  { return false }
+
+// herdrExecutorSelected reports whether the herdr execution backend is in
+// use. herdr is an optional dependency — only required when the operator
+// actually selected it via [execution].executor = "herdr"; otherwise its
+// absence is fine (cmux/tmux/local run without it).
+func herdrExecutorSelected(cfg config.Config) bool {
+	return cfg.Execution.Executor == "herdr"
+}
 
 // githubSourceEnabled reports whether any github-flavored source is on in
 // cfg.Discovery.SourcesEnabled. Anything starting with "github" counts so

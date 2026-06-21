@@ -283,6 +283,11 @@ func TestValidate(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name:    "execution.executor accepts herdr",
+			mutate:  func(c *Config) { c.Execution.Executor = "herdr" },
+			wantErr: "",
+		},
+		{
 			name:    "manage.rules.boost_if_due_within must parse as duration",
 			mutate:  func(c *Config) { c.Manage.Rules.BoostIfDueWithin = "soon" },
 			wantErr: "manage.rules.boost_if_due_within",

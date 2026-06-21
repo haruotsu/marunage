@@ -204,7 +204,7 @@ var (
 	allowedPermissionModes      = []string{"bypass", "default", "acceptEdits", "plan", "custom"}
 	allowedOnUnknownPermissions = []string{"escalate", "fail", "retry"}
 	allowedLogLevels            = []string{"debug", "info", "warn", "error"}
-	allowedExecutors            = []string{"cmux", "tmux", "local", "docker", "ssh"}
+	allowedExecutors            = []string{"cmux", "tmux", "herdr", "local", "docker", "ssh"}
 )
 
 // IsValidOnUnknownPermission reports whether s is a recognised value

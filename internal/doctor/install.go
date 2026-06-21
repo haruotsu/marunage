@@ -143,6 +143,12 @@ var installHints = map[string]installHintRow{
 		},
 		url: "https://github.com/manaflow-ai/cmux",
 	},
+	"herdr": {
+		// herdr ships its own installer (curl | sh) rather than a package; the
+		// upstream URL covers every OS family.
+		pkgs: map[OSFamily]string{},
+		url:  "https://herdr.dev/",
+	},
 	"python": {
 		pkgs: map[OSFamily]string{
 			OSFamilyDarwin: "python@3.12",
