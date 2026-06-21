@@ -47,6 +47,19 @@ type MCPProbe interface {
 	ListMCPServers(ctx context.Context) ([]string, error)
 }
 
+// GWSAuthProbe reports whether the gws CLI holds a usable OAuth credential.
+// The google-suite sources (gmail / calendar) shell out to gws, which fails
+// at runtime when no login has happened — so doctor verifies the auth state,
+// not just that the binary is on PATH. Satisfied by a production probe that
+// runs `gws auth status` and a fake in tests.
+type GWSAuthProbe interface {
+	// Authenticated reports whether gws has a usable credential. account is
+	// the signed-in identity when known (best-effort, may be empty). An error
+	// is returned only when the probe could not run (binary missing / command
+	// failed); "ran fine, just not logged in" returns (false, "", nil).
+	Authenticated(ctx context.Context) (ok bool, account string, err error)
+}
+
 // Inputs bundles the dependencies Run needs. Grouping them in a struct
 // (rather than ten positional arguments) keeps the CLI wiring readable and
 // gives tests a single place to set up scenarios.
@@ -55,6 +68,7 @@ type Inputs struct {
 	Runner  Runner
 	Secrets SecretsProbe
 	MCP     MCPProbe
+	GWS     GWSAuthProbe
 	OS      OSDetector
 }
 
