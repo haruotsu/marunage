@@ -215,15 +215,27 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("build manage rules: %w", rErr)
 		}
+		manageOpts := []manage.Option{
+			manage.WithRules(rules),
+			manage.WithRegistry(manage.VerdictPoliciesFromConfig(cfg.Manage.Verdicts)),
+			manage.WithAllowedCwdPrefixes(expandedCwdPrefixes),
+			manage.WithDefaultCwd(defaultCwd),
+			manage.WithLockKeys(cfg.Execution.LockKeys),
+		}
+		// llm_scoring is the off switch (redesign §9.1): off (default for the
+		// rule-only behaviour) leaves the planner on the deterministic stub
+		// scorer — byte-identical to PR-R03/R05. On injects the Claude-backed
+		// scorer, which loads the user's marunage-manage SKILL.md and batches
+		// one `claude -p` call per loop tick.
+		if cfg.Manage.LLMScoring {
+			scorer := manage.NewClaudeScorer(
+				manage.WithScorerSkillPath(manageSkillPath()),
+			)
+			manageOpts = append(manageOpts, manage.WithLLMScorer(scorer))
+		}
 		loopOpts = append(loopOpts,
 			loop.WithManageStore(repo),
-			loop.WithManageOptions(
-				manage.WithRules(rules),
-				manage.WithRegistry(manage.VerdictPoliciesFromConfig(cfg.Manage.Verdicts)),
-				manage.WithAllowedCwdPrefixes(expandedCwdPrefixes),
-				manage.WithDefaultCwd(defaultCwd),
-				manage.WithLockKeys(cfg.Execution.LockKeys),
-			),
+			loop.WithManageOptions(manageOpts...),
 		)
 	}
 
@@ -240,6 +252,19 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		return db.Close()
 	}
 	return l, closer, nil
+}
+
+// manageSkillPath resolves the on-disk marunage-manage SKILL.md the LLM
+// scorer prepends to its prompt. Best-effort: an unresolvable HOME yields the
+// empty string, and the scorer degrades to its built-in instruction rather
+// than failing the loop — installing the skill (`setup --skills`) restores the
+// user-customised criteria.
+func manageSkillPath() string {
+	dir, err := skillsTargetDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "marunage-manage", "SKILL.md")
 }
 
 // registerEnabledSources walks discovery.sources_enabled and attaches
