@@ -263,6 +263,51 @@ func TestRun_GwsMissing_GoogleSourceEnabled_RequiredFailure(t *testing.T) {
 	}
 }
 
+func TestRun_HerdrMissing_NonHerdrExecutor_OptionalOK(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	// herdr is intentionally absent from allToolsPresent; the default cmux
+	// executor must keep its absence optional.
+	rep := Run(context.Background(), Inputs{
+		Cfg:     defaultCfg(),
+		Runner:  runner,
+		Secrets: secrets,
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if !rep.OK {
+		t.Fatalf("Report.OK = false; want true (herdr optional when executor != herdr). report=%#v", rep)
+	}
+	herdr, ok := findOutcome(rep, "herdr")
+	if !ok {
+		t.Fatalf("herdr outcome not present. report=%#v", rep)
+	}
+	if herdr.Required {
+		t.Fatalf("herdr.Required = true; want false when executor != herdr")
+	}
+}
+
+func TestRun_HerdrMissing_HerdrExecutor_RequiredFailure(t *testing.T) {
+	runner, secrets := allToolsPresent()
+	cfg := defaultCfg()
+	cfg.Execution.Executor = "herdr"
+
+	rep := Run(context.Background(), Inputs{
+		Cfg:     cfg,
+		Runner:  runner,
+		Secrets: secrets,
+		OS:      fakeOS{family: OSFamilyDarwin},
+	})
+	if rep.OK {
+		t.Fatalf("Report.OK = true; want false (herdr required when executor = herdr)")
+	}
+	herdr, ok := findOutcome(rep, "herdr")
+	if !ok {
+		t.Fatalf("herdr outcome not present. report=%#v", rep)
+	}
+	if !herdr.Required {
+		t.Fatalf("herdr.Required = false; want true when executor = herdr")
+	}
+}
+
 func TestRun_ZeroSecretBackends_RequiredFailure(t *testing.T) {
 	runner, _ := allToolsPresent()
 	rep := Run(context.Background(), Inputs{
