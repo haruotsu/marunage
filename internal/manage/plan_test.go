@@ -397,6 +397,103 @@ func TestPlanPropagatesStoreListError(t *testing.T) {
 	}
 }
 
+// A non-NotFound store error during a dependency lookup is catastrophic and
+// surfaces to the caller (symmetric to the List-error path).
+func TestPlanPropagatesDependencyGetError(t *testing.T) {
+	boom := errors.New("db down")
+	st := &fakeStore{getErr: boom}
+	cands := []collect.Candidate{
+		{Title: "needs #7", Body: "do it", Notes: `{"depends_on":[7]}`},
+	}
+	_, err := Plan(context.Background(), cands, st)
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v; want db down", err)
+	}
+}
+
+// An overdue (past) deadline still boosts — it is the most urgent case.
+func TestPlanOverdueDueBoostsRanksAhead(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	st := &fakeStore{}
+	cands := []collect.Candidate{
+		{Title: "no-due", Body: "x", Priority: "5"},
+		{Title: "overdue", Body: "x", Priority: "5", Notes: fmt.Sprintf(`{"due":%q}`, past)},
+	}
+	plan, err := Plan(context.Background(), cands, st, WithClock(fixedClock(now)))
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Ready[0].Candidate.Title != "overdue" {
+		t.Errorf("Ready[0] = %q; want overdue (past due is most urgent)", plan.Ready[0].Candidate.Title)
+	}
+}
+
+// An unparseable due date neither boosts nor crashes — best-effort parsing
+// leaves the candidate ready at its base priority.
+func TestPlanUnparseableDueDoesNotBoost(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	st := &fakeStore{}
+	cands := []collect.Candidate{
+		{Title: "high", Body: "x", Priority: "5"},
+		{Title: "bad-due", Body: "x", Priority: "1", Notes: `{"due":"not-a-date"}`},
+	}
+	plan, err := Plan(context.Background(), cands, st, WithClock(fixedClock(now)))
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Ready[0].Candidate.Title != "high" {
+		t.Errorf("Ready[0] = %q; want high (unparseable due gives no boost)", plan.Ready[0].Candidate.Title)
+	}
+	if got := decisionFor(t, plan, "bad-due").Verdict; got != collect.VerdictReady {
+		t.Errorf("bad-due verdict = %q; want ready", got)
+	}
+}
+
+// Malformed notes JSON is swallowed: the candidate is judged as if the notes
+// carried no metadata rather than crashing or being mis-held.
+func TestPlanMalformedNotesIsInert(t *testing.T) {
+	st := &fakeStore{}
+	cands := []collect.Candidate{
+		{Title: "broken notes", Body: "x", Notes: `{not valid json`},
+	}
+	plan, err := Plan(context.Background(), cands, st)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if got := decisionFor(t, plan, "broken notes").Verdict; got != collect.VerdictReady {
+		t.Errorf("verdict = %q; want ready (malformed notes inert)", got)
+	}
+}
+
+// With multiple dependencies, any single incomplete one holds the candidate.
+func TestPlanMultipleDepsAnyIncompleteHolds(t *testing.T) {
+	st := &fakeStore{tasks: []store.Task{
+		{ID: 7, Status: store.StatusDone},
+		{ID: 8, Status: store.StatusPending},
+	}}
+	cands := []collect.Candidate{
+		{Title: "needs #7 and #8", Body: "do it", Notes: `{"depends_on":[7,8]}`},
+	}
+	plan, err := Plan(context.Background(), cands, st)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if got := decisionFor(t, plan, "needs #7 and #8").Verdict; got != collect.VerdictHold {
+		t.Errorf("verdict = %q; want hold (one dep still pending)", got)
+	}
+}
+
+func TestPlanEmptyCandidateList(t *testing.T) {
+	plan, err := Plan(context.Background(), nil, &fakeStore{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Ready) != 0 || len(plan.Decisions) != 0 {
+		t.Errorf("Ready=%d Decisions=%d; want 0/0", len(plan.Ready), len(plan.Decisions))
+	}
+}
+
 // An unknown verdict produced for a candidate routes to Other (not ready),
 // via the registry's safe needs-human fallback (原則2).
 func TestPlanUnknownVerdictNotDispatchable(t *testing.T) {

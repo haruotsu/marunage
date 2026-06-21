@@ -50,11 +50,14 @@ func DefaultRules() Rules {
 // notes JSON for the MVP). Parsing is best-effort — malformed notes yield the
 // zero value rather than an error — so one badly-formatted row cannot abort a
 // whole Plan; the missing fields simply leave their rules inert.
+// notes.lock_hint is intentionally absent here: the lock-conflict rule
+// resolves it by handing the raw notes string to dispatch.ResolveLockKey
+// (see planner.lockConflict), which owns that parse, so duplicating the
+// field would split one parse responsibility across two places.
 type candidateNotes struct {
 	DependsOn []int64 `json:"depends_on"`
 	Due       string  `json:"due"`
 	Cwd       string  `json:"cwd"`
-	LockHint  string  `json:"lock_hint"`
 }
 
 func parseNotes(notes string) candidateNotes {
