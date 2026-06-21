@@ -2,8 +2,12 @@ package manage
 
 import (
 	"context"
+	"hash/fnv"
+	"io"
 	"math"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/haruotsu/marunage/internal/collect"
 )
@@ -50,6 +54,71 @@ func WithLLMScorer(s LLMScorer) Option {
 			p.scorer = s
 		}
 	}
+}
+
+// WithLLMBatchSize sets how many ready candidates go in one scorer call
+// (redesign §9.1 batch evaluation: avoid N+1). 0 (the default) sends every
+// uncached candidate in a single call. A positive n chunks them into calls of
+// at most n, bounded by WithLLMMaxCalls.
+func WithLLMBatchSize(n int) Option { return func(p *planner) { p.batchSize = n } }
+
+// WithLLMMaxCalls caps the number of scorer invocations per Plan run (redesign
+// §9.1: 1ループあたりの LLM 呼び出し上限 — runaway protection). Candidates beyond
+// the cap fall back to the deterministic stub. Defaults to 1, which — paired
+// with the default batch size — means exactly one LLM call per loop tick.
+func WithLLMMaxCalls(n int) Option { return func(p *planner) { p.maxCalls = n } }
+
+// WithLLMCache memoises LLM judgments across Plan runs so a candidate that
+// reappears on the next loop tick is not re-evaluated (redesign §9.1, minimal
+// cache). Absent, every run re-scores. NewMemoryScoreCache is the built-in.
+func WithLLMCache(c ScoreCache) Option { return func(p *planner) { p.cache = c } }
+
+// ScoreCache memoises LLM judgments keyed by candidate content. The key folds
+// in the candidate's body/notes/etc., so an edited candidate re-scores rather
+// than serving a stale judgment.
+type ScoreCache interface {
+	Get(key string) (ScoreResult, bool)
+	Put(key string, r ScoreResult)
+}
+
+// MemoryScoreCache is the built-in in-process ScoreCache. It is guarded by a
+// mutex because the cache outlives a single Plan call and is shared across
+// loop ticks; the lock keeps `go test -race` clean even though ticks run
+// sequentially today.
+type MemoryScoreCache struct {
+	mu sync.Mutex
+	m  map[string]ScoreResult
+}
+
+// NewMemoryScoreCache returns an empty in-process score cache.
+func NewMemoryScoreCache() *MemoryScoreCache {
+	return &MemoryScoreCache{m: make(map[string]ScoreResult)}
+}
+
+func (c *MemoryScoreCache) Get(key string) (ScoreResult, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r, ok := c.m[key]
+	return r, ok
+}
+
+func (c *MemoryScoreCache) Put(key string, r ScoreResult) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[key] = r
+}
+
+// scoreCacheKey folds the candidate's identity and content into a stable key.
+// Including the mutable fields (title/body/notes/priority) — not just
+// (source, external_id) — means a candidate whose content changed re-scores
+// instead of serving a stale judgment.
+func scoreCacheKey(c collect.Candidate) string {
+	h := fnv.New64a()
+	for _, field := range []string{c.Source, c.ExternalID, c.Title, c.Body, c.Notes, c.Priority} {
+		_, _ = io.WriteString(h, field)
+		_, _ = h.Write([]byte{0})
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // scoreReady fills in the Score of every ready candidate, and may demote some
@@ -120,20 +189,61 @@ func (p *planner) llmScore(ctx context.Context, cands []collect.Candidate) []*Sc
 	if len(cands) == 0 {
 		return out
 	}
-	items := make([]ScoreItem, len(cands))
+
+	// Resolve cache hits first; only the misses cost an LLM call.
+	pending := make([]int, 0, len(cands))
 	for i, c := range cands {
-		items[i] = ScoreItem{Candidate: c}
+		if p.cache != nil {
+			if r, ok := p.cache.Get(scoreCacheKey(c)); ok {
+				rr := r
+				out[i] = &rr
+				continue
+			}
+		}
+		pending = append(pending, i)
 	}
-	results, err := p.scorer.Score(ctx, items)
-	if err != nil || len(results) != len(items) {
+	if len(pending) == 0 {
 		return out
 	}
-	for i := range results {
-		if !validScore(results[i]) {
-			continue
+
+	batch := p.batchSize
+	if batch <= 0 {
+		batch = len(pending) // 0 means "everything in one call"
+	}
+	maxCalls := p.maxCalls
+	if maxCalls <= 0 {
+		maxCalls = 1
+	}
+
+	calls := 0
+	for start := 0; start < len(pending); start += batch {
+		if calls >= maxCalls {
+			break // cost guard: the rest fall back to the stub
 		}
-		r := results[i]
-		out[i] = &r
+		end := start + batch
+		if end > len(pending) {
+			end = len(pending)
+		}
+		idxs := pending[start:end]
+		items := make([]ScoreItem, len(idxs))
+		for j, idx := range idxs {
+			items[j] = ScoreItem{Candidate: cands[idx]}
+		}
+		calls++
+		results, err := p.scorer.Score(ctx, items)
+		if err != nil || len(results) != len(items) {
+			continue // these stay nil → stub
+		}
+		for j, idx := range idxs {
+			if !validScore(results[j]) {
+				continue
+			}
+			r := results[j]
+			out[idx] = &r
+			if p.cache != nil {
+				p.cache.Put(scoreCacheKey(cands[idx]), r)
+			}
+		}
 	}
 	return out
 }

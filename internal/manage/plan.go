@@ -118,6 +118,12 @@ type planner struct {
 	// deterministic stub scorer runs instead, which is what the off switch
 	// (llm_scoring=false) relies on for byte-identical PR-R03 behaviour.
 	scorer LLMScorer
+	// batchSize / maxCalls / cache are the LLM cost controls (redesign §9.1):
+	// candidates per call (0 = all), the per-run call cap, and a cross-tick
+	// memo. They are inert when scorer is nil.
+	batchSize int
+	maxCalls  int
+	cache     ScoreCache
 }
 
 // dueBoost is the score added to a ready candidate whose deadline falls inside
@@ -142,6 +148,7 @@ func Plan(ctx context.Context, candidates []collect.Candidate, st Store, opts ..
 		rules:    DefaultRules(),
 		registry: DefaultRegistry(),
 		now:      time.Now,
+		maxCalls: 1,
 	}
 	for _, opt := range opts {
 		opt(p)
