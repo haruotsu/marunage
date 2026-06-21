@@ -121,6 +121,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("resolve core.default_cwd %q: %w", cfg.Core.DefaultCwd, err)
 	}
+	cwdStrategy, ghqRoot := cwdResolution(cfg)
 
 	disp, err := dispatch.New(
 		dispatch.WithStore(repo),
@@ -130,6 +131,8 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(expandedCwdPrefixes),
 		dispatch.WithDefaultCwd(defaultCwd),
+		dispatch.WithCwdStrategy(cwdStrategy),
+		dispatch.WithGhqRoot(ghqRoot),
 		dispatch.WithAuditor(auditor),
 		dispatch.WithWorkspaceDirs(dirs),
 		dispatch.WithPermissionMatcher(matcher),

@@ -122,6 +122,16 @@ type ExecutionConfig struct {
 	// PR-R07+. Kept here (rather than a new [executor] section) because it
 	// belongs with the other execution knobs the dispatcher already reads.
 	Executor string `toml:"executor"`
+	// CwdStrategy selects how the dispatcher picks a task's working
+	// directory when the task does not carry its own cwd: "fixed" always
+	// uses default_cwd; "ghq" first maps a repo-bound task (e.g. a GitHub
+	// issue, identified by its external_url) onto its local ghq clone and
+	// falls back to default_cwd when that repo is not cloned. Default "ghq".
+	CwdStrategy string `toml:"cwd_strategy"`
+	// GhqRoot is the ghq clone root cwd_strategy="ghq" looks repos up under
+	// (<GhqRoot>/github.com/<owner>/<repo>). Empty means "resolve via
+	// `ghq root` at startup".
+	GhqRoot string `toml:"ghq_root"`
 }
 
 // ManageConfig drives the management layer (internal/manage, redesign §3/§6):
@@ -205,6 +215,7 @@ var (
 	allowedOnUnknownPermissions = []string{"escalate", "fail", "retry"}
 	allowedLogLevels            = []string{"debug", "info", "warn", "error"}
 	allowedExecutors            = []string{"cmux", "tmux", "herdr", "local", "docker", "ssh"}
+	allowedCwdStrategies        = []string{"fixed", "ghq"}
 )
 
 // IsValidOnUnknownPermission reports whether s is a recognised value
@@ -278,7 +289,8 @@ func Default() Config {
 				"^repo:.*":  "git-repo",
 				"^slack:.*": "slack-channel",
 			},
-			Executor: "cmux",
+			Executor:    "cmux",
+			CwdStrategy: "ghq",
 		},
 		Reflection: ReflectionConfig{
 			Enabled:    false,
@@ -371,6 +383,12 @@ func (c Config) Validate() error {
 	}
 	if !contains(allowedExecutors, c.Execution.Executor) {
 		return fmt.Errorf("execution.executor: %q not in %v", c.Execution.Executor, allowedExecutors)
+	}
+	// An empty cwd_strategy is tolerated as "fixed" (back-compat with
+	// configs written before the key existed); only a non-empty unknown
+	// value is an error.
+	if c.Execution.CwdStrategy != "" && !contains(allowedCwdStrategies, c.Execution.CwdStrategy) {
+		return fmt.Errorf("execution.cwd_strategy: %q not in %v", c.Execution.CwdStrategy, allowedCwdStrategies)
 	}
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
