@@ -114,6 +114,10 @@ type planner struct {
 	defaultCwd  string
 	lockKeys    map[string]string
 	now         func() time.Time
+	// scorer is the optional LLM scoring pass (PR-R06). nil means the
+	// deterministic stub scorer runs instead, which is what the off switch
+	// (llm_scoring=false) relies on for byte-identical PR-R03 behaviour.
+	scorer LLMScorer
 }
 
 // dueBoost is the score added to a ready candidate whose deadline falls inside
@@ -170,17 +174,29 @@ func Plan(ctx context.Context, candidates []collect.Candidate, st Store, opts ..
 		policy := p.registry.policyFor(verdict)
 		pc := PlannedCandidate{Candidate: c, Verdict: verdict, Status: policy.Status, Reason: reason}
 		if policy.Dispatchable {
-			pc.Score = p.score(c, n)
 			pc.Serialized = p.lockConflict(c, w)
 			readyIdx = append(readyIdx, len(decisions))
 		}
 		decisions = append(decisions, pc)
 	}
 
-	rankReady(decisions, readyIdx)
+	// Scoring pass: the deterministic stub (no scorer) or the LLM (PR-R06).
+	// It assigns each ready candidate's Score and may demote some to defer.
+	p.scoreReady(ctx, decisions, readyIdx)
 
-	ready := make([]PlannedCandidate, 0, len(readyIdx))
+	// Rebuild the ready set: a defer demotion in the scoring pass removed some
+	// rows, so re-resolve dispatchability from the (possibly updated) verdict.
+	finalReady := make([]int, 0, len(readyIdx))
 	for _, i := range readyIdx {
+		if p.registry.policyFor(decisions[i].Verdict).Dispatchable {
+			finalReady = append(finalReady, i)
+		}
+	}
+
+	rankReady(decisions, finalReady)
+
+	ready := make([]PlannedCandidate, 0, len(finalReady))
+	for _, i := range finalReady {
 		ready = append(ready, decisions[i])
 	}
 	return ReadyPlan{Ready: ready, Decisions: decisions}, nil
