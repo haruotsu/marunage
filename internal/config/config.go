@@ -10,6 +10,8 @@ package config
 import (
 	"fmt"
 	"time"
+
+	"github.com/haruotsu/marunage/internal/store"
 )
 
 // Config is the typed view of ~/.marunage/config.toml. The struct mirrors
@@ -24,6 +26,7 @@ type Config struct {
 	Journal    JournalConfig    `toml:"journal"`
 	Notify     NotifyConfig     `toml:"notify"`
 	Web        WebConfig        `toml:"web"`
+	Manage     ManageConfig     `toml:"manage"`
 }
 
 type CoreConfig struct {
@@ -104,6 +107,54 @@ type ExecutionConfig struct {
 	// docs/requirement.md PR-44 ("started_at + 24h 超の running を警告").
 	ReaperStuckThreshold string            `toml:"reaper_stuck_threshold"`
 	LockKeys             map[string]string `toml:"lock_keys"`
+	// Executor selects the execution-layer backend (redesign §4 / §6). cmux
+	// is the only backend wired today; tmux / local / docker / ssh land in
+	// PR-R07+. Kept here (rather than a new [executor] section) because it
+	// belongs with the other execution knobs the dispatcher already reads.
+	Executor string `toml:"executor"`
+}
+
+// ManageConfig drives the management layer (internal/manage, redesign §3/§6):
+// the second gate that decides, for tasks already confirmed as ours, whether
+// to dispatch now / hold / defer / escalate / drop. Inert until PR-R05 wires
+// the layer in; PR-R04 only lands the schema so config can load/validate it.
+type ManageConfig struct {
+	// Enabled turns the management layer on. When false the dispatcher falls
+	// back to the legacy priority sort (decide-as-sort).
+	Enabled bool `toml:"enabled"`
+	// LLMScoring enables the LLM ordering/defer pass on top of the
+	// deterministic rules. When false only the rules run.
+	LLMScoring bool              `toml:"llm_scoring"`
+	Rules      ManageRulesConfig `toml:"rules"`
+	// Verdicts maps each verdict label to its DB status + dispatch behaviour
+	// (原則1: verdict 語彙と status 語彙を分離). Adding a verdict is a one-line
+	// config change, never a migration. Unknown verdicts fall back to a safe
+	// policy in the management layer (原則2), so this map need not be
+	// exhaustive.
+	Verdicts map[string]VerdictPolicy `toml:"verdicts"`
+}
+
+// ManageRulesConfig toggles the deterministic rule-engine cut-offs (redesign
+// §3.2). Each rule is config-driven so the rule set can grow without code
+// changes.
+type ManageRulesConfig struct {
+	BlockIfDepsIncomplete bool `toml:"block_if_deps_incomplete"`
+	EscalateIfBodyEmpty   bool `toml:"escalate_if_body_empty"`
+	DropIfCwdViolation    bool `toml:"drop_if_cwd_violation"`
+	// BoostIfDueWithin raises a candidate's priority when notes.due falls
+	// within this window. Empty disables the boost; otherwise it must parse
+	// as a Go duration (parity with the other duration knobs).
+	BoostIfDueWithin string `toml:"boost_if_due_within"`
+}
+
+// VerdictPolicy is the per-verdict mapping the management layer applies
+// (redesign §3.3 原則2). Status is the DB status the verdict lands on,
+// Dispatchable gates whether the dispatcher may pick the row, and Notify
+// flags whether a human should be pinged.
+type VerdictPolicy struct {
+	Status       string `toml:"status"`
+	Dispatchable bool   `toml:"dispatchable"`
+	Notify       bool   `toml:"notify"`
 }
 
 type ReflectionConfig struct {
@@ -143,6 +194,7 @@ var (
 	allowedPermissionModes      = []string{"bypass", "default", "acceptEdits", "plan", "custom"}
 	allowedOnUnknownPermissions = []string{"escalate", "fail", "retry"}
 	allowedLogLevels            = []string{"debug", "info", "warn", "error"}
+	allowedExecutors            = []string{"cmux", "tmux", "local", "docker", "ssh"}
 )
 
 // IsValidOnUnknownPermission reports whether s is a recognised value
@@ -216,6 +268,7 @@ func Default() Config {
 				"^repo:.*":  "git-repo",
 				"^slack:.*": "slack-channel",
 			},
+			Executor: "cmux",
 		},
 		Reflection: ReflectionConfig{
 			Enabled:    false,
@@ -234,6 +287,23 @@ func Default() Config {
 		Web: WebConfig{
 			Bind: "127.0.0.1",
 			Port: 7777,
+		},
+		Manage: ManageConfig{
+			Enabled:    true,
+			LLMScoring: true,
+			Rules: ManageRulesConfig{
+				BlockIfDepsIncomplete: true,
+				EscalateIfBodyEmpty:   true,
+				DropIfCwdViolation:    true,
+				BoostIfDueWithin:      "24h",
+			},
+			Verdicts: map[string]VerdictPolicy{
+				"ready":       {Status: store.StatusPending, Dispatchable: true},
+				"hold":        {Status: store.StatusPending, Dispatchable: false},
+				"defer":       {Status: store.StatusPending, Dispatchable: false},
+				"needs_human": {Status: store.StatusWaitingHuman, Dispatchable: false, Notify: true},
+				"drop":        {Status: store.StatusSkipped, Dispatchable: false},
+			},
 		},
 	}
 }
@@ -289,6 +359,9 @@ func (c Config) Validate() error {
 	if _, err := time.ParseDuration(c.Execution.ReaperStuckThreshold); err != nil {
 		return fmt.Errorf("execution.reaper_stuck_threshold: %w", err)
 	}
+	if !contains(allowedExecutors, c.Execution.Executor) {
+		return fmt.Errorf("execution.executor: %q not in %v", c.Execution.Executor, allowedExecutors)
+	}
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)
 	}
@@ -328,6 +401,24 @@ func (c Config) Validate() error {
 	}
 	if c.Web.Port < 1 || c.Web.Port > 65535 {
 		return fmt.Errorf("web.port: must be in [1,65535] (got %d)", c.Web.Port)
+	}
+	if c.Manage.Rules.BoostIfDueWithin != "" {
+		if _, err := time.ParseDuration(c.Manage.Rules.BoostIfDueWithin); err != nil {
+			return fmt.Errorf("manage.rules.boost_if_due_within: %w", err)
+		}
+	}
+	// Each verdict must land on a real task status (原則1: keep verdict
+	// vocabulary free but pin its落とし先 to the stable status enum). Validating
+	// against store.ValidStatuses keeps config and the DB schema in lockstep —
+	// a typo'd status here would otherwise only surface when the management
+	// layer tried to write it.
+	for verdict, p := range c.Manage.Verdicts {
+		if p.Status == "" {
+			return fmt.Errorf("manage.verdicts.%s.status: must be a non-empty task status", verdict)
+		}
+		if _, ok := store.ValidStatuses[p.Status]; !ok {
+			return fmt.Errorf("manage.verdicts.%s.status: %q is not a valid task status", verdict, p.Status)
+		}
 	}
 	return nil
 }

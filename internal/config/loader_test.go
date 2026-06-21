@@ -85,6 +85,85 @@ on_failure = true
 	}
 }
 
+// TestLoadParsesManageSection pins that the redesign §6 [manage] block —
+// including the inline-table [manage.verdicts] mapping and execution.executor
+// — round-trips through the loader and passes validation.
+func TestLoadParsesManageSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `
+[execution]
+permission_mode = "bypass"
+claude_command = "claude"
+startup_timeout = 60
+on_unknown_permission = "escalate"
+human_wait_timeout = "30m"
+executor = "tmux"
+
+[manage]
+enabled = true
+llm_scoring = false
+
+[manage.rules]
+block_if_deps_incomplete = true
+escalate_if_body_empty = false
+drop_if_cwd_violation = true
+boost_if_due_within = "12h"
+
+[manage.verdicts]
+ready = { status = "pending", dispatchable = true }
+needs_human = { status = "waiting_human", dispatchable = false, notify = true }
+drop = { status = "skipped", dispatchable = false }
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v", err)
+	}
+	if c.Execution.Executor != "tmux" {
+		t.Errorf("Execution.Executor = %q; want tmux", c.Execution.Executor)
+	}
+	if c.Manage.LLMScoring {
+		t.Errorf("Manage.LLMScoring = true; want false (explicit override)")
+	}
+	if c.Manage.Rules.BoostIfDueWithin != "12h" {
+		t.Errorf("Manage.Rules.BoostIfDueWithin = %q; want 12h", c.Manage.Rules.BoostIfDueWithin)
+	}
+	if got := c.Manage.Verdicts["needs_human"]; got.Status != "waiting_human" || !got.Notify {
+		t.Errorf("Manage.Verdicts[needs_human] = %+v; want status=waiting_human notify=true", got)
+	}
+	if got := c.Manage.Verdicts["ready"]; got.Status != "pending" || !got.Dispatchable {
+		t.Errorf("Manage.Verdicts[ready] = %+v; want status=pending dispatchable=true", got)
+	}
+}
+
+// TestLoadRejectsInvalidExecutor pins that a bad execution.executor is caught
+// at load time, not deep inside the dispatcher.
+func TestLoadRejectsInvalidExecutor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `
+[execution]
+permission_mode = "bypass"
+claude_command = "claude"
+startup_timeout = 60
+on_unknown_permission = "escalate"
+human_wait_timeout = "30m"
+executor = "podman"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load = nil; want validation error")
+	}
+	if !strings.Contains(err.Error(), "execution.executor") {
+		t.Errorf("Load err = %v; want mention of execution.executor", err)
+	}
+}
+
 func TestLoadRejectsInvalidSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	body := `
