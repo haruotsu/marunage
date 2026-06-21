@@ -215,8 +215,8 @@ func TestGWSListBuildsGetCommandPerMessage(t *testing.T) {
 	if got["id"] != "msg1" {
 		t.Errorf("id = %v, want msg1", got["id"])
 	}
-	if got["format"] != "metadata" {
-		t.Errorf("format = %v, want metadata", got["format"])
+	if got["format"] != "full" {
+		t.Errorf("format = %v, want full (metadata omits the snippet → empty Body)", got["format"])
 	}
 }
 

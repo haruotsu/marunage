@@ -121,11 +121,16 @@ func (c *GWSClient) List(ctx context.Context, query string) ([]Message, error) {
 
 	msgs := make([]Message, 0, len(listResp.Messages))
 	for _, stub := range listResp.Messages {
+		// "full" (not "metadata") because gws returns an empty snippet for the
+		// metadata format; without the snippet every Candidate.Body is empty,
+		// so the manage layer escalates every email to needs-human. full
+		// yields the Subject/From headers AND the snippet mapped to Body.
+		// toMessage only reads headers + snippet, so the larger payload is
+		// parsed but not retained.
 		getParams := map[string]any{
-			"userId":          "me",
-			"id":              stub.ID,
-			"format":          "metadata",
-			"metadataHeaders": []string{"Subject", "From"},
+			"userId": "me",
+			"id":     stub.ID,
+			"format": "full",
 		}
 		getJSON, err := json.Marshal(getParams)
 		if err != nil {
