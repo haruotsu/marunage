@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -156,15 +157,73 @@ func TestStartReturnsZeroSessionWhenCreateFails(t *testing.T) {
 }
 
 func TestStartReturnsPopulatedSessionWhenReadinessFails(t *testing.T) {
-	fr := &fakeRunner{newSessionOut: "marunage-1\n", capture: []string{"booting..."}}
+	fr := &fakeRunner{capture: []string{"booting..."}}
 	e := exectmux.New(fastOpts(fr)...)
 
-	sess, err := e.Start(context.Background(), exec.SessionSpec{Cwd: "/tmp", Command: "c", Name: "n"})
-	if err == nil {
-		t.Fatal("Start err = nil; want readiness failure")
+	sess, err := e.Start(context.Background(), exec.SessionSpec{Cwd: "/tmp", Command: "c", Name: "task-n"})
+	if !errors.Is(err, exectmux.ErrStartupTimeout) {
+		t.Fatalf("Start err = %v; want ErrStartupTimeout", err)
 	}
-	if sess.ID != "marunage-1" {
-		t.Errorf("session ID = %q; want marunage-1 (created session, preserved for reaper)", sess.ID)
+	// The created session must be preserved (non-empty, the name we asked tmux
+	// to create) so the dispatcher fails the row instead of leaking on retry.
+	if sess.ID != "marunage-task-n" {
+		t.Errorf("session ID = %q; want marunage-task-n (created session, preserved for reaper)", sess.ID)
+	}
+}
+
+func TestStartHonoursContextCancelDuringReadiness(t *testing.T) {
+	fr := &fakeRunner{capture: []string{"booting..."}}
+	e := exectmux.New(fastOpts(fr)...)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := e.Start(ctx, exec.SessionSpec{Cwd: "/tmp", Command: "c", Name: "n"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Start err = %v; want context.Canceled", err)
+	}
+}
+
+func TestStartMapsBinaryNotFound(t *testing.T) {
+	fr := &fakeRunner{newSessionErr: osexec.ErrNotFound}
+	e := exectmux.New(fastOpts(fr)...)
+	_, err := e.Start(context.Background(), exec.SessionSpec{Cwd: "/tmp", Command: "c", Name: "n"})
+	if !errors.Is(err, exectmux.ErrTmuxNotFound) {
+		t.Errorf("Start err = %v; want ErrTmuxNotFound", err)
+	}
+}
+
+func TestStartForwardsEnvInSortedOrder(t *testing.T) {
+	fr := &fakeRunner{newSessionOut: "marunage-x\n", capture: []string{readyPane}}
+	e := exectmux.New(fastOpts(fr)...)
+	_, err := e.Start(context.Background(), exec.SessionSpec{
+		Cwd: "/tmp", Command: "claude", Name: "x",
+		Env: map[string]string{"ZED": "1", "ABC": "2"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	joined := strings.Join(fr.callsFor("new-session")[0].args, " ")
+	iABC, iZED := strings.Index(joined, "ABC=2"), strings.Index(joined, "ZED=1")
+	if iABC < 0 || iZED < 0 {
+		t.Fatalf("new-session args %q missing forwarded env", joined)
+	}
+	if iABC > iZED {
+		t.Errorf("env not sorted in %q; ABC should precede ZED", joined)
+	}
+}
+
+func TestStartRejectsInvalidEnvKey(t *testing.T) {
+	fr := &fakeRunner{newSessionOut: "marunage-x\n", capture: []string{readyPane}}
+	e := exectmux.New(fastOpts(fr)...)
+	_, err := e.Start(context.Background(), exec.SessionSpec{
+		Cwd: "/tmp", Command: "claude", Name: "x",
+		Env: map[string]string{"BAD=KEY": "x"},
+	})
+	if !errors.Is(err, exectmux.ErrInvalidEnvKey) {
+		t.Errorf("Start err = %v; want ErrInvalidEnvKey", err)
+	}
+	if len(fr.callsFor("new-session")) != 0 {
+		t.Error("new-session called despite invalid env key; want rejection before spawn")
 	}
 }
 
@@ -199,6 +258,15 @@ func TestSendRejectsEmptySession(t *testing.T) {
 	}
 	if len(fr.callsFor("send-keys")) != 0 {
 		t.Error("send-keys called for empty session; want none")
+	}
+}
+
+func TestSendMapsBinaryNotFound(t *testing.T) {
+	fr := &fakeRunner{sendErr: osexec.ErrNotFound}
+	e := exectmux.New(exectmux.WithRunner(fr))
+	err := e.Send(context.Background(), exec.NewSession("marunage-1", nil), "hi")
+	if !errors.Is(err, exectmux.ErrTmuxNotFound) {
+		t.Errorf("Send err = %v; want ErrTmuxNotFound", err)
 	}
 }
 

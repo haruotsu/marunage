@@ -21,8 +21,10 @@ import (
 // one scenario; the fakes behind them keep the suite from touching a real
 // cmux or tmux.
 type Harness interface {
-	// Healthy returns an Executor whose Start succeeds and whose session
-	// becomes ready and accepts Send.
+	// Healthy returns an Executor whose Start succeeds, becomes ready, and
+	// accepts a subsequent Send without error. (The suite asserts Send does
+	// not error after a ready Start; whether a backend gates Send on
+	// readiness is backend-specific and pinned by each backend's own tests.)
 	Healthy(t *testing.T) exec.Executor
 
 	// CreateFails returns an Executor whose Start fails before creating any

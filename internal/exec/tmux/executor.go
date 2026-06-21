@@ -77,6 +77,17 @@ var ErrStartupTimeout = errors.New("exec/tmux: session did not become ready befo
 // empty ID — a sign a previous Start failed and its zero Session was reused.
 var ErrInvalidSession = errors.New("exec/tmux: session id is empty")
 
+// ErrInvalidEnvKey is returned by Start when spec.Env carries a key that is
+// not a valid shell identifier. Rejecting it keeps a malformed key from
+// smuggling an extra `-e`/flag token into the tmux command line.
+var ErrInvalidEnvKey = errors.New("exec/tmux: invalid environment variable name")
+
+// envKeyPattern is the POSIX shell-identifier shape every forwarded env key
+// must match before it reaches `tmux new-session -e`.
+var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validEnvKey(k string) bool { return envKeyPattern.MatchString(k) }
+
 // New builds an Executor wired to the production ExecRunner and the default
 // cadence/timeout knobs, then applies opts.
 func New(opts ...Option) *Executor {
@@ -105,20 +116,28 @@ func New(opts ...Option) *Executor {
 // was created.
 func (e *Executor) Start(ctx context.Context, spec exec.SessionSpec) (exec.Session, error) {
 	name := sessionName(spec.Name)
-	args := []string{"new-session", "-d", "-P", "-F", "#{session_name}", "-s", name}
+	args := []string{"new-session", "-d", "-s", name}
 	if spec.Cwd != "" {
 		args = append(args, "-c", spec.Cwd)
 	}
 	// tmux honours one -e KEY=VALUE per extra environment entry (tmux ≥ 3.0).
 	// Sorted so the emitted command is deterministic for tests and logs. This
 	// is a capability cmux lacks — proof the abstraction does not flatten a
-	// backend down to cmux's feature set.
+	// backend down to cmux's feature set. Keys are validated so a malformed
+	// entry cannot smuggle an extra `-e`/flag arg into the command.
 	for _, k := range sortedKeys(spec.Env) {
+		if !validEnvKey(k) {
+			return exec.Session{}, fmt.Errorf("%w: %q", ErrInvalidEnvKey, k)
+		}
 		args = append(args, "-e", k+"="+spec.Env[k])
 	}
+	// spec.Command and spec.Env values must be trusted-internal: tmux runs the
+	// command through the user's shell and exports the env into the session.
+	// They are passed as os/exec args (no shell at the spawn layer), so this is
+	// the dispatcher's contract, not an injection sink here.
 	args = append(args, spec.Command)
 
-	stdout, stderr, err := e.runner.Run(ctx, "tmux", args...)
+	_, stderr, err := e.runner.Run(ctx, "tmux", args...)
 	if err != nil {
 		if isBinaryNotFound(err) {
 			return exec.Session{}, ErrTmuxNotFound
@@ -127,13 +146,9 @@ func (e *Executor) Start(ctx context.Context, spec exec.SessionSpec) (exec.Sessi
 		return exec.Session{}, fmt.Errorf("tmux new-session: %w (stderr=%s)", err, strings.TrimSpace(string(stderr)))
 	}
 
-	id := strings.TrimSpace(string(stdout))
-	if id == "" {
-		// tmux without -P (or a stub) may print nothing; fall back to the
-		// name we asked it to create so the Session is never blank.
-		id = name
-	}
-	session := exec.NewSession(id, Handle{})
+	// tmux creates the session under exactly the -s name (or fails the run on a
+	// duplicate, handled above), so the requested name is the authoritative id.
+	session := exec.NewSession(name, Handle{})
 
 	if err := e.waitReady(ctx, session); err != nil {
 		// Created but not ready: return the populated Session so the caller
@@ -143,9 +158,9 @@ func (e *Executor) Start(ctx context.Context, spec exec.SessionSpec) (exec.Sessi
 	return session, nil
 }
 
-// readyBanner matches Claude's startup banner; the "❯" prompt alone is not
-// enough because the shell prints "❯ claude" before Claude itself boots.
-var readyBanner = regexp.MustCompile(`Claude Code v`)
+// readyBanner is Claude's startup banner; the "❯" prompt alone is not enough
+// because the shell prints "❯ claude" before Claude itself boots.
+const readyBanner = "Claude Code v"
 
 // waitReady polls capture-pane until Claude's prompt is visible, the startup
 // timeout elapses (-> ErrStartupTimeout), or ctx is cancelled. It probes
@@ -157,7 +172,7 @@ func (e *Executor) waitReady(ctx context.Context, s exec.Session) error {
 	defer ticker.Stop()
 	for {
 		out, err := e.capturePane(ctx, s)
-		if err == nil && readyBanner.MatchString(out) && strings.Contains(out, "❯") {
+		if err == nil && strings.Contains(out, readyBanner) && strings.Contains(out, "❯") {
 			return nil
 		}
 		if !time.Now().Before(deadline) {
@@ -204,8 +219,10 @@ func (e *Executor) sendErr(what string, stderr []byte, err error) error {
 }
 
 // Attach returns the command a human runs to take over the session. tmux has
-// no URI scheme, so the runnable `tmux attach -t <id>` is the most useful
-// "deeplink" (§4.2 table: tmux = pane attach).
+// no URI scheme, so unlike cmux's deeplink this is the runnable
+// `tmux attach -t <id>` command string (§4.2 table: tmux = pane attach). A
+// consumer that renders the Attachable result must treat it as opaque text,
+// not assume a clickable URI.
 func (e *Executor) Attach(_ context.Context, s exec.Session) (string, error) {
 	if s.ID == "" {
 		return "", ErrInvalidSession
@@ -234,11 +251,6 @@ func (e *Executor) capturePane(ctx context.Context, s exec.Session) (string, err
 	return strings.TrimSpace(string(stdout)), nil
 }
 
-// sessionLinePattern matches a "#{session_name}" line emitted by
-// `tmux list-sessions -F '#{session_name}'`. tmux session names are a single
-// token (no whitespace), so a non-blank trimmed line is a name.
-var sessionLinePattern = regexp.MustCompile(`\S+`)
-
 // ListSessions enumerates the sessions tmux currently considers live. When no
 // tmux server is running tmux exits non-zero with "no server running"; that
 // is reported as an empty live set rather than an error so the reaper does
@@ -255,8 +267,9 @@ func (e *Executor) ListSessions(ctx context.Context) ([]exec.Session, error) {
 	}
 	out := make([]exec.Session, 0)
 	for _, line := range strings.Split(string(stdout), "\n") {
-		name := sessionLinePattern.FindString(line)
-		if name != "" {
+		// tmux session names carry no whitespace, so a trimmed non-blank line
+		// is exactly one session name.
+		if name := strings.TrimSpace(line); name != "" {
 			out = append(out, exec.NewSession(name, Handle{}))
 		}
 	}
