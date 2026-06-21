@@ -108,6 +108,10 @@ func New(client cmuxclient.Client, opts ...Option) *Executor {
 // workspace reference and mark the row failed (rather than retrying and
 // leaking a second workspace).
 func (e *Executor) Start(ctx context.Context, spec exec.SessionSpec) (exec.Session, error) {
+	// spec.Env is intentionally not forwarded: the cmux CLI has no
+	// per-workspace environment knob, so the session inherits the launcher's
+	// environment unchanged (the pre-refactor behaviour). A backend that can
+	// honour Env (local process, docker) reads it in its own Start.
 	ws, err := e.client.NewWorkspace(ctx, cmuxclient.NewWorkspaceOptions{
 		CWD:     spec.Cwd,
 		Command: spec.Command,

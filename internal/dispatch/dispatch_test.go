@@ -267,8 +267,12 @@ func TestRunClaimsRowForDurationOfStartAndSend(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if wsAtStart == "" {
-		t.Errorf("ws was empty during Start; the claim sentinel must protect the row before the readiness wait")
+	// The claim sentinel value "__dispatching__" is unexported in the
+	// dispatch package; assert the known literal so a refactor that pulls
+	// SetWorkspace(realID) ahead of Start (and thus exposes the real ws
+	// during the readiness wait) is caught as a regression.
+	if wsAtStart != "__dispatching__" {
+		t.Errorf("ws during Start = %q; want the __dispatching__ claim sentinel (the real ws must not be committed until after Start)", wsAtStart)
 	}
 	if wsAtSend == "" {
 		t.Errorf("ws was empty at Send time; SetWorkspace must commit before Send")

@@ -142,8 +142,11 @@ func TestStartReturnsPopulatedSessionWhenReadinessFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start err = nil; want readiness failure")
 	}
-	if sess.ID == "" {
-		t.Error("session ID empty; want populated so caller preserves the ws and fails the row")
+	// Must be the real workspace id NewWorkspace minted, not just any
+	// non-empty string: the dispatcher persists this so the reaper can
+	// reclaim the leaked session.
+	if sess.ID != "workspace:1" {
+		t.Errorf("session ID = %q; want workspace:1 (the created ws, preserved for reaper)", sess.ID)
 	}
 }
 
@@ -239,6 +242,47 @@ func TestAwaitExitWithoutSentinelDir(t *testing.T) {
 	}
 }
 
+// TestAwaitExitRejectsSymlink pins the O_NOFOLLOW defence: a sentinel that
+// is a symlink (a prompt-injected Claude swapping the file) must surface an
+// error rather than following the link off the workspace dir.
+func TestAwaitExitRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real_target")
+	if err := os.WriteFile(target, []byte("0\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, ".exit_code")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	e := execcmux.New(&fakeClient{}, execcmux.WithPollInterval(time.Millisecond))
+
+	_, err := e.AwaitExit(context.Background(), exec.NewSession("workspace:1", execcmux.Handle{SentinelDir: dir}))
+	if err == nil {
+		t.Fatal("AwaitExit err = nil; want a symlink-refused error")
+	}
+	if errors.Is(err, execcmux.ErrAwaitTimeout) || errors.Is(err, execcmux.ErrNoSentinelDir) {
+		t.Errorf("err = %v; want a symlink rejection, not timeout/no-dir", err)
+	}
+}
+
+// TestAwaitExitRejectsUnparseableSentinel pins that a non-numeric sentinel
+// body is a hard error (not silently treated as exit 0).
+func TestAwaitExitRejectsUnparseableSentinel(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".exit_code"), []byte("not-a-number"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	e := execcmux.New(&fakeClient{}, execcmux.WithPollInterval(time.Millisecond))
+
+	_, err := e.AwaitExit(context.Background(), exec.NewSession("workspace:1", execcmux.Handle{SentinelDir: dir}))
+	if err == nil {
+		t.Fatal("AwaitExit err = nil; want a parse error")
+	}
+	if errors.Is(err, execcmux.ErrAwaitTimeout) {
+		t.Errorf("err = %v; want a parse error, not timeout", err)
+	}
+}
+
 func TestStreamEmitsOnChange(t *testing.T) {
 	fc := &fakeClient{readOutputs: []string{"line1", "line1", "line1\nline2"}}
 	e := execcmux.New(fc, execcmux.WithPollInterval(time.Millisecond))
@@ -257,5 +301,53 @@ func TestStreamEmitsOnChange(t *testing.T) {
 	second := <-ch
 	if string(second) != "line1\nline2" {
 		t.Errorf("second chunk = %q; want line1\\nline2", second)
+	}
+}
+
+// TestStreamClosesOnCancel pins that cancelling ctx terminates the polling
+// goroutine and closes the channel (no leak).
+func TestStreamClosesOnCancel(t *testing.T) {
+	fc := &fakeClient{readOutputs: []string{"x"}}
+	e := execcmux.New(fc, execcmux.WithPollInterval(time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := e.Stream(ctx, exec.NewSession("workspace:1", nil))
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	cancel()
+
+	// Drain until the channel is closed; a leaked goroutine would never
+	// close it and the test would hang (caught by the test timeout).
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return // closed — success
+			}
+		case <-deadline:
+			t.Fatal("channel not closed after cancel; Stream goroutine leaked")
+		}
+	}
+}
+
+// TestStreamClosesOnReadError pins that a backend read failure (workspace
+// gone) terminates the stream rather than spinning.
+func TestStreamClosesOnReadError(t *testing.T) {
+	fc := &fakeClient{readErr: errors.New("workspace gone")}
+	e := execcmux.New(fc, execcmux.WithPollInterval(time.Millisecond))
+
+	ch, err := e.Stream(context.Background(), exec.NewSession("workspace:1", nil))
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Error("got a chunk; want the channel closed on read error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("channel not closed after read error")
 	}
 }
