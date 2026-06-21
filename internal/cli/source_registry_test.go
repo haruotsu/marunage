@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -24,6 +25,35 @@ func TestRegisterBuiltin_Markdown(t *testing.T) {
 	}
 	if _, err := r.Get("markdown"); err != nil {
 		t.Fatalf("expected markdown plugin to be registered, got %v", err)
+	}
+}
+
+// The loop passes no explicit files, so markdown falls back to the configured
+// [discovery.markdown].files — without this the daemon's markdown source would
+// silently observe nothing.
+func TestRegisterBuiltin_MarkdownFilesFromConfig(t *testing.T) {
+	t.Parallel()
+	tmpFile := filepath.Join(t.TempDir(), "todo.md")
+	if err := os.WriteFile(tmpFile, []byte("- [ ] ship it\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{}
+	cfg.Discovery.Markdown.Files = []string{tmpFile}
+
+	r := source.NewRegistry()
+	if err := registerBuiltin(r, "markdown", cfg, nil, false); err != nil {
+		t.Fatalf("registerBuiltin: %v", err)
+	}
+	p, err := r.Get("markdown")
+	if err != nil {
+		t.Fatalf("Get markdown: %v", err)
+	}
+	tasks, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Title != "ship it" {
+		t.Fatalf("markdown read %+v; want the configured file's single item", tasks)
 	}
 }
 

@@ -37,6 +37,11 @@ var knownBuiltinNames = []string{
 func registerBuiltin(r *source.Registry, name string, cfg config.Config, files []string, lenient bool) error {
 	switch name {
 	case "markdown":
+		// Explicit files (the `discover --file` flag) win; the long-running
+		// loop has no flags, so it falls back to [discovery.markdown].files.
+		if len(files) == 0 {
+			files = cfg.Discovery.Markdown.Files
+		}
 		var opts []markdown.Option
 		if len(files) > 0 {
 			opts = append(opts, markdown.WithFiles(files...))
