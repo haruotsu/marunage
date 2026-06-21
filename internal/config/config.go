@@ -72,9 +72,18 @@ type DiscoveryGmail struct {
 }
 
 type DiscoverySlack struct {
-	MCPServer       string                     `toml:"mcp_server"`
-	IncludeDM       bool                       `toml:"include_dm"`
-	IncludeMentions bool                       `toml:"include_mentions"`
+	MCPServer       string `toml:"mcp_server"`
+	IncludeDM       bool   `toml:"include_dm"`
+	IncludeMentions bool   `toml:"include_mentions"`
+	// Transport selects how Slack discovery talks to Slack: "webapi" uses the
+	// Slack Web API with MARUNAGE_SLACK_TOKEN; "command" runs the agent-agnostic
+	// adapter command below; "auto" (or empty) picks command when one is set,
+	// else the token. The two coexist so an operator can use either.
+	Transport string `toml:"transport"`
+	// Command is the argv of the generic command adapter (Transport="command").
+	// It may bridge to the Slack MCP server, an agent, or a custom script — see
+	// internal/source/slack.CommandClient for the stdin/stdout contract.
+	Command         []string                   `toml:"command"`
 	ReactionTrigger SlackReactionTriggerConfig `toml:"reaction_trigger"`
 }
 
@@ -216,6 +225,7 @@ var (
 	allowedLogLevels            = []string{"debug", "info", "warn", "error"}
 	allowedExecutors            = []string{"cmux", "tmux", "herdr", "local", "docker", "ssh"}
 	allowedCwdStrategies        = []string{"fixed", "ghq"}
+	allowedSlackTransports      = []string{"webapi", "command", "auto"}
 )
 
 // IsValidOnUnknownPermission reports whether s is a recognised value
@@ -389,6 +399,9 @@ func (c Config) Validate() error {
 	// value is an error.
 	if c.Execution.CwdStrategy != "" && !contains(allowedCwdStrategies, c.Execution.CwdStrategy) {
 		return fmt.Errorf("execution.cwd_strategy: %q not in %v", c.Execution.CwdStrategy, allowedCwdStrategies)
+	}
+	if c.Discovery.Slack.Transport != "" && !contains(allowedSlackTransports, c.Discovery.Slack.Transport) {
+		return fmt.Errorf("discovery.slack.transport: %q not in %v", c.Discovery.Slack.Transport, allowedSlackTransports)
 	}
 	if _, err := time.ParseDuration(c.Discovery.Interval); err != nil {
 		return fmt.Errorf("discovery.interval: %w", err)

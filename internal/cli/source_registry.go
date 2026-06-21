@@ -54,6 +54,12 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			slack.WithIncludeMentions(cfg.Discovery.Slack.IncludeMentions),
 			slack.WithIncludeDM(cfg.Discovery.Slack.IncludeDM),
 		}
+		// Transport selection (the two coexist): a configured command adapter
+		// wins unless transport is pinned to "webapi"; otherwise RegisterBuiltin
+		// auto-wires the Web API client from MARUNAGE_SLACK_TOKEN.
+		if len(cfg.Discovery.Slack.Command) > 0 && cfg.Discovery.Slack.Transport != "webapi" {
+			slackOpts = append(slackOpts, slack.WithClient(slack.NewCommandClient(cfg.Discovery.Slack.Command)))
+		}
 		if err := slack.RegisterBuiltin(r, slackOpts...); err != nil {
 			return fmt.Errorf("register slack: %w", err)
 		}
