@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,11 @@ import (
 	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/exec/local"
 )
+
+// procTestTimeout bounds the real-process tests' polling. SIGKILL is
+// effectively immediate, so this is generous slack for a loaded CI runner
+// rather than an expected wait.
+const procTestTimeout = 5 * time.Second
 
 // TestNotAttachable is the central proof of PR-R08: a capability-poor
 // backend still satisfies the core Executor contract, and a caller that
@@ -104,9 +110,11 @@ func TestAwaitExitCancelKillsProcessTree(t *testing.T) {
 
 	// Poll for the grandchild's death independently of AwaitExit returning:
 	// if only the sh parent is killed, the backgrounded sleep is orphaned and
-	// survives well past this deadline.
-	deadline := time.Now().Add(3 * time.Second)
-	for syscall.Kill(grandchild, 0) != syscall.ESRCH {
+	// survives well past this deadline. ESRCH means the pid is gone; signal 0
+	// probes existence without delivering anything. (A pid could in theory be
+	// reused within this tiny window, but on a test host that is negligible.)
+	deadline := time.Now().Add(procTestTimeout)
+	for !errors.Is(syscall.Kill(grandchild, 0), syscall.ESRCH) {
 		if time.Now().After(deadline) {
 			t.Fatalf("grandchild pid %d survived cancellation (process group not killed)", grandchild)
 		}
@@ -120,7 +128,7 @@ func TestAwaitExitCancelKillsProcessTree(t *testing.T) {
 
 func waitForPid(t *testing.T, pidFile string) int {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(procTestTimeout)
 	for {
 		data, err := os.ReadFile(pidFile)
 		if err == nil {
