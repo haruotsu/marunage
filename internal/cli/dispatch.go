@@ -12,6 +12,7 @@ import (
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
@@ -87,7 +88,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
+	executor := execcmux.New(cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe())))
 
 	// Open the audit log alongside the SQLite store so requirement.md
 	// invariant #2 "No silent execution" is honoured for every dispatch.
@@ -136,7 +137,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
-		dispatch.WithCmux(cm),
+		dispatch.WithExecutor(executor),
 		dispatch.WithBaseSkill(baseExecutionSkill),
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),

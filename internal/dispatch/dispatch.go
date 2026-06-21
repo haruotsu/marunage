@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/policy"
 	"github.com/haruotsu/marunage/internal/store"
@@ -129,11 +129,11 @@ type WorkspaceDirs interface {
 	Dir(taskID int64) string
 }
 
-// Dispatcher ties the cmux client + store repo together with the
+// Dispatcher ties the executor + store repo together with the
 // lock-key resolver and prompt builder.
 type Dispatcher struct {
 	store               Store
-	cmux                cmux.Client
+	executor            exec.Executor
 	now                 func() time.Time
 	baseSkill           string
 	sourceSkill         SourceSkillFunc
@@ -155,8 +155,9 @@ type Option func(*Dispatcher)
 // WithStore injects the tasks-table repository. Required.
 func WithStore(s Store) Option { return func(d *Dispatcher) { d.store = s } }
 
-// WithCmux injects the cmux client. Required.
-func WithCmux(c cmux.Client) Option { return func(d *Dispatcher) { d.cmux = c } }
+// WithExecutor injects the execution backend. Required. cmux is the
+// production backend (internal/exec/cmux); tests inject a fake Executor.
+func WithExecutor(e exec.Executor) Option { return func(d *Dispatcher) { d.executor = e } }
 
 // WithClock injects a deterministic clock for started_at writes.
 // Defaults to time.Now in production.
@@ -249,7 +250,7 @@ func WithAllowedCwdPrefixes(prefixes []string) Option {
 
 // WithDefaultCwd sets the fallback CWD used when a task's CWD field is
 // empty. An empty task CWD means "unset"; the dispatcher substitutes
-// defaultCwd so cmux.NewWorkspace always receives a non-empty path.
+// defaultCwd so the executor always receives a non-empty Cwd.
 func WithDefaultCwd(cwd string) Option {
 	return func(d *Dispatcher) { d.defaultCwd = cwd }
 }
@@ -266,9 +267,9 @@ var ErrInvalidConfig = errors.New("dispatch: missing required option")
 // ClaimWorkspace and SetWorkspace, and the row should be reset.
 const dispatchClaimSentinel = "__dispatching__"
 
-// New builds a Dispatcher. Required: WithStore, WithCmux, WithBaseSkill,
-// WithClaudeCommand. Returns ErrInvalidConfig naming the missing field
-// so a buggy CLI wiring fails loud at startup.
+// New builds a Dispatcher. Required: WithStore, WithExecutor,
+// WithBaseSkill, WithClaudeCommand. Returns ErrInvalidConfig naming the
+// missing field so a buggy CLI wiring fails loud at startup.
 func New(opts ...Option) (*Dispatcher, error) {
 	d := &Dispatcher{
 		now:         time.Now,
@@ -281,8 +282,8 @@ func New(opts ...Option) (*Dispatcher, error) {
 	if d.store == nil {
 		return nil, fmt.Errorf("%w: WithStore", ErrInvalidConfig)
 	}
-	if d.cmux == nil {
-		return nil, fmt.Errorf("%w: WithCmux", ErrInvalidConfig)
+	if d.executor == nil {
+		return nil, fmt.Errorf("%w: WithExecutor", ErrInvalidConfig)
 	}
 	if d.baseSkill == "" {
 		return nil, fmt.Errorf("%w: WithBaseSkill", ErrInvalidConfig)
@@ -518,7 +519,7 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 // cannot recover from; per-row failures are recorded onto the row.
 func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, error) {
 	// An empty task CWD means "unset"; substitute the configured default
-	// so cmux.NewWorkspace always receives a non-empty path.
+	// so the executor always receives a non-empty Cwd.
 	effectiveCwd := task.CWD
 	if effectiveCwd == "" {
 		effectiveCwd = d.defaultCwd
@@ -606,16 +607,23 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		return false, nil
 	}
 
-	ws, err := d.cmux.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
-		CWD:     effectiveCwd,
+	// Start launches the session and waits for it to become ready. The
+	// Executor contract returns a populated Session.ID even when readiness
+	// fails, so we can tell two cases apart: an empty ID means nothing was
+	// created (retryable — clear the claim and leave the row pending); a
+	// non-empty ID means a session leaked and the row must be failed (with
+	// the ws preserved) so the reaper can reclaim it rather than the
+	// dispatcher spawning a second session for the same task.
+	session, startErr := d.executor.Start(ctx, exec.SessionSpec{
+		Cwd:     effectiveCwd,
 		Command: d.claudeCommand,
 		Name:    workspaceName(task),
 	})
-	if err != nil {
-		// Clear the sentinel + audit so the row is retryable, and
-		// release any lock_key so siblings are not blocked.
+	if startErr != nil && session.ID == "" {
+		// Nothing created — clear the sentinel + audit so the row is
+		// retryable, and release any lock_key so siblings are not blocked.
 		d.recordAuditFail(task.ID,
-			fmt.Sprintf("dispatch: NewWorkspace failed: %v", err))
+			fmt.Sprintf("dispatch: Start failed: %v", startErr))
 		_ = d.store.SetWorkspace(ctx, task.ID, "")
 		if lockKey != "" {
 			_ = d.store.ReleaseLock(ctx, task.ID)
@@ -623,14 +631,14 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		return false, nil
 	}
 
-	// Replace the sentinel with the real ws ID. Order from here on is
+	// Replace the sentinel with the real session ID. Order from here on is
 	// critical: SetStartedAt BEFORE UpdateStatus(running) so the
 	// invariant "status=running implies started_at stamped" holds. PR-44
 	// reaper's 24h-stuck probe matches on running + started_at < now-24h;
 	// a row left running with started_at IS NULL would be invisible to
 	// the probe and silently leak.
-	if err := d.store.SetWorkspace(ctx, task.ID, ws.ID); err != nil {
-		return false, fmt.Errorf("dispatch: SetWorkspace id=%d ws=%s: %w", task.ID, ws.ID, err)
+	if err := d.store.SetWorkspace(ctx, task.ID, session.ID); err != nil {
+		return false, fmt.Errorf("dispatch: SetWorkspace id=%d ws=%s: %w", task.ID, session.ID, err)
 	}
 	if err := d.store.SetStartedAt(ctx, task.ID, d.now()); err != nil {
 		return false, fmt.Errorf("dispatch: SetStartedAt id=%d: %w", task.ID, err)
@@ -638,11 +646,14 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 	if err := d.store.UpdateStatus(ctx, task.ID, store.StatusRunning); err != nil {
 		return false, fmt.Errorf("dispatch: UpdateStatus id=%d: %w", task.ID, err)
 	}
-	d.recordAuditStart(task.ID, ws.ID)
+	d.recordAuditStart(task.ID, session.ID)
 
-	if err := d.cmux.WaitReady(ctx, ws); err != nil {
+	if startErr != nil {
+		// Session was created but never became ready. Mark failed with the
+		// ws preserved so the reaper sees the orphan; do not retry (that
+		// would leak a second session).
 		d.markFailed(ctx, task.ID,
-			fmt.Sprintf("dispatch: WaitReady failed: %v", err))
+			fmt.Sprintf("dispatch: session did not become ready: %v", startErr))
 		return true, nil
 	}
 
@@ -653,7 +664,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		Task:           task,
 		WorkspaceDir:   workspaceDir,
 	})
-	if err := d.cmux.Send(ctx, ws, prompt); err != nil {
+	if err := d.executor.Send(ctx, session, prompt); err != nil {
 		d.markFailed(ctx, task.ID,
 			fmt.Sprintf("dispatch: Send failed: %v", err))
 		return true, nil

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/reaper"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -41,30 +41,30 @@ import (
 //   D6.    Repeated Run does not double-append the warn token.
 //   D7.    Disappeared ws + stuck on the same row → failed wins (no warn).
 
-// fakeCmuxLister fakes cmux.Client.ListWorkspaces only — Reaper does not
-// call NewWorkspace / WaitReady / Send so those return errors any caller
-// would notice loudly. Keeping the fake narrow keeps the test seam tight.
-type fakeCmuxLister struct {
+// fakeLister implements exec.Lister — the only capability Reaper needs.
+// Keeping the fake narrow keeps the test seam tight.
+type fakeLister struct {
 	mu       sync.Mutex
-	listResp []cmux.Workspace
+	listResp []exec.Session
 	listErr  error
 	calls    int
 }
 
-func (f *fakeCmuxLister) NewWorkspace(_ context.Context, _ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
-	return cmux.Workspace{}, errors.New("fakeCmuxLister: NewWorkspace not used by reaper")
-}
-func (f *fakeCmuxLister) WaitReady(_ context.Context, _ cmux.Workspace) error {
-	return errors.New("fakeCmuxLister: WaitReady not used by reaper")
-}
-func (f *fakeCmuxLister) Send(_ context.Context, _ cmux.Workspace, _ string) error {
-	return errors.New("fakeCmuxLister: Send not used by reaper")
-}
-func (f *fakeCmuxLister) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
+func (f *fakeLister) ListSessions(_ context.Context) ([]exec.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	return f.listResp, f.listErr
+}
+
+// liveSessions builds an exec.Session slice from raw workspace ids for
+// terse test setup.
+func liveSessions(ids ...string) []exec.Session {
+	out := make([]exec.Session, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, exec.NewSession(id, nil))
+	}
+	return out
 }
 
 // recordingAuditor captures every AuditEvent so Run-time assertions can
@@ -93,7 +93,7 @@ func (a *recordingAuditor) snapshot() []config.AuditEvent {
 // custom threshold via opts.
 type fixture struct {
 	repo    *store.TaskRepo
-	cm      *fakeCmuxLister
+	cm      *fakeLister
 	aud     *recordingAuditor
 	reaper  *reaper.Reaper
 	now     time.Time
@@ -110,12 +110,12 @@ func newFixture(t *testing.T, opts ...reaper.Option) *fixture {
 	}
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
-	cm := &fakeCmuxLister{}
+	cm := &fakeLister{}
 	aud := &recordingAuditor{}
 
 	defOpts := []reaper.Option{
 		reaper.WithStore(repo),
-		reaper.WithCmux(cm),
+		reaper.WithExecutor(cm),
 		reaper.WithClock(func() time.Time { return now }),
 		reaper.WithAuditor(aud),
 	}
@@ -161,7 +161,7 @@ func (f *fixture) seedRunning(t *testing.T, title, ws string, startedAt time.Tim
 // B1: missing WithStore is rejected.
 func TestNewRequiresWithStore(t *testing.T) {
 	_, err := reaper.New(
-		reaper.WithCmux(&fakeCmuxLister{}),
+		reaper.WithExecutor(&fakeLister{}),
 	)
 	if !errors.Is(err, reaper.ErrInvalidConfig) {
 		t.Fatalf("err = %v; want ErrInvalidConfig", err)
@@ -171,8 +171,8 @@ func TestNewRequiresWithStore(t *testing.T) {
 	}
 }
 
-// B2: missing WithCmux is rejected.
-func TestNewRequiresWithCmux(t *testing.T) {
+// B2: missing WithExecutor is rejected.
+func TestNewRequiresWithExecutor(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "tasks.db")
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -184,8 +184,8 @@ func TestNewRequiresWithCmux(t *testing.T) {
 	if !errors.Is(err, reaper.ErrInvalidConfig) {
 		t.Fatalf("err = %v; want ErrInvalidConfig", err)
 	}
-	if !strings.Contains(err.Error(), "WithCmux") {
-		t.Errorf("err = %v; want it to name WithCmux", err)
+	if !strings.Contains(err.Error(), "WithExecutor") {
+		t.Errorf("err = %v; want it to name WithExecutor", err)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestRunMarksDisappearedWorkspaceAsFailed(t *testing.T) {
 	startedAt := f.now.Add(-1 * time.Hour) // well within 24h
 	id := f.seedRunning(t, "lost task", "workspace:100", startedAt)
 	// cmux only knows about ws-101, NOT ws-100.
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:101"}}
+	f.cm.listResp = liveSessions("workspace:101")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -238,7 +238,7 @@ func TestRunLeavesLiveWorkspacesAlone(t *testing.T) {
 
 	startedAt := f.now.Add(-30 * time.Minute)
 	id := f.seedRunning(t, "alive", "workspace:200", startedAt)
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:200"}}
+	f.cm.listResp = liveSessions("workspace:200")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -338,7 +338,7 @@ func TestRunWarnsOnStuckRunningPast24h(t *testing.T) {
 
 	startedAt := f.now.Add(-25 * time.Hour) // past 24h default
 	id := f.seedRunning(t, "stuck", "workspace:300", startedAt)
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:300"}}
+	f.cm.listResp = liveSessions("workspace:300")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -373,7 +373,7 @@ func TestRunDoesNotWarnInsideThreshold(t *testing.T) {
 
 	startedAt := f.now.Add(-23 * time.Hour) // inside the 24h default
 	id := f.seedRunning(t, "inside", "workspace:400", startedAt)
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:400"}}
+	f.cm.listResp = liveSessions("workspace:400")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -398,7 +398,7 @@ func TestRunSkipsStuckCheckWhenStartedAtZero(t *testing.T) {
 	defer f.cleanup()
 
 	id := f.seedRunning(t, "no-started", "workspace:500", time.Time{})
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:500"}}
+	f.cm.listResp = liveSessions("workspace:500")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -422,7 +422,7 @@ func TestRunWarnIsIdempotent(t *testing.T) {
 
 	startedAt := f.now.Add(-25 * time.Hour)
 	id := f.seedRunning(t, "stuck", "workspace:600", startedAt)
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:600"}}
+	f.cm.listResp = liveSessions("workspace:600")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run #1: %v", err)
@@ -490,7 +490,7 @@ func TestRunIntegrationOnlyDeadWorkspaceFails(t *testing.T) {
 	startedAt := f.now.Add(-15 * time.Minute)
 	deadID := f.seedRunning(t, "dead", "workspace:100", startedAt)
 	liveID := f.seedRunning(t, "live", "workspace:101", startedAt)
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:101"}}
+	f.cm.listResp = liveSessions("workspace:101")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -520,7 +520,7 @@ func TestRunHonoursCustomStuckThreshold(t *testing.T) {
 
 	startedAt := f.now.Add(-31 * time.Minute)
 	id := f.seedRunning(t, "stuck-fast", "workspace:800", startedAt)
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:800"}}
+	f.cm.listResp = liveSessions("workspace:800")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -592,7 +592,7 @@ func TestRunWarnIsNotSuppressedByEmbeddedSubstring(t *testing.T) {
 	if err := f.repo.AppendJudgmentReason(f.ctx, id, embedded); err != nil {
 		t.Fatalf("AppendJudgmentReason setup: %v", err)
 	}
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:1300"}}
+	f.cm.listResp = liveSessions("workspace:1300")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -653,7 +653,7 @@ func TestRunRefusesToOverwriteDoneRowMidSweep(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
-	cm := &fakeCmuxLister{}
+	cm := &fakeLister{}
 	aud := &recordingAuditor{}
 
 	id, err := repo.Insert(context.Background(), store.Task{
@@ -676,7 +676,7 @@ func TestRunRefusesToOverwriteDoneRowMidSweep(t *testing.T) {
 	latch := &raceLatchStore{TaskRepo: repo, t: t, flipID: id}
 	r, err := reaper.New(
 		reaper.WithStore(latch),
-		reaper.WithCmux(cm),
+		reaper.WithExecutor(cm),
 		reaper.WithClock(func() time.Time { return now }),
 		reaper.WithAuditor(aud),
 	)
@@ -754,7 +754,7 @@ func TestRunWarnPreservesExistingJudgmentReason(t *testing.T) {
 	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
 		t.Fatalf("UpdateStatus(running): %v", err)
 	}
-	f.cm.listResp = []cmux.Workspace{{ID: "workspace:900"}}
+	f.cm.listResp = liveSessions("workspace:900")
 
 	if err := f.reaper.Run(f.ctx); err != nil {
 		t.Fatalf("Run: %v", err)

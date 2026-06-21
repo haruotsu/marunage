@@ -17,8 +17,9 @@ const (
 	liveStreamPingInterval = 30 * time.Second
 )
 
-// WorkspaceStreamer reads terminal output from and sends text to a cmux
-// workspace. The production adapter wraps cmux.Client; tests inject a fake.
+// WorkspaceStreamer reads terminal output from and sends text to a
+// backend session. The production adapter wraps an exec backend; tests
+// inject a fake.
 type WorkspaceStreamer interface {
 	ReadOutput(ctx context.Context, workspaceID string) (string, error)
 	Send(ctx context.Context, workspaceID string, text string) error

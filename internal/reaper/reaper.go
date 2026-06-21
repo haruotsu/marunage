@@ -2,7 +2,7 @@
 // over the tasks table. One Reaper.Run pass:
 //
 //  1. Lists every status=running row whose ws column is non-empty.
-//  2. Diffs that set against cmux.ListWorkspaces. Rows whose workspace
+//  2. Diffs that set against the executor's live sessions. Rows whose session
 //     vanished flip to failed via store.MarkFailedWithReason and emit
 //     audit "reaper.failed" — invariant #5 "Crash safety".
 //  3. For rows whose workspace is still alive, checks started_at +
@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -51,21 +51,14 @@ type Store interface {
 	AppendJudgmentReason(ctx context.Context, id int64, suffix string) error
 }
 
-// Cmux is the narrow read surface Reaper needs against the cmux client.
-// Reaper only ever asks "what workspaces are alive right now?", so this
-// interface is intentionally smaller than the full cmux.Client surface
-// — production wires a real cmux.Client (which satisfies it), tests
-// inject a fake that returns scripted live sets.
-type Cmux interface {
-	ListWorkspaces(ctx context.Context) ([]cmux.Workspace, error)
-}
-
 // Reaper is the long-running sweep coordinator. One instance per
 // process; safe for concurrent Run calls in principle, though the CLI
-// only fires one at a time today.
+// only fires one at a time today. It only ever asks the executor "what
+// sessions are alive right now?", so it depends on the narrow
+// exec.Lister capability rather than the full Executor surface.
 type Reaper struct {
 	store          Store
-	cmux           Cmux
+	lister         exec.Lister
 	now            func() time.Time
 	stuckThreshold time.Duration
 	auditor        config.Auditor
@@ -78,9 +71,9 @@ type Option func(*Reaper)
 // WithStore injects the tasks-table repository. Required.
 func WithStore(s Store) Option { return func(r *Reaper) { r.store = s } }
 
-// WithCmux injects the cmux client (or any narrower implementation of
-// the Cmux interface). Required.
-func WithCmux(c Cmux) Option { return func(r *Reaper) { r.cmux = c } }
+// WithExecutor injects the execution backend's session lister. Required.
+// The production cmux executor satisfies exec.Lister via ListSessions.
+func WithExecutor(l exec.Lister) Option { return func(r *Reaper) { r.lister = l } }
 
 // WithClock injects a deterministic clock for the stuck-threshold
 // comparison. Defaults to time.Now in production.
@@ -115,7 +108,7 @@ const defaultStuckThreshold = 24 * time.Hour
 // ErrInvalidConfig signals a missing required Option at construction.
 var ErrInvalidConfig = errors.New("reaper: missing required option")
 
-// New builds a Reaper. Required: WithStore, WithCmux. Returns
+// New builds a Reaper. Required: WithStore, WithExecutor. Returns
 // ErrInvalidConfig naming the missing field so a buggy CLI wiring
 // fails loud at startup.
 func New(opts ...Option) (*Reaper, error) {
@@ -130,8 +123,8 @@ func New(opts ...Option) (*Reaper, error) {
 	if r.store == nil {
 		return nil, fmt.Errorf("%w: WithStore", ErrInvalidConfig)
 	}
-	if r.cmux == nil {
-		return nil, fmt.Errorf("%w: WithCmux", ErrInvalidConfig)
+	if r.lister == nil {
+		return nil, fmt.Errorf("%w: WithExecutor", ErrInvalidConfig)
 	}
 	if r.stuckThreshold <= 0 {
 		r.stuckThreshold = defaultStuckThreshold
@@ -163,13 +156,13 @@ func (r *Reaper) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reaper: list running: %w", err)
 	}
-	live, err := r.cmux.ListWorkspaces(ctx)
+	live, err := r.lister.ListSessions(ctx)
 	if err != nil {
-		return fmt.Errorf("reaper: list workspaces: %w", err)
+		return fmt.Errorf("reaper: list sessions: %w", err)
 	}
 	alive := make(map[string]struct{}, len(live))
-	for _, w := range live {
-		alive[w.ID] = struct{}{}
+	for _, s := range live {
+		alive[s.ID] = struct{}{}
 	}
 	now := r.now()
 	warnToken := stuckWarnPrefix + r.stuckThreshold.String()
