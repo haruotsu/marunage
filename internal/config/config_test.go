@@ -63,6 +63,58 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// TestDefaultManageSection pins the [manage] defaults from redesign §6 so the
+// management layer (PR-R05+) and the docs cannot drift apart.
+func TestDefaultManageSection(t *testing.T) {
+	c := Default()
+
+	if !c.Manage.Enabled {
+		t.Errorf("Manage.Enabled = false; want true (redesign §6)")
+	}
+	if !c.Manage.LLMScoring {
+		t.Errorf("Manage.LLMScoring = false; want true (redesign §6)")
+	}
+	if !c.Manage.Rules.BlockIfDepsIncomplete {
+		t.Errorf("Manage.Rules.BlockIfDepsIncomplete = false; want true")
+	}
+	if !c.Manage.Rules.EscalateIfBodyEmpty {
+		t.Errorf("Manage.Rules.EscalateIfBodyEmpty = false; want true")
+	}
+	if !c.Manage.Rules.DropIfCwdViolation {
+		t.Errorf("Manage.Rules.DropIfCwdViolation = false; want true")
+	}
+	if c.Manage.Rules.BoostIfDueWithin != "24h" {
+		t.Errorf("Manage.Rules.BoostIfDueWithin = %q; want %q", c.Manage.Rules.BoostIfDueWithin, "24h")
+	}
+	if c.Execution.Executor != "cmux" {
+		t.Errorf("Execution.Executor = %q; want %q", c.Execution.Executor, "cmux")
+	}
+
+	// verdict -> status mapping (原則1): the five canonical verdicts map to
+	// the documented statuses, with ready the only dispatchable one.
+	wantVerdicts := map[string]VerdictPolicy{
+		"ready":       {Status: "pending", Dispatchable: true},
+		"hold":        {Status: "pending", Dispatchable: false},
+		"defer":       {Status: "pending", Dispatchable: false},
+		"needs_human": {Status: "waiting_human", Dispatchable: false, Notify: true},
+		"drop":        {Status: "skipped", Dispatchable: false},
+	}
+	for verdict, want := range wantVerdicts {
+		got, ok := c.Manage.Verdicts[verdict]
+		if !ok {
+			t.Errorf("Manage.Verdicts[%q] missing", verdict)
+			continue
+		}
+		if got != want {
+			t.Errorf("Manage.Verdicts[%q] = %+v; want %+v", verdict, got, want)
+		}
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Default().Validate() = %v; want nil", err)
+	}
+}
+
 // TestValidate covers each of the documented schema constraints. Tabular form
 // keeps it cheap to add new constraints as the schema grows.
 func TestValidate(t *testing.T) {
@@ -218,6 +270,47 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "discovery.dispatch_interval accepts zero (disabled)",
 			mutate:  func(c *Config) { c.Discovery.DispatchInterval = "0s" },
+			wantErr: "",
+		},
+		{
+			name:    "execution.executor must be known",
+			mutate:  func(c *Config) { c.Execution.Executor = "kubernetes" },
+			wantErr: "execution.executor",
+		},
+		{
+			name:    "execution.executor accepts tmux",
+			mutate:  func(c *Config) { c.Execution.Executor = "tmux" },
+			wantErr: "",
+		},
+		{
+			name:    "manage.rules.boost_if_due_within must parse as duration",
+			mutate:  func(c *Config) { c.Manage.Rules.BoostIfDueWithin = "soon" },
+			wantErr: "manage.rules.boost_if_due_within",
+		},
+		{
+			name:    "manage.rules.boost_if_due_within accepts empty (no boost)",
+			mutate:  func(c *Config) { c.Manage.Rules.BoostIfDueWithin = "" },
+			wantErr: "",
+		},
+		{
+			name: "manage.verdicts status must be a valid task status",
+			mutate: func(c *Config) {
+				c.Manage.Verdicts["ready"] = VerdictPolicy{Status: "queued", Dispatchable: true}
+			},
+			wantErr: "manage.verdicts",
+		},
+		{
+			name: "manage.verdicts status must be non-empty",
+			mutate: func(c *Config) {
+				c.Manage.Verdicts["ready"] = VerdictPolicy{Status: "", Dispatchable: true}
+			},
+			wantErr: "manage.verdicts",
+		},
+		{
+			name: "manage.verdicts accepts a future verdict mapped to a valid status",
+			mutate: func(c *Config) {
+				c.Manage.Verdicts["delegate"] = VerdictPolicy{Status: "pending", Dispatchable: false}
+			},
 			wantErr: "",
 		},
 	}

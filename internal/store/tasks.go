@@ -834,7 +834,30 @@ type ListFilter struct {
 	// CreatedAfter, when non-zero, restricts results to rows whose created_at
 	// is strictly after this time. Used by `marunage review --since Xd`.
 	CreatedAfter time.Time
+	// DispatchableOnly restricts results to rows the management layer
+	// (internal/manage, PR-R03+) considers dispatchable. redesign §5.2 wants
+	// the dispatch query narrowed to plan_label='ready', but doing that
+	// outright would strand every legacy row — nothing populates plan_label
+	// until PR-R05 — and break動作不変. So the strangler-fig form keeps rows
+	// the manager has NOT yet evaluated (plan_label IS NULL) dispatchable
+	// alongside the ones it marked ready, while excluding hold / defer /
+	// needs-human / drop. Once the manager fills plan_label for every row
+	// (PR-R05+), the NULL branch naturally stops matching and the filter
+	// converges on the strict ready-only query. Off (zero value) leaves List
+	// unchanged for all other callers.
+	DispatchableOnly bool
 }
+
+// dispatchablePlanLabel is the verdict the management layer assigns to rows
+// that are cleared for immediate dispatch (redesign §3.1). config's
+// [manage.verdicts] mapping carries the same intent (the "ready" entry with
+// Dispatchable=true), but PR-R04 keeps the store filter on this literal so the
+// strangler-fig query stays self-contained while the management layer is still
+// inert. PR-R05, when it teaches the manager to write plan_label and to honour
+// the config-driven Dispatchable flags, is expected to source the dispatchable
+// set from config and retire this constant — until then the two must agree
+// that "ready" is the sole dispatchable verdict.
+const dispatchablePlanLabel = "ready"
 
 // maxFilterValues caps Statuses / Sources slice length so a caller (or a
 // CLI flag accepting repeated `--status`) cannot blow past
@@ -882,6 +905,10 @@ func (r *TaskRepo) List(ctx context.Context, f ListFilter) ([]Task, error) {
 	if !f.CreatedAfter.IsZero() {
 		clauses = append(clauses, "created_at > ?")
 		args = append(args, formatTime(f.CreatedAfter))
+	}
+	if f.DispatchableOnly {
+		clauses = append(clauses, "(plan_label = ? OR plan_label IS NULL)")
+		args = append(args, dispatchablePlanLabel)
 	}
 	q := "SELECT " + taskColumns + " FROM tasks"
 	if len(clauses) > 0 {
