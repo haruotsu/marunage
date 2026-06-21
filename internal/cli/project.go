@@ -12,6 +12,8 @@ import (
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/exec"
+	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	"github.com/haruotsu/marunage/internal/project"
 )
 
@@ -87,22 +89,21 @@ func productionProjectDispatch(ctx context.Context, configPath string, item proj
 		return fmt.Errorf("core.default_cwd %q does not exist or is not accessible: %w", cwd, statErr)
 	}
 
-	cm := cmux.NewClient()
-	ws, err := cm.NewWorkspace(ctx, cmux.NewWorkspaceOptions{
-		CWD:     cwd,
+	// Preserve the pre-refactor wiring exactly: project dispatch built a
+	// bare cmux client (no readiness probe), so Start's internal readiness
+	// wait behaves identically to the previous explicit WaitReady call.
+	executor := execcmux.New(cmux.NewClient())
+	session, err := executor.Start(ctx, exec.SessionSpec{
+		Cwd:     cwd,
 		Command: cfg.Execution.ClaudeCommand,
 		Name:    fmt.Sprintf("project:%s", item.ID),
 	})
 	if err != nil {
-		return fmt.Errorf("create workspace for %q: %w", item.Title, err)
-	}
-
-	if err := cm.WaitReady(ctx, ws); err != nil {
-		return fmt.Errorf("workspace not ready for %q: %w", item.Title, err)
+		return fmt.Errorf("start session for %q: %w", item.Title, err)
 	}
 
 	prompt := buildProjectPrompt(item)
-	if err := cm.Send(ctx, ws, prompt); err != nil {
+	if err := executor.Send(ctx, session, prompt); err != nil {
 		return fmt.Errorf("send prompt for %q: %w", item.Title, err)
 	}
 	return nil

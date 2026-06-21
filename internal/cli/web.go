@@ -17,24 +17,39 @@ import (
 	"github.com/haruotsu/marunage/internal/completion"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/exec"
+	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
 	"github.com/haruotsu/marunage/internal/web"
 )
 
-// cmuxClientStreamer adapts cmux.Client into web.WorkspaceStreamer so the
-// web layer does not import the cmux package directly.
-type cmuxClientStreamer struct {
-	client cmux.Client
+// execStreamer adapts an exec backend (its OutputReader capability + Send)
+// into web.WorkspaceStreamer so the web layer addresses sessions by id and
+// never imports a concrete backend package.
+type execStreamer struct {
+	executor exec.Executor
+	reader   exec.OutputReader
 }
 
-func (s *cmuxClientStreamer) ReadOutput(ctx context.Context, workspaceID string) (string, error) {
-	return s.client.ReadOutput(ctx, cmux.Workspace{ID: workspaceID})
+// newExecStreamer wraps executor, capturing its OutputReader capability
+// once. A backend that cannot read output yields ReadOutput errors rather
+// than a nil-panic.
+func newExecStreamer(executor exec.Executor) *execStreamer {
+	reader, _ := executor.(exec.OutputReader)
+	return &execStreamer{executor: executor, reader: reader}
 }
 
-func (s *cmuxClientStreamer) Send(ctx context.Context, workspaceID string, text string) error {
-	return s.client.Send(ctx, cmux.Workspace{ID: workspaceID}, text)
+func (s *execStreamer) ReadOutput(ctx context.Context, workspaceID string) (string, error) {
+	if s.reader == nil {
+		return "", fmt.Errorf("live stream: executor does not support reading output")
+	}
+	return s.reader.ReadOutput(ctx, exec.NewSession(workspaceID, nil))
+}
+
+func (s *execStreamer) Send(ctx context.Context, workspaceID string, text string) error {
+	return s.executor.Send(ctx, exec.NewSession(workspaceID, nil), text)
 }
 
 // sqlLiveStreamProvider implements web.LiveStreamProvider by looking up
@@ -174,7 +189,7 @@ func productionWebFactory(ctx context.Context, opts WebFactoryOptions) (webRunne
 	taskRepo := store.NewTaskRepo(db)
 	reviewProvider := web.NewReviewProvider(taskRepo)
 	taskOps := web.NewSQLTaskOpsStore(db)
-	liveStreamer := &cmuxClientStreamer{client: cmux.NewClient()}
+	liveStreamer := newExecStreamer(execcmux.New(cmux.NewClient()))
 	liveProvider := &sqlLiveStreamProvider{store: taskDetailStore}
 
 	// Start the completion watcher so running tasks that have written their

@@ -15,6 +15,7 @@ import (
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/loop"
 	"github.com/haruotsu/marunage/internal/permission"
@@ -78,7 +79,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	repo := store.NewTaskRepo(db)
 	kv := store.NewKVStateRepo(db)
-	cm := cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe()))
+	executor := execcmux.New(cmux.NewClient(cmux.WithReadinessProbe(cmux.NewClaudeReadinessProbe())))
 
 	auditPath := filepath.Join(filepath.Dir(dbPath), "logs", "audit.log")
 	var auditor config.Auditor = config.NopAuditor{}
@@ -116,7 +117,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 
 	disp, err := dispatch.New(
 		dispatch.WithStore(repo),
-		dispatch.WithCmux(cm),
+		dispatch.WithExecutor(executor),
 		dispatch.WithBaseSkill(baseExecutionSkill),
 		dispatch.WithClaudeCommand(cfg.Execution.ClaudeCommand),
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
@@ -154,7 +155,7 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 	}
 	reap, err := reaper.New(
 		reaper.WithStore(repo),
-		reaper.WithCmux(cmux.NewClient()),
+		reaper.WithExecutor(execcmux.New(cmux.NewClient())),
 		reaper.WithStuckThreshold(threshold),
 		reaper.WithAuditor(auditor),
 	)

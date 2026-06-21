@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -35,7 +35,7 @@ import (
 // before exiting.
 type Reflector struct {
 	store        ReflectionStore
-	cmux         cmux.Client
+	executor     exec.Executor
 	dirs         WorkspaceDirs
 	skill        string
 	auditor      config.Auditor
@@ -134,10 +134,10 @@ func WithReflectionStore(s ReflectionStore) ReflectorOption {
 	return func(b *reflectorBuild) { b.r.store = s }
 }
 
-// WithReflectionCmux injects the cmux client used to send the reflect
-// prompt back into the same workspace. Required.
-func WithReflectionCmux(c cmux.Client) ReflectorOption {
-	return func(b *reflectorBuild) { b.r.cmux = c }
+// WithReflectionExecutor injects the execution backend used to send the
+// reflect prompt back into the same session. Required.
+func WithReflectionExecutor(e exec.Executor) ReflectorOption {
+	return func(b *reflectorBuild) { b.r.executor = e }
 }
 
 // WithReflectionWorkspaceDirs injects the per-task control-directory
@@ -149,7 +149,7 @@ func WithReflectionWorkspaceDirs(d WorkspaceDirs) ReflectorOption {
 
 // WithReflectionSkill installs the marunage-reflect SKILL.md body. The
 // hook concatenates this body with a sentinel-write instruction before
-// passing the result to cmux.Send.
+// passing the result to the executor's Send.
 func WithReflectionSkill(s string) ReflectorOption {
 	return func(b *reflectorBuild) { b.r.skill = s }
 }
@@ -242,8 +242,8 @@ func NewReflector(opts ...ReflectorOption) (*Reflector, error) {
 	if r.store == nil {
 		return nil, fmt.Errorf("%w: WithReflectionStore", ErrInvalidConfig)
 	}
-	if r.cmux == nil {
-		return nil, fmt.Errorf("%w: WithReflectionCmux", ErrInvalidConfig)
+	if r.executor == nil {
+		return nil, fmt.Errorf("%w: WithReflectionExecutor", ErrInvalidConfig)
 	}
 	if r.dirs == nil {
 		return nil, fmt.Errorf("%w: WithReflectionWorkspaceDirs", ErrInvalidConfig)
@@ -308,12 +308,12 @@ func (r *Reflector) runOne(parent context.Context, task store.Task) {
 
 	r.recordAudit(auditReflectionStart, task.ID, task.WS)
 
-	if err := r.cmux.Send(ctx, cmux.Workspace{ID: task.WS}, prompt); err != nil {
-		// Distinguish ctx-derived cancel / timeout from genuine cmux
+	if err := r.executor.Send(ctx, exec.NewSession(task.WS, nil), prompt); err != nil {
+		// Distinguish ctx-derived cancel / timeout from genuine backend
 		// failures so audit.log can tell "we shut down" / "Claude was
-		// too slow" apart from "cmux blew up". Production cmux.Client
-		// returns ctx.Err() when ctx fires mid-Send.
-		r.classifyCtxOrFail(task.ID, err, "cmux send failed")
+		// too slow" apart from "the backend blew up". A well-behaved
+		// Executor returns ctx.Err() when ctx fires mid-Send.
+		r.classifyCtxOrFail(task.ID, err, "executor send failed")
 		return
 	}
 

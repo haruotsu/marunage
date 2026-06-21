@@ -11,6 +11,7 @@ import (
 
 	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
+	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	"github.com/haruotsu/marunage/internal/logging"
 	"github.com/haruotsu/marunage/internal/reaper"
 	"github.com/haruotsu/marunage/internal/store"
@@ -73,7 +74,7 @@ func productionReaperFactory(_ context.Context, configPath string) (reaperRunner
 		return nil, nil, fmt.Errorf("open %s: %w", dbPath, err)
 	}
 	repo := store.NewTaskRepo(db)
-	cm := cmux.NewClient()
+	executor := execcmux.New(cmux.NewClient())
 
 	// Validate already gates this — this re-parse is just to surface a
 	// typed time.Duration to the reaper. Empty / malformed values
@@ -101,7 +102,7 @@ func productionReaperFactory(_ context.Context, configPath string) (reaperRunner
 
 	r, err := reaper.New(
 		reaper.WithStore(repo),
-		reaper.WithCmux(cm),
+		reaper.WithExecutor(executor),
 		reaper.WithStuckThreshold(threshold),
 		reaper.WithAuditor(auditor),
 	)

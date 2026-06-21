@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -72,36 +72,30 @@ func (s *reflectStore) Calls() []reflectStoreCall {
 	return out
 }
 
-// reflectCmux is a minimal cmux.Client stub: only Send matters here,
-// but we satisfy the rest of the interface so we do not depend on the
-// dispatcher's fakeCmux changing shape.
-type reflectCmux struct {
+// reflectExecutor is a minimal exec.Executor stub: only Send matters
+// here, but we satisfy the rest of the interface so the Reflector can
+// depend on the full Executor contract.
+type reflectExecutor struct {
 	mu         sync.Mutex
 	sendCalls  []reflectSendCall
-	sendHook   func(ws cmux.Workspace, text string) error
+	sendHook   func(s exec.Session, text string) error
 	sendDelay  time.Duration
 	sendSignal chan struct{}
 }
 
 type reflectSendCall struct {
-	WS   cmux.Workspace
+	WS   exec.Session
 	Text string
 }
 
-func (c *reflectCmux) NewWorkspace(_ context.Context, _ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
-	return cmux.Workspace{}, errors.New("reflectCmux.NewWorkspace must not be called")
+func (c *reflectExecutor) Start(_ context.Context, _ exec.SessionSpec) (exec.Session, error) {
+	return exec.Session{}, errors.New("reflectExecutor.Start must not be called")
 }
-func (c *reflectCmux) WaitReady(_ context.Context, _ cmux.Workspace) error {
-	return errors.New("reflectCmux.WaitReady must not be called")
+func (c *reflectExecutor) AwaitExit(_ context.Context, _ exec.Session) (int, error) {
+	return 0, errors.New("reflectExecutor.AwaitExit must not be called")
 }
-func (c *reflectCmux) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
-	return nil, nil
-}
-func (c *reflectCmux) ReadOutput(_ context.Context, _ cmux.Workspace) (string, error) {
-	return "", nil
-}
-func (c *reflectCmux) Send(ctx context.Context, ws cmux.Workspace, text string) error {
-	// Production cmux.Client honours ctx; the fake should too so tests
+func (c *reflectExecutor) Send(ctx context.Context, s exec.Session, text string) error {
+	// A production Executor honours ctx; the fake should too so tests
 	// cannot accidentally pass when production would not (review-fix-loop
 	// iter 1 finding: H6 was previously testing fake-only behaviour).
 	if err := ctx.Err(); err != nil {
@@ -111,7 +105,7 @@ func (c *reflectCmux) Send(ctx context.Context, ws cmux.Workspace, text string) 
 		time.Sleep(c.sendDelay)
 	}
 	c.mu.Lock()
-	c.sendCalls = append(c.sendCalls, reflectSendCall{WS: ws, Text: text})
+	c.sendCalls = append(c.sendCalls, reflectSendCall{WS: s, Text: text})
 	c.mu.Unlock()
 	if c.sendSignal != nil {
 		select {
@@ -120,12 +114,12 @@ func (c *reflectCmux) Send(ctx context.Context, ws cmux.Workspace, text string) 
 		}
 	}
 	if c.sendHook != nil {
-		return c.sendHook(ws, text)
+		return c.sendHook(s, text)
 	}
 	return nil
 }
 
-func (c *reflectCmux) SendCalls() []reflectSendCall {
+func (c *reflectExecutor) SendCalls() []reflectSendCall {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]reflectSendCall, len(c.sendCalls))
@@ -168,12 +162,12 @@ func (f reflectDirs) Dir(id int64) string { return f(id) }
 // always-accept sampler so the happy-path tests do not need to fight
 // randomness.
 type reflectFixture struct {
-	store *reflectStore
-	cmux  *reflectCmux
-	au    *reflectAuditor
-	dirs  reflectDirs
-	r     *dispatch.Reflector
-	ctxBg context.Context
+	store    *reflectStore
+	executor *reflectExecutor
+	au       *reflectAuditor
+	dirs     reflectDirs
+	r        *dispatch.Reflector
+	ctxBg    context.Context
 }
 
 const testReflectSkill = "REFLECT-SKILL-BODY"
@@ -186,13 +180,13 @@ func newReflectFixture(t *testing.T, opts ...dispatch.ReflectorOption) reflectFi
 		return filepath.Join(root, fmt.Sprintf("%d", id))
 	})
 	rs := &reflectStore{}
-	rcm := &reflectCmux{}
+	rex := &reflectExecutor{}
 	au := &reflectAuditor{}
 	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
 
 	defOpts := []dispatch.ReflectorOption{
 		dispatch.WithReflectionStore(rs),
-		dispatch.WithReflectionCmux(rcm),
+		dispatch.WithReflectionExecutor(rex),
 		dispatch.WithReflectionSkill(testReflectSkill),
 		dispatch.WithReflectionWorkspaceDirs(dirs),
 		dispatch.WithReflectionAuditor(au),
@@ -207,12 +201,12 @@ func newReflectFixture(t *testing.T, opts ...dispatch.ReflectorOption) reflectFi
 	}
 	t.Cleanup(func() { r.Wait() })
 	return reflectFixture{
-		store: rs,
-		cmux:  rcm,
-		au:    au,
-		dirs:  dirs,
-		r:     r,
-		ctxBg: context.Background(),
+		store:    rs,
+		executor: rex,
+		au:       au,
+		dirs:     dirs,
+		r:        r,
+		ctxBg:    context.Background(),
 	}
 }
 
@@ -242,7 +236,7 @@ func runningTask(id int64, ws string) store.Task {
 // N1: WithStore is required.
 func TestReflectorNewRejectsMissingStore(t *testing.T) {
 	_, err := dispatch.NewReflector(
-		dispatch.WithReflectionCmux(&reflectCmux{}),
+		dispatch.WithReflectionExecutor(&reflectExecutor{}),
 		dispatch.WithReflectionSkill("S"),
 		dispatch.WithReflectionWorkspaceDirs(reflectDirs(func(int64) string { return "" })),
 	)
@@ -251,8 +245,8 @@ func TestReflectorNewRejectsMissingStore(t *testing.T) {
 	}
 }
 
-// N2: WithCmux is required.
-func TestReflectorNewRejectsMissingCmux(t *testing.T) {
+// N2: WithExecutor is required.
+func TestReflectorNewRejectsMissingExecutor(t *testing.T) {
 	_, err := dispatch.NewReflector(
 		dispatch.WithReflectionStore(&reflectStore{}),
 		dispatch.WithReflectionSkill("S"),
@@ -268,7 +262,7 @@ func TestReflectorNewRejectsMissingCmux(t *testing.T) {
 func TestReflectorNewRejectsEmptySkill(t *testing.T) {
 	_, err := dispatch.NewReflector(
 		dispatch.WithReflectionStore(&reflectStore{}),
-		dispatch.WithReflectionCmux(&reflectCmux{}),
+		dispatch.WithReflectionExecutor(&reflectExecutor{}),
 		dispatch.WithReflectionWorkspaceDirs(reflectDirs(func(int64) string { return "" })),
 		dispatch.WithReflectionSkill(""),
 	)
@@ -282,7 +276,7 @@ func TestReflectorNewRejectsEmptySkill(t *testing.T) {
 func TestReflectorNewRejectsMissingWorkspaceDirs(t *testing.T) {
 	_, err := dispatch.NewReflector(
 		dispatch.WithReflectionStore(&reflectStore{}),
-		dispatch.WithReflectionCmux(&reflectCmux{}),
+		dispatch.WithReflectionExecutor(&reflectExecutor{}),
 		dispatch.WithReflectionSkill("S"),
 	)
 	if !errors.Is(err, dispatch.ErrInvalidConfig) {
@@ -295,7 +289,7 @@ func TestReflectorNewRejectsBadSampleRate(t *testing.T) {
 	for _, bad := range []float64{-0.1, 1.5} {
 		_, err := dispatch.NewReflector(
 			dispatch.WithReflectionStore(&reflectStore{}),
-			dispatch.WithReflectionCmux(&reflectCmux{}),
+			dispatch.WithReflectionExecutor(&reflectExecutor{}),
 			dispatch.WithReflectionSkill("S"),
 			dispatch.WithReflectionWorkspaceDirs(reflectDirs(func(int64) string { return "" })),
 			dispatch.WithReflectionSampleRate(bad),
@@ -311,7 +305,7 @@ func TestReflectorSampleRateZeroNeverSends(t *testing.T) {
 	f := newReflectFixture(t, dispatch.WithReflectionSampleRate(0))
 	f.r.OnDone(f.ctxBg, runningTask(1, "workspace:1"))
 	f.r.Wait()
-	if got := len(f.cmux.SendCalls()); got != 0 {
+	if got := len(f.executor.SendCalls()); got != 0 {
 		t.Errorf("Send called %d times; want 0 with sample_rate=0", got)
 	}
 	if got := len(f.store.Calls()); got != 0 {
@@ -338,7 +332,7 @@ func TestReflectorWithSamplerOverridesRate(t *testing.T) {
 	}()
 	f.r.OnDone(f.ctxBg, runningTask(7, "workspace:7"))
 	f.r.Wait()
-	if got := len(f.cmux.SendCalls()); got != 1 {
+	if got := len(f.executor.SendCalls()); got != 1 {
 		t.Errorf("Send called %d times; want 1 (sampler override)", got)
 	}
 }
@@ -348,7 +342,7 @@ func TestReflectorOnDoneEmptyWSIsNoop(t *testing.T) {
 	f := newReflectFixture(t)
 	f.r.OnDone(f.ctxBg, runningTask(2, ""))
 	f.r.Wait()
-	if got := len(f.cmux.SendCalls()); got != 0 {
+	if got := len(f.executor.SendCalls()); got != 0 {
 		t.Errorf("Send called %d times; want 0 with empty WS", got)
 	}
 }
@@ -368,7 +362,7 @@ func TestReflectorOnDoneSendsSkillAndSentinel(t *testing.T) {
 	f.r.OnDone(f.ctxBg, runningTask(id, "workspace:11"))
 	f.r.Wait()
 
-	calls := f.cmux.SendCalls()
+	calls := f.executor.SendCalls()
 	if len(calls) != 1 {
 		t.Fatalf("Send calls = %d; want 1", len(calls))
 	}
@@ -493,7 +487,7 @@ func TestReflectorWaitBlocksUntilAllGoroutinesExit(t *testing.T) {
 // H8: Send failure -> reflection.fail audit; no SetReflection call.
 func TestReflectorOnDoneSendFailureAudits(t *testing.T) {
 	f := newReflectFixture(t)
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return errors.New("cmux send: boom")
 	}
 	f.r.OnDone(f.ctxBg, runningTask(23, "workspace:23"))
@@ -518,12 +512,12 @@ func TestReflectorOnDoneStartAuditPrecedesSend(t *testing.T) {
 	f := newReflectFixture(t)
 	const id int64 = 29
 	// Use a send signal so we can sequence the assertion deterministically.
-	f.cmux.sendSignal = make(chan struct{}, 1)
+	f.executor.sendSignal = make(chan struct{}, 1)
 	dir := f.dirs.Dir(id)
 	writeReflection(t, dir, "stub")
 	f.r.OnDone(f.ctxBg, runningTask(id, "workspace:29"))
 	select {
-	case <-f.cmux.sendSignal:
+	case <-f.executor.sendSignal:
 	case <-time.After(time.Second):
 		t.Fatalf("Send was not invoked within the test deadline")
 	}
@@ -572,7 +566,7 @@ func TestReflectorIgnoresOrphanTmpFile(t *testing.T) {
 // distinguishes "we shut down" from "Claude / cmux blew up".
 func TestReflectorOnDoneClassifiesSendCancelAsCancelAudit(t *testing.T) {
 	f := newReflectFixture(t)
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return context.Canceled
 	}
 	f.r.OnDone(f.ctxBg, runningTask(41, "workspace:41"))
@@ -601,7 +595,7 @@ func TestReflectorOnDoneClassifiesSendCancelAsCancelAudit(t *testing.T) {
 // Send returning context.DeadlineExceeded must record reflection.timeout.
 func TestReflectorOnDoneClassifiesSendDeadlineAsTimeoutAudit(t *testing.T) {
 	f := newReflectFixture(t)
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return context.DeadlineExceeded
 	}
 	f.r.OnDone(f.ctxBg, runningTask(43, "workspace:43"))
@@ -630,7 +624,7 @@ func TestReflectorOnDoneClassifiesSendDeadlineAsTimeoutAudit(t *testing.T) {
 // leak into audit.log.
 func TestReflectorRedactsSecretsBeforeAuditing(t *testing.T) {
 	f := newReflectFixture(t)
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return errors.New("cmux send: Bearer sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa rejected")
 	}
 	f.r.OnDone(f.ctxBg, runningTask(47, "workspace:47"))
@@ -659,7 +653,7 @@ func TestReflectorPromptUsesConfiguredTimeout(t *testing.T) {
 	writeReflection(t, dir, "ok")
 	f.r.OnDone(f.ctxBg, runningTask(id, "workspace:53"))
 	f.r.Wait()
-	calls := f.cmux.SendCalls()
+	calls := f.executor.SendCalls()
 	if len(calls) != 1 {
 		t.Fatalf("Send calls = %d; want 1", len(calls))
 	}

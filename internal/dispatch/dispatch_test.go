@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
+	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/permission"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -43,82 +43,73 @@ import (
 //       to the next pending row. The skipped row stays pending. The
 //       MaxParallel budget is consumed by *successful* dispatches only.
 
-// fakeCmux is the test double for cmux.Client. NewWorkspace returns
-// "workspace:N" with N incrementing per call; WaitReady and Send are
-// no-ops by default. Tests override the per-method hooks to inject
-// failures, delays, etc.
-type fakeCmux struct {
+// fakeExecutor is the test double for exec.Executor. Start returns
+// "workspace:N" with N incrementing per call (readiness folded in, like
+// the cmux backend); Send is a no-op by default. Tests override the
+// per-method hooks to inject failures, delays, etc.
+//
+// A startHook can return a non-empty Session.ID alongside an error to
+// simulate "created but not ready" (the dispatcher fails the row, ws
+// preserved), or an empty Session with an error to simulate "nothing
+// created" (the dispatcher leaves the row pending / retryable).
+type fakeExecutor struct {
 	mu sync.Mutex
 
-	newWorkspaceCalls []cmux.NewWorkspaceOptions
-	waitReadyCalls    []cmux.Workspace
-	sendCalls         []fakeSendCall
+	startCalls []exec.SessionSpec
+	sendCalls  []fakeSendCall
 
 	// Per-call hooks. Default behaviour (nil) succeeds.
-	newWorkspaceHook func(opts cmux.NewWorkspaceOptions) (cmux.Workspace, error)
-	waitReadyHook    func(ws cmux.Workspace) error
-	sendHook         func(ws cmux.Workspace, text string) error
+	startHook func(spec exec.SessionSpec) (exec.Session, error)
+	sendHook  func(s exec.Session, text string) error
 
 	nextID int
 }
 
 type fakeSendCall struct {
-	WS   cmux.Workspace
+	WS   exec.Session
 	Text string
 }
 
-func (f *fakeCmux) NewWorkspace(_ context.Context, opts cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+func (f *fakeExecutor) Start(_ context.Context, spec exec.SessionSpec) (exec.Session, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.newWorkspaceCalls = append(f.newWorkspaceCalls, opts)
-	if f.newWorkspaceHook != nil {
-		return f.newWorkspaceHook(opts)
-	}
+	f.startCalls = append(f.startCalls, spec)
+	hook := f.startHook
 	f.nextID++
-	return cmux.Workspace{ID: fmt.Sprintf("workspace:%d", f.nextID), Name: opts.Name}, nil
+	id := fmt.Sprintf("workspace:%d", f.nextID)
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(spec)
+	}
+	return exec.NewSession(id, nil), nil
 }
 
-func (f *fakeCmux) WaitReady(_ context.Context, ws cmux.Workspace) error {
+func (f *fakeExecutor) Send(_ context.Context, s exec.Session, text string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.waitReadyCalls = append(f.waitReadyCalls, ws)
-	if f.waitReadyHook != nil {
-		return f.waitReadyHook(ws)
+	f.sendCalls = append(f.sendCalls, fakeSendCall{WS: s, Text: text})
+	hook := f.sendHook
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(s, text)
 	}
 	return nil
 }
 
-func (f *fakeCmux) Send(_ context.Context, ws cmux.Workspace, text string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.sendCalls = append(f.sendCalls, fakeSendCall{WS: ws, Text: text})
-	if f.sendHook != nil {
-		return f.sendHook(ws, text)
-	}
-	return nil
-}
-
-// ListWorkspaces is a no-op stub: PR-42 dispatch never calls it. Present
-// only so *fakeCmux satisfies cmux.Client after PR-44 added the method.
-func (f *fakeCmux) ListWorkspaces(_ context.Context) ([]cmux.Workspace, error) {
-	return nil, nil
-}
-
-// ReadOutput is a no-op stub: dispatch never calls it. Present only so
-// *fakeCmux satisfies cmux.Client after PR-91 added the method.
-func (f *fakeCmux) ReadOutput(_ context.Context, _ cmux.Workspace) (string, error) {
-	return "", nil
+// AwaitExit is a no-op stub: dispatch.Run does not wait for completion
+// (the completion watcher owns that path). Present only so *fakeExecutor
+// satisfies exec.Executor.
+func (f *fakeExecutor) AwaitExit(_ context.Context, _ exec.Session) (int, error) {
+	return 0, nil
 }
 
 // dispatchFixture wires a real on-disk SQLite store, a fake cmux client,
 // and a Dispatcher with a deterministic clock so tests can assert exact
 // started_at values.
 type dispatchFixture struct {
-	repo *store.TaskRepo
-	cmux *fakeCmux
-	disp *dispatch.Dispatcher
-	now  time.Time
-	ctx  context.Context
+	repo     *store.TaskRepo
+	executor *fakeExecutor
+	disp     *dispatch.Dispatcher
+	now      time.Time
+	ctx      context.Context
 }
 
 func newDispatchFixture(t *testing.T, opts ...dispatch.Option) dispatchFixture {
@@ -133,10 +124,10 @@ func newDispatchFixture(t *testing.T, opts ...dispatch.Option) dispatchFixture {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
 
-	fcm := &fakeCmux{}
+	fex := &fakeExecutor{}
 	defOpts := []dispatch.Option{
 		dispatch.WithStore(repo),
-		dispatch.WithCmux(fcm),
+		dispatch.WithExecutor(fex),
 		dispatch.WithClock(func() time.Time { return now }),
 		dispatch.WithBaseSkill("BASE-SKILL"),
 		dispatch.WithClaudeCommand("claude --dangerously-skip-permissions"),
@@ -146,11 +137,11 @@ func newDispatchFixture(t *testing.T, opts ...dispatch.Option) dispatchFixture {
 		t.Fatalf("dispatch.New: %v", err)
 	}
 	return dispatchFixture{
-		repo: repo,
-		cmux: fcm,
-		disp: d,
-		now:  now,
-		ctx:  context.Background(),
+		repo:     repo,
+		executor: fex,
+		disp:     d,
+		now:      now,
+		ctx:      context.Background(),
 	}
 }
 
@@ -161,7 +152,7 @@ func TestRunEmptyQueueIsNoop(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 3}); err != nil {
 		t.Fatalf("Run on empty queue: %v", err)
 	}
-	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+	if got := len(f.executor.startCalls); got != 0 {
 		t.Errorf("NewWorkspace called %d times on empty queue; want 0", got)
 	}
 }
@@ -186,12 +177,12 @@ func TestRunDispatchesSinglePending(t *testing.T) {
 	}
 
 	// NewWorkspace called once with the documented argv shape.
-	if len(f.cmux.newWorkspaceCalls) != 1 {
-		t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+	if len(f.executor.startCalls) != 1 {
+		t.Fatalf("NewWorkspace calls = %d; want 1", len(f.executor.startCalls))
 	}
-	got := f.cmux.newWorkspaceCalls[0]
-	if got.CWD != "/tmp/work" {
-		t.Errorf("CWD = %q; want %q", got.CWD, "/tmp/work")
+	got := f.executor.startCalls[0]
+	if got.Cwd != "/tmp/work" {
+		t.Errorf("Cwd = %q; want %q", got.Cwd, "/tmp/work")
 	}
 	if got.Command != "claude --dangerously-skip-permissions" {
 		t.Errorf("Command = %q; want claude command", got.Command)
@@ -201,16 +192,13 @@ func TestRunDispatchesSinglePending(t *testing.T) {
 		t.Errorf("Name = %q; want it to start with %q and contain title", got.Name, wantNamePrefix)
 	}
 
-	// WaitReady + Send each called once.
-	if len(f.cmux.waitReadyCalls) != 1 {
-		t.Errorf("WaitReady calls = %d; want 1", len(f.cmux.waitReadyCalls))
-	}
-	if len(f.cmux.sendCalls) != 1 {
-		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	// Send called once.
+	if len(f.executor.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.executor.sendCalls))
 	}
 
 	// Send payload contains the prompt sections.
-	payload := f.cmux.sendCalls[0].Text
+	payload := f.executor.sendCalls[0].Text
 	for _, want := range []string{"BASE-SKILL", "Buy milk", "from the corner store"} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("Send payload missing %q; got:\n%s", want, payload)
@@ -222,8 +210,8 @@ func TestRunDispatchesSinglePending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if row.WS != f.cmux.sendCalls[0].WS.ID {
-		t.Errorf("ws = %q; want %q", row.WS, f.cmux.sendCalls[0].WS.ID)
+	if row.WS != f.executor.sendCalls[0].WS.ID {
+		t.Errorf("ws = %q; want %q", row.WS, f.executor.sendCalls[0].WS.ID)
 	}
 	if row.Status != store.StatusRunning {
 		t.Errorf("status = %q; want %q", row.Status, store.StatusRunning)
@@ -233,12 +221,14 @@ func TestRunDispatchesSinglePending(t *testing.T) {
 	}
 }
 
-// C2b: SetWorkspace must commit BEFORE WaitReady so a parallel dispatcher
-// iteration querying for pending rows cannot re-claim the row.
-func TestRunWritesWorkspaceBeforeWaitReady(t *testing.T) {
+// C2b: the row must be claimed (non-empty ws sentinel) for the entire
+// duration of Start — which now folds in the backend readiness wait — so
+// a parallel dispatcher iteration querying for pending rows cannot
+// re-claim it mid-flight. By the time Send delivers the prompt the row
+// must already be committed to running with its real ws set.
+func TestRunClaimsRowForDurationOfStartAndSend(t *testing.T) {
 	f := newDispatchFixture(t)
 
-	// Insert a single pending row.
 	id, err := f.repo.Insert(f.ctx, store.Task{
 		Source: "manual", Title: "ordering test", Body: "b", CWD: "/tmp",
 	})
@@ -246,27 +236,45 @@ func TestRunWritesWorkspaceBeforeWaitReady(t *testing.T) {
 		t.Fatalf("Insert: %v", err)
 	}
 
-	// During WaitReady, snapshot the row state. If SetWorkspace ran first,
-	// ws is already populated; if it ran second, ws is still empty.
-	var wsAtWaitReady, statusAtWaitReady string
-	f.cmux.waitReadyHook = func(_ cmux.Workspace) error {
-		row, err := f.repo.Get(f.ctx, id)
-		if err != nil {
-			return fmt.Errorf("probe inside WaitReady: %w", err)
+	// During Start (which internally waits for readiness), the row must
+	// already carry a non-empty ws — the __dispatching__ claim sentinel —
+	// so a concurrent ClaimWorkspace fails and cannot double-dispatch.
+	var wsAtStart string
+	f.executor.startHook = func(spec exec.SessionSpec) (exec.Session, error) {
+		row, gerr := f.repo.Get(f.ctx, id)
+		if gerr != nil {
+			return exec.Session{}, fmt.Errorf("probe inside Start: %w", gerr)
 		}
-		wsAtWaitReady = row.WS
-		statusAtWaitReady = row.Status
+		wsAtStart = row.WS
+		f.executor.mu.Lock()
+		nextID := f.executor.nextID
+		f.executor.mu.Unlock()
+		return exec.NewSession(fmt.Sprintf("workspace:%d", nextID), nil), nil
+	}
+
+	// By Send time the row must be running with its real ws committed.
+	var wsAtSend, statusAtSend string
+	f.executor.sendHook = func(s exec.Session, _ string) error {
+		row, gerr := f.repo.Get(f.ctx, id)
+		if gerr != nil {
+			return fmt.Errorf("probe inside Send: %w", gerr)
+		}
+		wsAtSend = row.WS
+		statusAtSend = row.Status
 		return nil
 	}
 
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if wsAtWaitReady == "" {
-		t.Errorf("ws was empty at WaitReady time; SetWorkspace must run BEFORE WaitReady to prevent duplicate dispatch")
+	if wsAtStart == "" {
+		t.Errorf("ws was empty during Start; the claim sentinel must protect the row before the readiness wait")
 	}
-	if statusAtWaitReady != store.StatusRunning {
-		t.Errorf("status at WaitReady = %q; want running already (no concurrent dispatcher should pick this row)", statusAtWaitReady)
+	if wsAtSend == "" {
+		t.Errorf("ws was empty at Send time; SetWorkspace must commit before Send")
+	}
+	if statusAtSend != store.StatusRunning {
+		t.Errorf("status at Send = %q; want running already (no concurrent dispatcher should pick this row)", statusAtSend)
 	}
 }
 
@@ -297,13 +305,13 @@ func TestRunFollowsDispatchOrder(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 3}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(f.cmux.newWorkspaceCalls) != 3 {
-		t.Fatalf("NewWorkspace calls = %d; want 3", len(f.cmux.newWorkspaceCalls))
+	if len(f.executor.startCalls) != 3 {
+		t.Fatalf("NewWorkspace calls = %d; want 3", len(f.executor.startCalls))
 	}
 
 	wantOrder := []int64{highID, medID, lowID}
 	for i, want := range wantOrder {
-		got := f.cmux.newWorkspaceCalls[i].Name
+		got := f.executor.startCalls[i].Name
 		wantPrefix := fmt.Sprintf("#%d ", want)
 		if !strings.HasPrefix(got, wantPrefix) {
 			t.Errorf("call[%d] Name = %q; want prefix %q", i, got, wantPrefix)
@@ -324,7 +332,7 @@ func TestRunHonoursMaxParallel(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 2}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := len(f.cmux.newWorkspaceCalls); got != 2 {
+	if got := len(f.executor.startCalls); got != 2 {
 		t.Errorf("NewWorkspace calls = %d; want 2 (MaxParallel)", got)
 	}
 }
@@ -349,8 +357,8 @@ func TestRunAcquiresLockWhenLockHintResolves(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(f.cmux.newWorkspaceCalls) != 1 {
-		t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+	if len(f.executor.startCalls) != 1 {
+		t.Fatalf("NewWorkspace calls = %d; want 1", len(f.executor.startCalls))
 	}
 	row, err := f.repo.Get(f.ctx, id)
 	if err != nil {
@@ -430,7 +438,7 @@ func TestRunSkipsLockedRowAndContinues(t *testing.T) {
 		t.Error("free ws is empty; expected dispatched")
 	}
 	// MaxParallel=1 was consumed by the free row, not the skipped one.
-	if got := len(f.cmux.newWorkspaceCalls); got != 1 {
+	if got := len(f.executor.startCalls); got != 1 {
 		t.Errorf("NewWorkspace calls = %d; want 1 (locked row must not consume budget)", got)
 	}
 }
@@ -498,7 +506,7 @@ func TestRunRecordsAuditOnSuccessfulDispatch(t *testing.T) {
 func TestRunRecordsAuditOnDispatchFailure(t *testing.T) {
 	au := &fakeAuditor{}
 	f := newDispatchFixture(t, dispatch.WithAuditor(au))
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return errors.New("cmux send: exit 1")
 	}
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -554,7 +562,7 @@ func TestRunRejectsCwdOutsideAllowlist(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+	if got := len(f.executor.startCalls); got != 0 {
 		t.Errorf("NewWorkspace called %d times for cwd outside allowlist; want 0", got)
 	}
 	row, err := f.repo.Get(f.ctx, bad)
@@ -681,11 +689,11 @@ func TestRunEmptyCwdFallsBackToDefaultCwd(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := len(f.cmux.newWorkspaceCalls); got != 1 {
+	if got := len(f.executor.startCalls); got != 1 {
 		t.Fatalf("NewWorkspace calls = %d; want 1 (empty cwd should dispatch via defaultCwd)", got)
 	}
-	if got := f.cmux.newWorkspaceCalls[0].CWD; got != "/tmp/default" {
-		t.Errorf("NewWorkspace CWD = %q; want %q (empty task cwd must fall back to default_cwd)", got, "/tmp/default")
+	if got := f.executor.startCalls[0].Cwd; got != "/tmp/default" {
+		t.Errorf("Start Cwd = %q; want %q (empty task cwd must fall back to default_cwd)", got, "/tmp/default")
 	}
 	row, err := f.repo.Get(f.ctx, id)
 	if err != nil {
@@ -712,7 +720,7 @@ func TestRunEmptyCwdWithNoDefaultCwdFails(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+	if got := len(f.executor.startCalls); got != 0 {
 		t.Errorf("NewWorkspace called %d times; want 0 (empty cwd with no default must not reach cmux)", got)
 	}
 	row, err := f.repo.Get(f.ctx, id)
@@ -737,7 +745,7 @@ func TestRunEmptyCwdWithNoDefaultCwdFails(t *testing.T) {
 // that `marunage review` relies on for post-mortem.
 func TestRunPreservesPriorJudgmentReasonOnFailure(t *testing.T) {
 	f := newDispatchFixture(t)
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return errors.New("cmux send: exit 1")
 	}
 
@@ -847,11 +855,11 @@ func TestRunNoRunningWithoutStartedAtOnSetStartedAtFailure(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	repo := store.NewTaskRepo(db, store.WithClock(func() time.Time { return now }))
 	wrapped := &setStartedAtFailingStore{Store: repo}
-	fcm := &fakeCmux{}
+	fcm := &fakeExecutor{}
 
 	d, err := dispatch.New(
 		dispatch.WithStore(wrapped),
-		dispatch.WithCmux(fcm),
+		dispatch.WithExecutor(fcm),
 		dispatch.WithClock(func() time.Time { return now }),
 		dispatch.WithBaseSkill("BASE"),
 		dispatch.WithClaudeCommand("claude"),
@@ -907,12 +915,12 @@ func TestRunReleasesLockOnNewWorkspaceFailure(t *testing.T) {
 	// AcquireLock'd it; the second row shares the same lock_hint and must
 	// still go through".
 	var calls int
-	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
+	f.executor.startHook = func(_ exec.SessionSpec) (exec.Session, error) {
 		calls++
 		if calls == 1 {
-			return cmux.Workspace{}, errors.New("cmux exploded")
+			return exec.Session{}, errors.New("cmux exploded")
 		}
-		return cmux.Workspace{ID: fmt.Sprintf("workspace:%d", calls)}, nil
+		return exec.NewSession(fmt.Sprintf("workspace:%d", calls), nil), nil
 	}
 
 	first, err := f.repo.Insert(f.ctx, store.Task{
@@ -962,8 +970,8 @@ func TestRunReleasesLockOnNewWorkspaceFailure(t *testing.T) {
 // D1: NewWorkspace failure leaves the row pending so it retries next round.
 func TestRunRequeueOnNewWorkspaceFailure(t *testing.T) {
 	f := newDispatchFixture(t)
-	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
-		return cmux.Workspace{}, errors.New("cmux exploded")
+	f.executor.startHook = func(_ exec.SessionSpec) (exec.Session, error) {
+		return exec.Session{}, errors.New("cmux exploded")
 	}
 
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -987,13 +995,16 @@ func TestRunRequeueOnNewWorkspaceFailure(t *testing.T) {
 	}
 }
 
-// D2: WaitReady failure after SetWorkspace marks the row failed with a
-// judgment_reason explaining what went wrong, so the reaper does not
-// have to chase a phantom running row.
-func TestRunMarksFailedOnWaitReadyError(t *testing.T) {
+// D2: a Start that creates the session but fails to bring it ready
+// (signalled by a populated Session.ID alongside the error) marks the row
+// failed with an explanatory judgment_reason and PRESERVES the ws, so the
+// reaper can reclaim the orphan rather than the dispatcher leaking a
+// second session on retry.
+func TestRunMarksFailedOnReadinessError(t *testing.T) {
 	f := newDispatchFixture(t)
-	f.cmux.waitReadyHook = func(_ cmux.Workspace) error {
-		return cmux.ErrTimeout
+	f.executor.startHook = func(_ exec.SessionSpec) (exec.Session, error) {
+		// Populated ID + error == "created but not ready".
+		return exec.NewSession("workspace:1", nil), errors.New("did not become ready before timeout")
 	}
 
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1010,20 +1021,20 @@ func TestRunMarksFailedOnWaitReadyError(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if row.Status != store.StatusFailed {
-		t.Errorf("status after WaitReady failure = %q; want %q", row.Status, store.StatusFailed)
+		t.Errorf("status after readiness failure = %q; want %q", row.Status, store.StatusFailed)
 	}
-	if !strings.Contains(row.JudgmentReason, "WaitReady") && !strings.Contains(row.JudgmentReason, "wait") {
-		t.Errorf("judgment_reason = %q; want to mention WaitReady", row.JudgmentReason)
+	if !strings.Contains(row.JudgmentReason, "ready") {
+		t.Errorf("judgment_reason = %q; want to mention the readiness failure", row.JudgmentReason)
 	}
 	if row.WS == "" {
-		t.Errorf("ws cleared on WaitReady failure; want preserved (workspace exists, just unresponsive — reaper visibility)")
+		t.Errorf("ws cleared on readiness failure; want preserved (session exists, just unresponsive — reaper visibility)")
 	}
 }
 
 // D2b: Send failure after a successful WaitReady marks the row failed.
 func TestRunMarksFailedOnSendError(t *testing.T) {
 	f := newDispatchFixture(t)
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return errors.New("cmux send: exit 1")
 	}
 
@@ -1083,10 +1094,10 @@ func TestRunCreatesWorkspaceDirAndEmbedsSentinelPath(t *testing.T) {
 		t.Errorf("workspace path %q is not a directory", wantDir)
 	}
 
-	if len(f.cmux.sendCalls) != 1 {
-		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	if len(f.executor.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.executor.sendCalls))
 	}
-	payload := f.cmux.sendCalls[0].Text
+	payload := f.executor.sendCalls[0].Text
 	wantSentinel := filepath.Join(wantDir, ".exit_code")
 	if !strings.Contains(payload, wantSentinel) {
 		t.Errorf("Send payload does not embed sentinel path %q; got:\n%s", wantSentinel, payload)
@@ -1119,17 +1130,17 @@ func TestRunLeavesRowPendingWhenWorkspaceMkdirFails(t *testing.T) {
 	if row.Status != store.StatusPending {
 		t.Errorf("status after mkdir failure = %q; want still %q (retryable)", row.Status, store.StatusPending)
 	}
-	if got := len(f.cmux.newWorkspaceCalls); got != 0 {
+	if got := len(f.executor.startCalls); got != 0 {
 		t.Errorf("NewWorkspace calls = %d; want 0 (mkdir must precede NewWorkspace)", got)
 	}
 }
 
-// D1c (PR-43): NewWorkspace failure leaves a trace in audit.log.
-func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
+// D1c (PR-43): a Start create failure leaves a trace in audit.log.
+func TestRunRecordsAuditOnStartFailure(t *testing.T) {
 	au := &fakeAuditor{}
 	f := newDispatchFixture(t, dispatch.WithAuditor(au))
-	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
-		return cmux.Workspace{}, errors.New("cmux: simulated failure")
+	f.executor.startHook = func(_ exec.SessionSpec) (exec.Session, error) {
+		return exec.Session{}, errors.New("backend: simulated failure")
 	}
 
 	id, err := f.repo.Insert(f.ctx, store.Task{
@@ -1152,13 +1163,13 @@ func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
 
 	var found *config.AuditEvent
 	for i, ev := range au.Events() {
-		if ev.Action == "dispatch.fail" && strings.Contains(ev.Value, "NewWorkspace") {
+		if ev.Action == "dispatch.fail" && strings.Contains(ev.Value, "Start") {
 			found = &au.Events()[i]
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("expected dispatch.fail audit mentioning NewWorkspace; got %+v", au.Events())
+		t.Fatalf("expected dispatch.fail audit mentioning Start; got %+v", au.Events())
 	}
 	wantKey := fmt.Sprintf("task:%d", id)
 	if found.Key != wantKey {
@@ -1170,8 +1181,8 @@ func TestRunRecordsAuditOnNewWorkspaceFailure(t *testing.T) {
 // __dispatching__ sentinel so the row is retryable.
 func TestRunClearsSentinelOnNewWorkspaceFailureAfterClaim(t *testing.T) {
 	f := newDispatchFixture(t)
-	f.cmux.newWorkspaceHook = func(_ cmux.NewWorkspaceOptions) (cmux.Workspace, error) {
-		return cmux.Workspace{}, errors.New("cmux exploded")
+	f.executor.startHook = func(_ exec.SessionSpec) (exec.Session, error) {
+		return exec.Session{}, errors.New("cmux exploded")
 	}
 	id, err := f.repo.Insert(f.ctx, store.Task{
 		Source: "manual", Title: "sentinel cleanup", CWD: "/tmp",
@@ -1258,7 +1269,7 @@ func TestRunConcurrentDispatchersDoNotDoubleClaim(t *testing.T) {
 	// Shared cmux client. NewWorkspace returns a unique ws ID per call so
 	// duplicate dispatches are observable as duplicate IDs in the cmux
 	// call log.
-	fcm := &fakeCmux{}
+	fcm := &fakeExecutor{}
 
 	const N = 10
 	var ids []int64
@@ -1275,7 +1286,7 @@ func TestRunConcurrentDispatchersDoNotDoubleClaim(t *testing.T) {
 	newDisp := func() *dispatch.Dispatcher {
 		d, err := dispatch.New(
 			dispatch.WithStore(repo),
-			dispatch.WithCmux(fcm),
+			dispatch.WithExecutor(fcm),
 			dispatch.WithClock(func() time.Time { return now }),
 			dispatch.WithBaseSkill("BASE"),
 			dispatch.WithClaudeCommand("claude"),
@@ -1301,11 +1312,11 @@ func TestRunConcurrentDispatchersDoNotDoubleClaim(t *testing.T) {
 
 	// Every NewWorkspace call must correspond to a distinct task — there
 	// must be no row dispatched twice.
-	if got := len(fcm.newWorkspaceCalls); got != N {
+	if got := len(fcm.startCalls); got != N {
 		t.Errorf("NewWorkspace calls = %d; want %d (each row dispatched exactly once)", got, N)
 	}
 	seenName := make(map[string]int)
-	for _, c := range fcm.newWorkspaceCalls {
+	for _, c := range fcm.startCalls {
 		seenName[c.Name]++
 	}
 	for name, n := range seenName {
@@ -1362,7 +1373,7 @@ func newPermissionFixture(t *testing.T, policy string, autoAccept []string) (dis
 	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusRunning); err != nil {
 		t.Fatalf("UpdateStatus(running): %v", err)
 	}
-	f.cmux = nil // unused in these tests; HandlePermissionRequest is direct.
+	f.executor = nil // unused in these tests; HandlePermissionRequest is direct.
 	_ = au
 	return f, id
 }
@@ -1552,7 +1563,7 @@ func TestNewRequiresMatcherWhenPermissionModeNotBypass(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			_, err := dispatch.New(
 				dispatch.WithStore(stubStore{}),
-				dispatch.WithCmux(&fakeCmux{}),
+				dispatch.WithExecutor(&fakeExecutor{}),
 				dispatch.WithBaseSkill("BASE"),
 				dispatch.WithClaudeCommand("claude"),
 				dispatch.WithPermissionMode(mode),
@@ -1573,7 +1584,7 @@ func TestNewRequiresMatcherWhenPermissionModeNotBypass(t *testing.T) {
 func TestNewBypassModeDoesNotRequireMatcher(t *testing.T) {
 	_, err := dispatch.New(
 		dispatch.WithStore(stubStore{}),
-		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithExecutor(&fakeExecutor{}),
 		dispatch.WithBaseSkill("BASE"),
 		dispatch.WithClaudeCommand("claude --dangerously-skip-permissions"),
 		dispatch.WithPermissionMode("bypass"),
@@ -1590,7 +1601,7 @@ func TestNewBypassModeDoesNotRequireMatcher(t *testing.T) {
 func TestNewEmptyPermissionModeDoesNotRequireMatcher(t *testing.T) {
 	_, err := dispatch.New(
 		dispatch.WithStore(stubStore{}),
-		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithExecutor(&fakeExecutor{}),
 		dispatch.WithBaseSkill("BASE"),
 		dispatch.WithClaudeCommand("claude"),
 	)
@@ -1603,7 +1614,7 @@ func TestNewEmptyPermissionModeDoesNotRequireMatcher(t *testing.T) {
 func TestNewRejectsUnknownPermissionPolicy(t *testing.T) {
 	_, err := dispatch.New(
 		dispatch.WithStore(stubStore{}),
-		dispatch.WithCmux(&fakeCmux{}),
+		dispatch.WithExecutor(&fakeExecutor{}),
 		dispatch.WithBaseSkill("BASE"),
 		dispatch.WithClaudeCommand("claude"),
 		dispatch.WithOnUnknownPermission("nonsense"),
@@ -1685,7 +1696,7 @@ func TestRunRedactsSecretsInFailureReason(t *testing.T) {
 	au := &fakeAuditor{}
 	f := newDispatchFixture(t, dispatch.WithAuditor(au))
 	const leaked = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
-	f.cmux.sendHook = func(_ cmux.Workspace, _ string) error {
+	f.executor.sendHook = func(_ exec.Session, _ string) error {
 		return fmt.Errorf("cmux send: 401 unauthorized; Authorization: Bearer %s", leaked)
 	}
 
@@ -1730,10 +1741,10 @@ func TestRunOmitsSentinelSectionWhenWorkspaceDirsUnset(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(f.cmux.sendCalls) != 1 {
-		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	if len(f.executor.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.executor.sendCalls))
 	}
-	payload := f.cmux.sendCalls[0].Text
+	payload := f.executor.sendCalls[0].Text
 	for _, banned := range []string{".exit_code", ".result_summary"} {
 		if strings.Contains(payload, banned) {
 			t.Errorf("Send payload unexpectedly contains %q:\n%s", banned, payload)
@@ -1776,10 +1787,10 @@ func TestRunWorkspaceNameTrimsByRuneCount(t *testing.T) {
 			if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if len(f.cmux.newWorkspaceCalls) != 1 {
-				t.Fatalf("NewWorkspace calls = %d; want 1", len(f.cmux.newWorkspaceCalls))
+			if len(f.executor.startCalls) != 1 {
+				t.Fatalf("NewWorkspace calls = %d; want 1", len(f.executor.startCalls))
 			}
-			got := f.cmux.newWorkspaceCalls[0].Name
+			got := f.executor.startCalls[0].Name
 			if !utf8.ValidString(got) {
 				t.Errorf("workspace name %q is not valid UTF-8", got)
 			}
@@ -1814,10 +1825,10 @@ func TestRunIncludesTriageSkillInSendPayload(t *testing.T) {
 	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(f.cmux.sendCalls) != 1 {
-		t.Fatalf("Send calls = %d; want 1", len(f.cmux.sendCalls))
+	if len(f.executor.sendCalls) != 1 {
+		t.Fatalf("Send calls = %d; want 1", len(f.executor.sendCalls))
 	}
-	payload := f.cmux.sendCalls[0].Text
+	payload := f.executor.sendCalls[0].Text
 	if !strings.Contains(payload, triageSkillBody) {
 		t.Errorf("Send payload missing triage skill body %q; got:\n%s", triageSkillBody, payload)
 	}
@@ -1853,10 +1864,10 @@ func TestRunOmitsTriageSectionWhenSkillNotConfigured(t *testing.T) {
 	if err := withoutF.disp.Run(withoutF.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run (without): %v", err)
 	}
-	if len(withoutF.cmux.sendCalls) != 1 {
-		t.Fatalf("Send calls (without) = %d; want 1", len(withoutF.cmux.sendCalls))
+	if len(withoutF.executor.sendCalls) != 1 {
+		t.Fatalf("Send calls (without) = %d; want 1", len(withoutF.executor.sendCalls))
 	}
-	without := withoutF.cmux.sendCalls[0].Text
+	without := withoutF.executor.sendCalls[0].Text
 	if strings.Contains(without, triageMarker) {
 		t.Errorf("Send payload unexpectedly contains triage marker without WithTriageSkill:\n%s", without)
 	}
@@ -1873,10 +1884,10 @@ func TestRunOmitsTriageSectionWhenSkillNotConfigured(t *testing.T) {
 	if err := withF.disp.Run(withF.ctx, dispatch.RunOptions{MaxParallel: 1}); err != nil {
 		t.Fatalf("Run (with): %v", err)
 	}
-	if len(withF.cmux.sendCalls) != 1 {
-		t.Fatalf("Send calls (with) = %d; want 1", len(withF.cmux.sendCalls))
+	if len(withF.executor.sendCalls) != 1 {
+		t.Fatalf("Send calls (with) = %d; want 1", len(withF.executor.sendCalls))
 	}
-	with := withF.cmux.sendCalls[0].Text
+	with := withF.executor.sendCalls[0].Text
 	if !strings.Contains(with, triageMarker) {
 		t.Errorf("Send payload should contain triage marker when WithTriageSkill is set:\n%s", with)
 	}
