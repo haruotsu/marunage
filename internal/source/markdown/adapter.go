@@ -127,19 +127,25 @@ func convertTasks(in []Task) []source.Task {
 //
 //	ExternalID  <- ExternalID
 //	Title       <- Title
+//	Body        <- Title (a checklist line is its own content; see below)
 //	Done        <- Done
 //	SourcePath  <- SourcePath
 //	Source      = pluginName ("markdown")
 //	RawMetadata { "line_number": LineNumber }
 //
-// Notes / Body / Priority stay at zero — markdown.Task does not carry them
-// today. PR-71 layers triage on top and is responsible for filling those
-// in (or not) based on plugin output.
+// Body mirrors Title because a GitHub-flavoured checklist line carries its
+// whole actionable description in that one line — there is no separate body.
+// The management layer (internal/manage) treats an empty Body as "info
+// insufficient" and escalates the row to needs-human; without this mirror
+// every markdown item would escalate and none would ever reach ready
+// (redesign §3.2). Notes / Priority stay at zero — markdown.Task does not
+// carry them today.
 func convertTask(t Task) source.Task {
 	return source.Task{
 		Source:     pluginName,
 		ExternalID: t.ExternalID,
 		Title:      t.Title,
+		Body:       t.Title,
 		Done:       t.Done,
 		SourcePath: t.SourcePath,
 		RawMetadata: map[string]any{
