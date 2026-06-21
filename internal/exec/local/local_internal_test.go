@@ -16,7 +16,8 @@ import (
 type fakeProcess struct {
 	mu          sync.Mutex
 	id          int
-	written     []byte
+	written     []byte // bytes received on stdin via write()
+	output      string // simulated captured stdout/stderr, read by snapshot()
 	exitCode    int
 	waitErr     error
 	killed      bool
@@ -66,7 +67,7 @@ func (p *fakeProcess) kill() error {
 func (p *fakeProcess) snapshot() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return string(p.written)
+	return p.output
 }
 
 func (p *fakeProcess) sent() string {
@@ -203,6 +204,19 @@ func TestAwaitExitCancelledKillsProcess(t *testing.T) {
 	}
 }
 
+func TestAwaitExitPropagatesWaitError(t *testing.T) {
+	proc := &fakeProcess{id: 2, waitErr: errors.New("wait blew up")}
+	e := New(withStarter(&fakeStarter{proc: proc}))
+
+	sess, err := e.Start(context.Background(), exec.SessionSpec{Command: "claude"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := e.AwaitExit(context.Background(), sess); err == nil {
+		t.Error("AwaitExit: expected the underlying wait error, got nil")
+	}
+}
+
 func TestAwaitExitClosesStdin(t *testing.T) {
 	proc := &fakeProcess{id: 2}
 	e := New(withStarter(&fakeStarter{proc: proc}))
@@ -232,8 +246,7 @@ func TestAwaitExitWithoutLiveProcessErrors(t *testing.T) {
 }
 
 func TestReadOutputSnapshot(t *testing.T) {
-	proc := &fakeProcess{id: 5}
-	_, _ = proc.write([]byte("hello world"))
+	proc := &fakeProcess{id: 5, output: "hello world"}
 	e := New(withStarter(&fakeStarter{proc: proc}))
 
 	sess, err := e.Start(context.Background(), exec.SessionSpec{Command: "claude"})

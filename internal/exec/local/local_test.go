@@ -2,7 +2,11 @@ package local_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -72,6 +76,65 @@ func TestRoundTripNonZeroExit(t *testing.T) {
 	}
 }
 
+// TestAwaitExitCancelKillsProcessTree proves ctx cancellation tears down
+// the whole process group, not just the sh -c parent. The command
+// backgrounds a long sleep (a grandchild) and records its pid; after
+// cancellation that grandchild must be gone, otherwise it was orphaned.
+func TestAwaitExitCancelKillsProcessTree(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+
+	e := local.New()
+	sess, err := e.Start(context.Background(), exec.SessionSpec{
+		Command: "sleep 30 & echo $! > " + pidFile + "; wait",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	grandchild := waitForPid(t, pidFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	awaitDone := make(chan error, 1)
+	go func() {
+		_, err := e.AwaitExit(ctx, sess)
+		awaitDone <- err
+	}()
+
+	// Poll for the grandchild's death independently of AwaitExit returning:
+	// if only the sh parent is killed, the backgrounded sleep is orphaned and
+	// survives well past this deadline.
+	deadline := time.Now().Add(3 * time.Second)
+	for syscall.Kill(grandchild, 0) != syscall.ESRCH {
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild pid %d survived cancellation (process group not killed)", grandchild)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := <-awaitDone; err != context.Canceled {
+		t.Fatalf("AwaitExit error = %v, want context.Canceled", err)
+	}
+}
+
+func waitForPid(t *testing.T, pidFile string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && pid > 0 {
+				return pid
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grandchild never recorded its pid")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestEnvForwarded confirms spec.Env reaches the child, demonstrating the
 // per-session environment knob cmux could not honour.
 func TestEnvForwarded(t *testing.T) {
@@ -119,13 +182,15 @@ func TestSendThenAwaitWithCat(t *testing.T) {
 		t.Errorf("cat exit code = %d, want 0", code)
 	}
 
-	if r, ok := e.(exec.OutputReader); ok {
-		out, err := r.ReadOutput(context.Background(), sess)
-		if err != nil {
-			t.Fatalf("ReadOutput: %v", err)
-		}
-		if !strings.Contains(out, "ping") {
-			t.Errorf("stdout snapshot = %q, want it to contain %q", out, "ping")
-		}
+	r, ok := e.(exec.OutputReader)
+	if !ok {
+		t.Fatal("localExecutor must implement exec.OutputReader")
+	}
+	out, err := r.ReadOutput(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("ReadOutput: %v", err)
+	}
+	if !strings.Contains(out, "ping") {
+		t.Errorf("stdout snapshot = %q, want it to contain %q", out, "ping")
 	}
 }

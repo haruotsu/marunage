@@ -34,6 +34,7 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
+	"syscall"
 
 	"github.com/haruotsu/marunage/internal/exec"
 )
@@ -188,12 +189,19 @@ func procOf(s exec.Session) (runningProcess, error) {
 type osStarter struct{}
 
 func (osStarter) start(spec exec.SessionSpec) (runningProcess, error) {
-	// spec.Command is a literal command line (e.g. "claude --foo"); run it
-	// through sh -c so quoting/args behave the same as the cmux backend,
-	// which also hands the command line to its launcher verbatim.
+	// spec.Command is a literal command line (e.g. "claude --foo") run through
+	// sh -c so quoting/redirection/args behave as written. spec.Command is a
+	// trusted, operator-controlled value (derived from permission_mode, or a
+	// custom command set in config) — NOT per-task or otherwise attacker-
+	// supplied input; treating it as such would be a shell-injection vector.
 	cmd := osexec.Command("sh", "-c", spec.Command)
 	cmd.Dir = spec.Cwd
 	cmd.Env = mergeEnv(spec.Env)
+	// Put the child in its own process group so kill can tear down the whole
+	// tree. claude is launched via sh -c and may itself spawn children; on
+	// ctx cancellation we signal the group, otherwise those grandchildren are
+	// orphaned (and any inherited stdout pipe stays open, hanging cmd.Wait).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -212,7 +220,10 @@ func (osStarter) start(spec exec.SessionSpec) (runningProcess, error) {
 
 // mergeEnv returns the launcher's environment with extra applied on top, or
 // nil when extra is empty (nil cmd.Env means "inherit unchanged", matching
-// the documented SessionSpec.Env semantics).
+// the documented SessionSpec.Env semantics). The child inherits the
+// launcher's full environment, including any credentials marunage holds —
+// the same exposure as the cmux backend. A future minimum-privilege option
+// (an allow-list of passed-through variables) would narrow this.
 func mergeEnv(extra map[string]string) []string {
 	if len(extra) == 0 {
 		return nil
@@ -225,21 +236,17 @@ func mergeEnv(extra map[string]string) []string {
 }
 
 type osProcess struct {
-	cmd       *osexec.Cmd
-	stdin     io.WriteCloser
-	buf       *syncBuffer
-	closeOnce sync.Once
+	cmd   *osexec.Cmd
+	stdin io.WriteCloser
+	buf   *syncBuffer
 }
 
 func (p *osProcess) pid() int { return p.cmd.Process.Pid }
 
 func (p *osProcess) write(b []byte) (int, error) { return p.stdin.Write(b) }
 
-func (p *osProcess) closeStdin() error {
-	var err error
-	p.closeOnce.Do(func() { err = p.stdin.Close() })
-	return err
-}
+// closeStdin is called once, by AwaitExit, to signal EOF before waiting.
+func (p *osProcess) closeStdin() error { return p.stdin.Close() }
 
 func (p *osProcess) wait() (int, error) {
 	err := p.cmd.Wait()
@@ -259,6 +266,14 @@ func (p *osProcess) kill() error {
 	if p.cmd.Process == nil {
 		return nil
 	}
+	// Signal the whole process group (negative pid). Setpgid made the child a
+	// group leader whose pgid equals its pid, so this reaches it and every
+	// descendant that has not started its own group.
+	if err := syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL); err == nil {
+		return nil
+	}
+	// Fall back to killing just the leader if the group send failed (e.g. the
+	// group is already gone).
 	return p.cmd.Process.Kill()
 }
 
