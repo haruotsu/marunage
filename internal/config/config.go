@@ -41,12 +41,22 @@ type SecretsConfig struct {
 }
 
 type DiscoveryConfig struct {
-	Interval         string          `toml:"interval"`
-	DispatchInterval string          `toml:"dispatch_interval"`
-	SourcesEnabled   []string        `toml:"sources_enabled"`
-	Gmail            DiscoveryGmail  `toml:"gmail"`
-	Slack            DiscoverySlack  `toml:"slack"`
-	GitHub           DiscoveryGitHub `toml:"github"`
+	Interval         string            `toml:"interval"`
+	DispatchInterval string            `toml:"dispatch_interval"`
+	SourcesEnabled   []string          `toml:"sources_enabled"`
+	Markdown         DiscoveryMarkdown `toml:"markdown"`
+	Gmail            DiscoveryGmail    `toml:"gmail"`
+	Slack            DiscoverySlack    `toml:"slack"`
+	GitHub           DiscoveryGitHub   `toml:"github"`
+}
+
+// DiscoveryMarkdown configures the Markdown TODO source for the loop/daemon.
+// The `marunage discover --source markdown --file` flow supplies paths on the
+// command line; the long-running loop has no flags, so it reads them here.
+// Empty Files means the markdown source registers but observes nothing — the
+// same silent no-op the source has always had without a file.
+type DiscoveryMarkdown struct {
+	Files []string `toml:"files"`
 }
 
 type DiscoveryGmail struct {

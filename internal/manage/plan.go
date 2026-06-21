@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/haruotsu/marunage/internal/collect"
-	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -31,6 +30,12 @@ var _ Store = (*store.TaskRepo)(nil)
 type PlannedCandidate struct {
 	Candidate collect.Candidate
 	Verdict   collect.Verdict
+	// Status is the stable DB status this verdict maps to via the registry
+	// (原則1: verdict 語彙と status 語彙の分離). The cmd pipeline persists it
+	// directly so the verdict→status decision stays in manage, where the
+	// registry lives, rather than being re-derived at the wiring seam. An
+	// unknown verdict resolves to the safe needs-human status (原則2).
+	Status string
 	// Reason is the rule- or stub-scorer rationale. For a candidate that
 	// arrived already classified by early triage, the upstream reason is
 	// preserved verbatim.
@@ -162,8 +167,9 @@ func Plan(ctx context.Context, candidates []collect.Candidate, st Store, opts ..
 			}
 		}
 
-		pc := PlannedCandidate{Candidate: c, Verdict: verdict, Reason: reason}
-		if p.registry.policyFor(verdict).Dispatchable {
+		policy := p.registry.policyFor(verdict)
+		pc := PlannedCandidate{Candidate: c, Verdict: verdict, Status: policy.Status, Reason: reason}
+		if policy.Dispatchable {
 			pc.Score = p.score(c, n)
 			pc.Serialized = p.lockConflict(c, w)
 			readyIdx = append(readyIdx, len(decisions))
@@ -207,16 +213,16 @@ func parsePriority(s string) float64 {
 }
 
 // lockConflict reports whether the candidate's resolved lock key is already
-// held by a running task. Resolution reuses dispatch.ResolveLockKey so the
-// regex semantics stay identical to the dispatcher's (redesign §7 folds this
-// concern into manage; until that lands, sharing the resolver avoids
-// divergence). A resolve error is treated as "no lock" — best-effort, since a
-// lock conflict only reorders a ready row, never changes its verdict.
+// held by a running task. Resolution uses ResolveLockKey, which manage now
+// owns (redesign §7 folds the lock concern into manage), so the dispatcher can
+// reuse the same resolver downstream and the regex semantics stay identical. A
+// resolve error is treated as "no lock" — best-effort, since a lock conflict
+// only reorders a ready row, never changes its verdict.
 func (p *planner) lockConflict(c collect.Candidate, w world) bool {
 	if len(p.lockKeys) == 0 || len(w.runningLocks) == 0 {
 		return false
 	}
-	key, err := dispatch.ResolveLockKey(p.lockKeys, c.Notes)
+	key, err := ResolveLockKey(p.lockKeys, c.Notes)
 	if err != nil || key == "" {
 		return false
 	}

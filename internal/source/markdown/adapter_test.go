@@ -95,6 +95,28 @@ func TestAdapterListEquivalentToInner(t *testing.T) {
 	}
 }
 
+// A checklist line's text is its actionable content — there is no separate
+// body — so the adapter mirrors the title into Body. Without this, the
+// management layer's "info insufficient" rule (empty body -> needs-human)
+// would escalate every markdown item and nothing would ever reach ready.
+func TestAdapterListMirrorsTitleIntoBody(t *testing.T) {
+	t.Parallel()
+
+	path := seed(t, "todo.md", "- [ ] ship the release\n")
+	a := NewAdapter(New(WithFiles(path)))
+
+	got, err := a.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if got[0].Body != "ship the release" {
+		t.Errorf("Body = %q; want the title text mirrored", got[0].Body)
+	}
+}
+
 // TestAdapterAuthStatusIsAuthenticated nails down the contract from the
 // brief: the markdown source has no remote credential, so AuthStatus must
 // always be authenticated. A future expired/revoked state would imply the

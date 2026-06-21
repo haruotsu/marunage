@@ -31,9 +31,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/haruotsu/marunage/internal/collect"
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/manage"
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -82,6 +84,23 @@ type Dispatcher interface {
 	Run(ctx context.Context, opts dispatch.RunOptions) error
 }
 
+// ManageStore is the read/write surface the management pipeline needs against
+// the tasks table. It is a superset of manage.Store (List + Get) plus the
+// writes the persist step issues, so the production *store.TaskRepo satisfies
+// it implicitly and can be passed straight to manage.Plan. Injected via
+// WithManageStore; when absent, RunOnce keeps the legacy discover-and-insert
+// path so existing callers see no behaviour change (redesign §8 strangler fig).
+type ManageStore interface {
+	List(ctx context.Context, f store.ListFilter) ([]store.Task, error)
+	Get(ctx context.Context, id int64) (store.Task, error)
+	Insert(ctx context.Context, t store.Task) (int64, error)
+	GetBySourceExternalID(ctx context.Context, source, externalID string) (store.Task, error)
+	SetPlan(ctx context.Context, id int64, label, reason string, score float64, rank int, plannedAt time.Time) error
+	UpdateStatus(ctx context.Context, id int64, newStatus string) error
+}
+
+var _ ManageStore = (*store.TaskRepo)(nil)
+
 // Render is the render surface the loop needs. The CLI wires a closure
 // that calls internal/render.Render and writes ~/.marunage/view.md
 // atomically; tests pass a fake to assert "render ran exactly once".
@@ -110,6 +129,13 @@ type Loop struct {
 	maxParallel      int
 	lockKey          string
 	dispatchInterval time.Duration
+	// manageStore, when set, switches the discover phase to the
+	// collect→manage→persist pipeline (redesign §2): Gather normalises every
+	// source, manage.Plan classifies each candidate, and persist writes the
+	// verdict (plan_*) + verdict-mapped status. nil keeps the legacy
+	// discover-and-insert path.
+	manageStore ManageStore
+	manageOpts  []manage.Option
 	// ownerToken is the per-Loop sentinel used as the kv_state lock
 	// row's value so DeleteIfValue can detect "this defer's lock is no
 	// longer mine" and skip the release. Generated once at New time so
@@ -163,6 +189,20 @@ func WithLockKey(key string) Option { return func(l *Loop) { l.lockKey = key } }
 // the reaper phase is skipped. The reaper runs after render so orphaned
 // running rows are reclaimed before the next discover → dispatch cycle.
 func WithReaper(r Reaper) Option { return func(l *Loop) { l.reaper = r } }
+
+// WithManageStore turns on the collect→manage→persist pipeline (PR-R05),
+// using s for both the manage.Plan read snapshot and the persist writes.
+// When set, RunOnce replaces the legacy per-plugin discover-and-insert with
+// Gather + Plan + persist so only rows the manager marks ready dispatch.
+// Absent, the loop keeps the legacy path.
+func WithManageStore(s ManageStore) Option { return func(l *Loop) { l.manageStore = s } }
+
+// WithManageOptions forwards planner options (rules, verdict registry, cwd
+// allowlist, lock keys, clock) to manage.Plan on each tick. Ignored unless
+// WithManageStore is also set.
+func WithManageOptions(opts ...manage.Option) Option {
+	return func(l *Loop) { l.manageOpts = opts }
+}
 
 // WithDispatchInterval adds a second, shorter ticker that runs dispatch +
 // render (but NOT discover) on every fire. When > 0, pending tasks added
@@ -255,7 +295,11 @@ func (l *Loop) RunOnce(ctx context.Context) (err error) {
 		})
 	}()
 
-	l.discoverAll(ctx)
+	if l.manageStore != nil {
+		l.planAll(ctx)
+	} else {
+		l.discoverAll(ctx)
+	}
 
 	if err := l.dispatcher.Run(ctx, dispatch.RunOptions{MaxParallel: l.maxParallel}); err != nil {
 		l.auditor.Record(config.AuditEvent{
@@ -396,6 +440,175 @@ func (l *Loop) runTick(ctx context.Context) error {
 		})
 	}
 	return nil
+}
+
+// planAll is the collect→manage→persist pipeline (redesign §2), used in place
+// of discoverAll when WithManageStore is set. Gather normalises every source
+// into candidates (running cheap early triage), manage.Plan classifies each
+// one into a verdict + ordered ready列, and persist writes the verdict (plan_*)
+// and the verdict-mapped status to tasks.db. Every decision is persisted —
+// including drop / hold / needs-human — so nothing is silently lost
+// (invariant #1); the dispatcher's plan_label='ready' filter then keeps the
+// non-ready rows out of execution.
+func (l *Loop) planAll(ctx context.Context) {
+	candidates, err := collect.Gather(ctx, l.plugins(ctx), l.checkpointStore(), collect.WithClock(l.now))
+	if err != nil {
+		// Gather isolates per-source failures and returns the healthy
+		// sources' candidates alongside the joined error, so we audit and
+		// keep planning what we did collect (same "one bad plugin must not
+		// blind the tick" contract discoverAll honours).
+		l.auditor.Record(config.AuditEvent{
+			Action: "loop.discover.fail",
+			Value:  logging.Redact(err.Error()),
+		})
+	}
+
+	plan, err := manage.Plan(ctx, candidates, l.manageStore, l.manageOpts...)
+	if err != nil {
+		l.auditor.Record(config.AuditEvent{
+			Action: "loop.manage.fail",
+			Value:  logging.Redact(err.Error()),
+		})
+		return
+	}
+
+	plannedAt := l.now().UTC()
+	for _, d := range plan.Decisions {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		l.persistDecision(ctx, d, plannedAt)
+	}
+}
+
+// plugins materialises the registry into the []source.Plugin Gather consumes.
+// A plugin the registry cannot resolve is audited and skipped — the same
+// isolation discoverAll gives a single broken source.
+func (l *Loop) plugins(ctx context.Context) []source.Plugin {
+	names := l.registry.Names()
+	out := make([]source.Plugin, 0, len(names))
+	for _, name := range names {
+		p, err := l.registry.Get(name)
+		if err != nil {
+			l.auditor.Record(config.AuditEvent{
+				Action: "loop.discover.fail",
+				Key:    "source:" + name,
+				Value:  logging.Redact(err.Error()),
+			})
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// checkpointStore exposes the kv_state repo as the narrow collect.Checkpoint
+// Gather needs, or nil when no kv was wired (Gather then treats every source
+// as List-only). Returning an explicit nil — not a non-nil interface wrapping
+// a nil repo — keeps Gather's `cp == nil` guard correct.
+func (l *Loop) checkpointStore() collect.Checkpoint {
+	if l.kv == nil {
+		return nil
+	}
+	return l.kv
+}
+
+// persistDecision writes one planned candidate to tasks.db: it materialises a
+// new row (or finds the already-discovered one) and records the verdict
+// (plan_*) plus the verdict-mapped status. Per-row failures are audited and
+// skipped so one bad candidate does not abort the rest of the plan.
+func (l *Loop) persistDecision(ctx context.Context, d manage.PlannedCandidate, plannedAt time.Time) {
+	c := d.Candidate
+	// Upstream completion wins over the verdict's status: an already-done
+	// item must not re-enter the queue as pending (mirrors the legacy
+	// taskFromSource Done handling), and it carries no plan label because the
+	// management verdict is moot for something already finished upstream.
+	status := d.Status
+	if c.Done {
+		status = store.StatusDone
+	}
+
+	id, err := l.manageStore.Insert(ctx, taskFromCandidate(c, status))
+	if err != nil {
+		if !errors.Is(err, store.ErrDuplicateExternalID) {
+			l.auditManageFail(c.Source, fmt.Sprintf("insert %q: %v", c.ExternalID, err))
+			return
+		}
+		existing, getErr := l.manageStore.GetBySourceExternalID(ctx, c.Source, c.ExternalID)
+		if getErr != nil {
+			l.auditManageFail(c.Source, fmt.Sprintf("lookup %q: %v", c.ExternalID, getErr))
+			return
+		}
+		id = existing.ID
+		// A row the executor is running, or one that already reached a
+		// terminal result (done / failed), is owned by the executor /
+		// completion path — a fresh re-classification must touch neither its
+		// status nor its plan label, so we bail before both. Planner-owned
+		// states (pending / waiting_human / skipped) are re-evaluated in full
+		// so the two never drift apart: a needs-human row that now carries
+		// enough info promotes cleanly to ready + pending instead of becoming
+		// a ready/waiting_human row the dispatcher can never pick.
+		if executorOwned(existing.Status) {
+			return
+		}
+		if status != existing.Status {
+			if upErr := l.manageStore.UpdateStatus(ctx, id, status); upErr != nil {
+				l.auditManageFail(c.Source, fmt.Sprintf("status %q: %v", c.ExternalID, upErr))
+				return
+			}
+		}
+	}
+
+	if c.Done {
+		return
+	}
+	// Redact the reason before it lands in plan_reason: collect.Candidate.Reason
+	// can carry message-derived text from a custom early-triage rule, and its
+	// own doc mandates routing through logging.Redact at any persistence sink
+	// (matching the judgment_reason write in collect/triage.go).
+	if err := l.manageStore.SetPlan(ctx, id, string(d.Verdict), logging.Redact(d.Reason), d.Score, d.Rank, plannedAt); err != nil {
+		l.auditManageFail(c.Source, fmt.Sprintf("set plan %q: %v", c.ExternalID, err))
+	}
+}
+
+// executorOwned reports whether a row's status is owned by the executor or the
+// completion path rather than the planner. running means a session is live;
+// done / failed are terminal results the completion / dispatch path recorded.
+// The planner leaves these untouched when re-evaluating a re-emitted candidate.
+func executorOwned(status string) bool {
+	switch status {
+	case store.StatusRunning, store.StatusDone, store.StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// auditManageFail records one per-row management-persist failure, redacting
+// the message so a candidate field that leaked a secret does not pin it into
+// the audit sink.
+func (l *Loop) auditManageFail(source, msg string) {
+	l.auditor.Record(config.AuditEvent{
+		Action: "loop.manage.fail",
+		Key:    "source:" + source,
+		Value:  logging.Redact(msg),
+	})
+}
+
+// taskFromCandidate maps a collect.Candidate into the store.Task shape, with
+// the same Source-forced and SourcePath→ExternalURL conventions taskFromSource
+// applies on the legacy path. status is the verdict-mapped status the manage
+// layer resolved (or done for an upstream-complete item).
+func taskFromCandidate(c collect.Candidate, status string) store.Task {
+	return store.Task{
+		Source:      c.Source,
+		ExternalID:  c.ExternalID,
+		ExternalURL: c.SourcePath,
+		Title:       strings.TrimSpace(c.Title),
+		Body:        c.Body,
+		Notes:       c.Notes,
+		Status:      status,
+	}
 }
 
 // discoverAll walks the registry and runs each plugin's Since/List in

@@ -48,10 +48,18 @@ type Task struct {
 	WS             string
 	ResultSummary  string
 	Reflection     string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	StartedAt      time.Time
-	CompletedAt    time.Time
+	// Management-layer verdict state (redesign §5.2), written by SetPlan
+	// after internal/manage evaluates the row. All nullable on the wire:
+	// a row the manager has not yet seen reads these back as the zero value.
+	PlanLabel   string
+	PlanReason  string
+	PlanScore   float64
+	PlanRank    int
+	PlannedAt   time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	StartedAt   time.Time
+	CompletedAt time.Time
 }
 
 // Status enum mirrors the CHECK constraint in 0001_init.sql. Centralising
@@ -107,6 +115,10 @@ var (
 	// an empty ws — silently NULL-ing the column would defeat the
 	// atomic-claim semantics callers (PR-42b dispatcher) depend on.
 	ErrWSRequired = errors.New("store: ws is required")
+	// ErrPlannedAtRequired guards SetPlan against a zero time.Time silently
+	// leaving planned_at NULL, which would hide that the manager evaluated
+	// the row at all (mirrors ErrStartedAtRequired).
+	ErrPlannedAtRequired = errors.New("store: planned_at is required")
 )
 
 // TaskRepo is the read/write gateway to the tasks table. It keeps a
@@ -262,6 +274,7 @@ func (r *TaskRepo) Insert(ctx context.Context, t Task) (int64, error) {
 const taskColumns = `id, source, external_id, external_url, title, body, notes,
 	status, judgment_reason, priority, lock_key, cwd, ws,
 	result_summary, reflection,
+	plan_label, plan_reason, plan_score, plan_rank, planned_at,
 	created_at, updated_at, started_at, completed_at`
 
 // Get fetches a task by id. Returns ErrNotFound when the row is missing.
@@ -825,6 +838,62 @@ func (r *TaskRepo) SetWorkspace(ctx context.Context, id int64, ws string) error 
 	return nil
 }
 
+// SetPlan records the management layer's verdict state on a row (redesign
+// §5.2): the verdict label, its rationale, the scoring value, the execution
+// rank within the ready列, and the evaluation timestamp. internal/manage
+// (via the cmd pipeline, PR-R05) calls this after Plan classifies a candidate.
+//
+// rank <= 0 stores plan_rank as NULL so the dispatch ordering sorts an
+// unranked row after genuinely ranked ready rows; the row still reads back
+// PlanRank == 0. plannedAt is required — a zero time would silently NULL the
+// column and hide that the manager actually ran, the same fail-loud rule
+// SetStartedAt enforces. Missing id surfaces ErrNotFound.
+func (r *TaskRepo) SetPlan(ctx context.Context, id int64, label, reason string, score float64, rank int, plannedAt time.Time) error {
+	if plannedAt.IsZero() {
+		return ErrPlannedAtRequired
+	}
+	var rankArg any
+	if rank > 0 {
+		rankArg = rank
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE tasks
+		    SET plan_label = ?, plan_reason = ?, plan_score = ?, plan_rank = ?, planned_at = ?
+		  WHERE id = ?`,
+		nullable(label), nullable(reason), score, rankArg, formatTime(plannedAt.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("set plan: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set plan rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetBySourceExternalID fetches the row identified by the (source,
+// external_id) natural key — the same uniqueness key Insert enforces. The
+// management pipeline (PR-R05) uses it to find an already-discovered row when
+// re-evaluating a re-emitted candidate, so it can refresh the plan_* columns
+// in place instead of inserting a duplicate. Returns ErrNotFound when no row
+// matches.
+func (r *TaskRepo) GetBySourceExternalID(ctx context.Context, source, externalID string) (Task, error) {
+	row := r.db.QueryRowContext(ctx,
+		"SELECT "+taskColumns+" FROM tasks WHERE source = ? AND external_id = ?",
+		source, externalID)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, ErrNotFound
+	}
+	if err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
 // ListFilter narrows the rows List returns. Empty slices, zero Limit, and
 // zero CreatedAfter mean "no constraint".
 type ListFilter struct {
@@ -914,7 +983,16 @@ func (r *TaskRepo) List(ctx context.Context, f ListFilter) ([]Task, error) {
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	q += " ORDER BY priority DESC, created_at ASC, id ASC"
+	// Dispatch pulls rows in the management layer's intended execution order:
+	// ready rows the manager ranked come first (plan_rank ascending), then any
+	// legacy/unranked row (plan_rank NULL) falls back to the historic
+	// priority/created_at order. `plan_rank IS NULL` sorts 0 (ranked) before 1
+	// (unranked). Every other caller keeps the plain priority order.
+	if f.DispatchableOnly {
+		q += " ORDER BY plan_rank IS NULL, plan_rank ASC, priority DESC, created_at ASC, id ASC"
+	} else {
+		q += " ORDER BY priority DESC, created_at ASC, id ASC"
+	}
 	if f.Limit > 0 {
 		q += " LIMIT ?"
 		args = append(args, f.Limit)
@@ -964,6 +1042,10 @@ func scanTask(row rowScanner) (Task, error) {
 		judgment, lockKey       sql.NullString
 		cwd, ws                 sql.NullString
 		result, reflection      sql.NullString
+		planLabel, planReason   sql.NullString
+		planScore               sql.NullFloat64
+		planRank                sql.NullInt64
+		plannedAt               sql.NullString
 		createdAt, updatedAt    string
 		startedAt, completedAt  sql.NullString
 	)
@@ -972,6 +1054,7 @@ func scanTask(row rowScanner) (Task, error) {
 		&t.Title, &body, &notes, &t.Status, &judgment,
 		&t.Priority, &lockKey, &cwd, &ws,
 		&result, &reflection,
+		&planLabel, &planReason, &planScore, &planRank, &plannedAt,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
 	); err != nil {
 		return Task{}, err
@@ -986,8 +1069,15 @@ func scanTask(row rowScanner) (Task, error) {
 	t.WS = ws.String
 	t.ResultSummary = result.String
 	t.Reflection = reflection.String
+	t.PlanLabel = planLabel.String
+	t.PlanReason = planReason.String
+	t.PlanScore = planScore.Float64
+	t.PlanRank = int(planRank.Int64)
 
 	var err error
+	if t.PlannedAt, err = parseTime(plannedAt.String); err != nil {
+		return Task{}, fmt.Errorf("parse planned_at: %w", err)
+	}
 	if t.CreatedAt, err = parseTime(createdAt); err != nil {
 		return Task{}, fmt.Errorf("parse created_at: %w", err)
 	}

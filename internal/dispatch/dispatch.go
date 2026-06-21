@@ -12,6 +12,7 @@ import (
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/exec"
 	"github.com/haruotsu/marunage/internal/logging"
+	"github.com/haruotsu/marunage/internal/manage"
 	"github.com/haruotsu/marunage/internal/policy"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -540,7 +541,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, er
 		return false, nil
 	}
 
-	lockKey, err := ResolveLockKey(d.lockKeys, task.Notes)
+	lockKey, err := manage.ResolveLockKey(d.lockKeys, task.Notes)
 	if err != nil {
 		// Malformed notes is a Discovery-plugin bug; recording the row as
 		// failed here keeps the dispatcher moving instead of blocking the
