@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/haruotsu/marunage/internal/collect"
-	"github.com/haruotsu/marunage/internal/dispatch"
 	"github.com/haruotsu/marunage/internal/store"
 )
 
@@ -207,16 +206,16 @@ func parsePriority(s string) float64 {
 }
 
 // lockConflict reports whether the candidate's resolved lock key is already
-// held by a running task. Resolution reuses dispatch.ResolveLockKey so the
-// regex semantics stay identical to the dispatcher's (redesign §7 folds this
-// concern into manage; until that lands, sharing the resolver avoids
-// divergence). A resolve error is treated as "no lock" — best-effort, since a
-// lock conflict only reorders a ready row, never changes its verdict.
+// held by a running task. Resolution uses ResolveLockKey, which manage now
+// owns (redesign §7 folds the lock concern into manage), so the dispatcher can
+// reuse the same resolver downstream and the regex semantics stay identical. A
+// resolve error is treated as "no lock" — best-effort, since a lock conflict
+// only reorders a ready row, never changes its verdict.
 func (p *planner) lockConflict(c collect.Candidate, w world) bool {
 	if len(p.lockKeys) == 0 || len(w.runningLocks) == 0 {
 		return false
 	}
-	key, err := dispatch.ResolveLockKey(p.lockKeys, c.Notes)
+	key, err := ResolveLockKey(p.lockKeys, c.Notes)
 	if err != nil || key == "" {
 		return false
 	}

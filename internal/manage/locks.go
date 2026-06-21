@@ -1,4 +1,4 @@
-package dispatch
+package manage
 
 import (
 	"encoding/json"
@@ -7,18 +7,24 @@ import (
 	"sort"
 )
 
-// ResolveLockKey looks up the soft-lock key the dispatcher should
-// AcquireLock on for a row, by extracting notes."lock_hint" and matching
-// it against the regex map loaded from [execution.lock_keys] in
-// config.toml. Returns "" when no rule matches; callers skip AcquireLock
-// in that case.
+// ResolveLockKey looks up the soft-lock key a row should AcquireLock on, by
+// extracting notes."lock_hint" and matching it against the regex map loaded
+// from [execution.lock_keys] in config.toml. Returns "" when no rule matches;
+// callers skip AcquireLock in that case.
 //
-// rules has the shape {regex -> lock_key}. The resolver sorts the regex
-// keys lexicographically before iterating so that two dispatcher runs
-// against the same row always pick the same lock_key — Go map iteration
-// order is intentionally randomised, and a non-deterministic resolver
-// would let two parallel marunage instances race against each other for
-// the same row's lock.
+// It lives here, in the management layer, rather than in dispatch: lock
+// contention is a management-layer concern (redesign §3.2 "lock 競合", §7 folds
+// the lock concern into manage), and the planner's lock-conflict rule resolves
+// the same key the dispatcher later acquires. Keeping one resolver upstream of
+// dispatch makes the dependency one-directional (collect→manage→exec/dispatch)
+// instead of dispatch and manage each owning a copy, or manage reaching back
+// down into dispatch.
+//
+// rules has the shape {regex -> lock_key}. The resolver sorts the regex keys
+// lexicographically before iterating so that two runs against the same row
+// always pick the same lock_key — Go map iteration order is intentionally
+// randomised, and a non-deterministic resolver would let two parallel marunage
+// instances race against each other for the same row's lock.
 //
 // Errors:
 //   - invalid notes JSON: returned as-is so a Discovery plugin bug fails
@@ -40,7 +46,7 @@ func ResolveLockKey(rules map[string]string, notes string) (string, error) {
 	// (legitimate fall-through) apart from "malformed JSON" (an error).
 	var raw any
 	if err := json.Unmarshal([]byte(notes), &raw); err != nil {
-		return "", fmt.Errorf("dispatch: notes is not valid JSON: %w", err)
+		return "", fmt.Errorf("manage: notes is not valid JSON: %w", err)
 	}
 	obj, ok := raw.(map[string]any)
 	if !ok {
@@ -64,7 +70,7 @@ func ResolveLockKey(rules map[string]string, notes string) (string, error) {
 	for _, pattern := range patterns {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			return "", fmt.Errorf("dispatch: invalid lock_key regex %q: %w", pattern, err)
+			return "", fmt.Errorf("manage: invalid lock_key regex %q: %w", pattern, err)
 		}
 		if re.MatchString(hint) {
 			return rules[pattern], nil
