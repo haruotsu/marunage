@@ -1,7 +1,9 @@
--- 0002_plan_columns.sql adds the management-layer (PR-R03) verdict state to
--- the tasks table. The management layer (internal/manage) evaluates each
+-- 0002_plan_columns.sql adds the storage for the management layer's verdict
+-- state to the tasks table (redesign §5.2). The management-layer skeleton
+-- lands in PR-R03 and starts populating these columns in PR-R05; PR-R04 only
+-- adds the schema. The management layer (internal/manage) evaluates each
 -- candidate and records its verdict here so the dispatcher can later restrict
--- itself to rows the manager marked ready (redesign §5.2).
+-- itself to rows the manager marked ready.
 --
 -- All columns are added nullable with no DEFAULT, so the ADD COLUMN runs in
 -- O(1) and every pre-existing row reads back NULL — the new state is opt-in

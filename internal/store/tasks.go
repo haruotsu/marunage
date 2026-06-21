@@ -849,8 +849,14 @@ type ListFilter struct {
 }
 
 // dispatchablePlanLabel is the verdict the management layer assigns to rows
-// that are cleared for immediate dispatch (redesign §3.1). Centralised here so
-// the dispatch filter and any future writer agree on the literal.
+// that are cleared for immediate dispatch (redesign §3.1). config's
+// [manage.verdicts] mapping carries the same intent (the "ready" entry with
+// Dispatchable=true), but PR-R04 keeps the store filter on this literal so the
+// strangler-fig query stays self-contained while the management layer is still
+// inert. PR-R05, when it teaches the manager to write plan_label and to honour
+// the config-driven Dispatchable flags, is expected to source the dispatchable
+// set from config and retire this constant — until then the two must agree
+// that "ready" is the sole dispatchable verdict.
 const dispatchablePlanLabel = "ready"
 
 // maxFilterValues caps Statuses / Sources slice length so a caller (or a
