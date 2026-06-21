@@ -142,6 +142,9 @@ type Dispatcher struct {
 	claudeCommand       string
 	allowedCwdPrefixes  []string
 	defaultCwd          string
+	cwdStrategy         string
+	ghqRoot             string
+	isDir               func(string) bool
 	auditor             config.Auditor
 	workspaceDirs       WorkspaceDirs
 	matcher             PermissionMatcher
@@ -256,6 +259,19 @@ func WithDefaultCwd(cwd string) Option {
 	return func(d *Dispatcher) { d.defaultCwd = cwd }
 }
 
+// WithCwdStrategy selects how a task's CWD is resolved when the task carries
+// none: "ghq" maps repo-bound tasks onto their local clone, "fixed" (or empty)
+// always uses defaultCwd. See resolveCwd.
+func WithCwdStrategy(strategy string) Option {
+	return func(d *Dispatcher) { d.cwdStrategy = strategy }
+}
+
+// WithGhqRoot sets the ghq clone root used by the "ghq" cwd strategy. Empty
+// disables ghq resolution (every task falls back to defaultCwd).
+func WithGhqRoot(root string) Option {
+	return func(d *Dispatcher) { d.ghqRoot = root }
+}
+
 // ErrInvalidConfig signals a missing required Option at construction.
 var ErrInvalidConfig = errors.New("dispatch: missing required option")
 
@@ -276,6 +292,7 @@ func New(opts ...Option) (*Dispatcher, error) {
 		now:         time.Now,
 		sourceSkill: func(string) string { return "" },
 		auditor:     config.NopAuditor{},
+		isDir:       isDirOnDisk,
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -519,16 +536,26 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, dispatchReason st
 // A non-nil error is reserved for store-level failures the dispatcher
 // cannot recover from; per-row failures are recorded onto the row.
 func (d *Dispatcher) dispatchOne(ctx context.Context, task store.Task) (bool, error) {
-	// An empty task CWD means "unset"; substitute the configured default
-	// so the executor always receives a non-empty Cwd.
-	effectiveCwd := task.CWD
-	if effectiveCwd == "" {
-		effectiveCwd = d.defaultCwd
+	// Resolve where the task runs: an explicit CWD wins, otherwise the
+	// ghq strategy maps a repo-bound task onto its local clone, otherwise
+	// the configured default. cwdNote is set only when a repo was named but
+	// is not cloned locally, so we leave a trace of why it ran in the root.
+	isDir := d.isDir
+	if isDir == nil {
+		isDir = isDirOnDisk
 	}
+	effectiveCwd, cwdNote := resolveCwd(task, d.defaultCwd, d.ghqRoot, d.cwdStrategy, isDir)
 	if effectiveCwd == "" {
 		d.markFailed(ctx, task.ID,
 			"dispatch: cwd is unset and no core.default_cwd is configured")
 		return false, nil
+	}
+	if cwdNote != "" {
+		d.auditor.Record(config.AuditEvent{
+			Action: "dispatch.cwd_fallback",
+			Key:    strconv.FormatInt(task.ID, 10),
+			Value:  cwdNote,
+		})
 	}
 
 	// Reject CWD outside the configured allowlist before doing any

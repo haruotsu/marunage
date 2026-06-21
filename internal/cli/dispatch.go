@@ -140,6 +140,7 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("resolve core.default_cwd %q: %w", cfg.Core.DefaultCwd, err)
 	}
+	cwdStrategy, ghqRoot := cwdResolution(cfg)
 
 	d, err := dispatch.New(
 		dispatch.WithStore(repo),
@@ -149,6 +150,8 @@ func productionDispatcherFactory(_ context.Context, configPath string) (dispatch
 		dispatch.WithLockKeys(cfg.Execution.LockKeys),
 		dispatch.WithAllowedCwdPrefixes(expandedCwdPrefixes),
 		dispatch.WithDefaultCwd(defaultCwd),
+		dispatch.WithCwdStrategy(cwdStrategy),
+		dispatch.WithGhqRoot(ghqRoot),
 		dispatch.WithAuditor(auditor),
 		dispatch.WithWorkspaceDirs(dirs),
 		dispatch.WithPermissionMatcher(matcher),
