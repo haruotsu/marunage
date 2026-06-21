@@ -160,36 +160,36 @@ func productionLoopFactory(_ context.Context, configPath string) (loopRunner, fu
 		return nil, nil, fmt.Errorf("parse execution.reaper_stuck_threshold %q: %w",
 			cfg.Execution.ReaperStuckThreshold, err)
 	}
-	// The reaper only needs the session-lister capability; the configured
-	// backend (cmux/tmux) provides it. A backend that cannot list sessions
-	// (e.g. local) is rejected loudly rather than silently skipping orphan
-	// recovery.
-	lister, ok := executor.(exec.Lister)
-	if !ok {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("executor %q does not support session listing required by the reaper", cfg.Execution.Executor)
-	}
-	reap, err := reaper.New(
-		reaper.WithStore(repo),
-		reaper.WithExecutor(lister),
-		reaper.WithStuckThreshold(threshold),
-		reaper.WithAuditor(auditor),
-	)
-	if err != nil {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("build reaper: %w", err)
-	}
-
+	// Orphan recovery needs the session-lister capability. cmux/tmux/herdr
+	// provide it; a capability-poor backend (e.g. local) does not. Rather than
+	// refuse to run — which would block the "fire-and-forget execution works on
+	// any backend" guarantee (redesign §4.2 / §8 PR-R08) — we skip the reaper
+	// phase and warn loudly so the lost orphan recovery is never silent.
 	loopOpts := []loop.Option{
 		loop.WithRegistry(registry),
 		loop.WithTaskRepo(repo),
 		loop.WithKVStateRepo(kv),
 		loop.WithDispatcher(disp),
 		loop.WithRender(rend),
-		loop.WithReaper(reap),
 		loop.WithAuditor(auditor),
 		loop.WithMaxParallel(cfg.Core.MaxParallel),
 		loop.WithLockKey("default"),
+	}
+	if lister, ok := executor.(exec.Lister); ok {
+		reap, rerr := reaper.New(
+			reaper.WithStore(repo),
+			reaper.WithExecutor(lister),
+			reaper.WithStuckThreshold(threshold),
+			reaper.WithAuditor(auditor),
+		)
+		if rerr != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("build reaper: %w", rerr)
+		}
+		loopOpts = append(loopOpts, loop.WithReaper(reap))
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: orphan recovery (reaper) disabled — executor %q has no session listing\n", cfg.Execution.Executor)
+		auditor.Record(config.AuditEvent{Action: "loop.reaper.disabled", Value: cfg.Execution.Executor})
 	}
 	if cfg.Discovery.DispatchInterval != "" {
 		di, diErr := time.ParseDuration(cfg.Discovery.DispatchInterval)

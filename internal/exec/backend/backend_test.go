@@ -8,6 +8,7 @@ import (
 	"github.com/haruotsu/marunage/internal/exec/backend"
 	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	execherdr "github.com/haruotsu/marunage/internal/exec/herdr"
+	execlocal "github.com/haruotsu/marunage/internal/exec/local"
 	exectmux "github.com/haruotsu/marunage/internal/exec/tmux"
 )
 
@@ -40,6 +41,16 @@ func TestNewSelectsHerdr(t *testing.T) {
 	}
 	if _, ok := e.(*execherdr.Executor); !ok {
 		t.Errorf("New(herdr) = %T; want *execherdr.Executor", e)
+	}
+}
+
+func TestNewSelectsLocal(t *testing.T) {
+	e, err := backend.New("local")
+	if err != nil {
+		t.Fatalf("New(local): %v", err)
+	}
+	if _, ok := e.(*execlocal.Executor); !ok {
+		t.Errorf("New(local) = %T; want *execlocal.Executor", e)
 	}
 }
 
