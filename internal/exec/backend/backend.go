@@ -13,6 +13,7 @@ import (
 	cmuxclient "github.com/haruotsu/marunage/internal/cmux"
 	"github.com/haruotsu/marunage/internal/exec"
 	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
+	execherdr "github.com/haruotsu/marunage/internal/exec/herdr"
 	exectmux "github.com/haruotsu/marunage/internal/exec/tmux"
 )
 
@@ -35,6 +36,8 @@ func New(executor string) (exec.Executor, error) {
 		)), nil
 	case "tmux":
 		return exectmux.New(), nil
+	case "herdr":
+		return execherdr.New(), nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnknownExecutor, executor)
 	}
