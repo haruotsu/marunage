@@ -540,11 +540,18 @@ func (l *Loop) persistDecision(ctx context.Context, d manage.PlannedCandidate, p
 			return
 		}
 		id = existing.ID
-		// Re-evaluation only moves a still-pending row: a running / done /
-		// failed / waiting_human row another writer (the executor, the
-		// reaper, a human) already advanced must never be reset by a fresh
-		// classification.
-		if existing.Status == store.StatusPending && status != existing.Status {
+		// A row the executor is running, or one that already reached a
+		// terminal result (done / failed), is owned by the executor /
+		// completion path — a fresh re-classification must touch neither its
+		// status nor its plan label, so we bail before both. Planner-owned
+		// states (pending / waiting_human / skipped) are re-evaluated in full
+		// so the two never drift apart: a needs-human row that now carries
+		// enough info promotes cleanly to ready + pending instead of becoming
+		// a ready/waiting_human row the dispatcher can never pick.
+		if executorOwned(existing.Status) {
+			return
+		}
+		if status != existing.Status {
 			if upErr := l.manageStore.UpdateStatus(ctx, id, status); upErr != nil {
 				l.auditManageFail(c.Source, fmt.Sprintf("status %q: %v", c.ExternalID, upErr))
 				return
@@ -555,8 +562,25 @@ func (l *Loop) persistDecision(ctx context.Context, d manage.PlannedCandidate, p
 	if c.Done {
 		return
 	}
-	if err := l.manageStore.SetPlan(ctx, id, string(d.Verdict), d.Reason, d.Score, d.Rank, plannedAt); err != nil {
+	// Redact the reason before it lands in plan_reason: collect.Candidate.Reason
+	// can carry message-derived text from a custom early-triage rule, and its
+	// own doc mandates routing through logging.Redact at any persistence sink
+	// (matching the judgment_reason write in collect/triage.go).
+	if err := l.manageStore.SetPlan(ctx, id, string(d.Verdict), logging.Redact(d.Reason), d.Score, d.Rank, plannedAt); err != nil {
 		l.auditManageFail(c.Source, fmt.Sprintf("set plan %q: %v", c.ExternalID, err))
+	}
+}
+
+// executorOwned reports whether a row's status is owned by the executor or the
+// completion path rather than the planner. running means a session is live;
+// done / failed are terminal results the completion / dispatch path recorded.
+// The planner leaves these untouched when re-evaluating a re-emitted candidate.
+func executorOwned(status string) bool {
+	switch status {
+	case store.StatusRunning, store.StatusDone, store.StatusFailed:
+		return true
+	default:
+		return false
 	}
 }
 

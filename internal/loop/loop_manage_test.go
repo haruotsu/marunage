@@ -2,7 +2,9 @@ package loop_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/haruotsu/marunage/internal/collect"
 	"github.com/haruotsu/marunage/internal/loop"
@@ -180,6 +182,118 @@ func TestRunOnce_ManagePipeline_PersistsAllDecisions(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d; want 2 (both ready and drop persisted)", len(rows))
+	}
+}
+
+// A needs-human row that gains enough info on a later tick promotes cleanly to
+// ready+pending. Status and plan_label must move together: leaving status at
+// waiting_human while plan_label flips to ready would create a row the
+// dispatcher can never pick (status != pending) yet is labelled ready.
+func TestRunOnce_ManagePipeline_PromotesWaitingHumanToReady(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	call := 0
+	plug := &fakePlugin{
+		name: "manual",
+		listFn: func(context.Context) ([]source.Task, error) {
+			call++
+			if call == 1 {
+				// Empty body -> needs-human.
+				return []source.Task{{Source: "manual", ExternalID: "x", Title: "need info"}}, nil
+			}
+			// Body present -> ready.
+			return []source.Task{{Source: "manual", ExternalID: "x", Title: "need info", Body: "now has detail"}}, nil
+		},
+	}
+	if err := f.reg.Register(plug); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	l := f.newLoop(t, loop.WithManageStore(f.repo))
+
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("tick1: %v", err)
+	}
+	if got := rowByExternalID(t, f, "x").Status; got != store.StatusWaitingHuman {
+		t.Fatalf("after tick1 status = %q; want waiting_human", got)
+	}
+
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("tick2: %v", err)
+	}
+	row := rowByExternalID(t, f, "x")
+	if row.Status != store.StatusPending {
+		t.Errorf("status = %q; want pending (promoted)", row.Status)
+	}
+	if row.PlanLabel != "ready" {
+		t.Errorf("plan_label = %q; want ready", row.PlanLabel)
+	}
+}
+
+// A row the executor is already running must not be reset by a re-emitted
+// candidate: re-classification leaves executor-owned states (running / done /
+// failed) untouched.
+func TestRunOnce_ManagePipeline_DoesNotResetRunningRow(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	registerListPlugin(t, f, "manual", []source.Task{
+		{Source: "manual", ExternalID: "r", Title: "T", Body: "b"},
+	})
+	l := f.newLoop(t, loop.WithManageStore(f.repo))
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("tick1: %v", err)
+	}
+	row := rowByExternalID(t, f, "r")
+	// Simulate the dispatcher claiming the ready row.
+	if err := f.repo.UpdateStatus(f.ctx, row.ID, store.StatusRunning); err != nil {
+		t.Fatalf("UpdateStatus running: %v", err)
+	}
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("tick2: %v", err)
+	}
+	if got := rowByExternalID(t, f, "r").Status; got != store.StatusRunning {
+		t.Errorf("status = %q; want running (re-eval must not reset an in-flight row)", got)
+	}
+}
+
+// setPlanFailStore wraps the real repo but fails SetPlan, so the test can drive
+// persistDecision's audit-and-continue error path without a flaky real failure.
+type setPlanFailStore struct {
+	*store.TaskRepo
+	err error
+}
+
+func (s setPlanFailStore) SetPlan(context.Context, int64, string, string, float64, int, time.Time) error {
+	return s.err
+}
+
+// A per-row persist failure is audited and does not abort the tick — the row is
+// still inserted (Insert precedes SetPlan) and RunOnce returns nil.
+func TestRunOnce_ManagePipeline_PersistErrorIsAuditedAndContinues(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	registerListPlugin(t, f, "manual", []source.Task{
+		{Source: "manual", ExternalID: "a", Title: "T", Body: "b"},
+	})
+	fault := setPlanFailStore{TaskRepo: f.repo, err: errors.New("disk full")}
+	l := f.newLoop(t, loop.WithManageStore(fault))
+
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce should not bubble a per-row persist failure; got %v", err)
+	}
+	if _, err := f.repo.GetBySourceExternalID(f.ctx, "manual", "a"); err != nil {
+		t.Errorf("row should be inserted despite SetPlan failure: %v", err)
+	}
+	var sawFail bool
+	for _, e := range f.aud.snapshot() {
+		if e.Action == "loop.manage.fail" {
+			sawFail = true
+			if e.Value == "" {
+				t.Errorf("loop.manage.fail audit value empty; want the redacted error")
+			}
+		}
+	}
+	if !sawFail {
+		t.Errorf("expected loop.manage.fail audit; got %v", f.aud.actions())
 	}
 }
 
