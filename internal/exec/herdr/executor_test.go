@@ -157,6 +157,29 @@ func TestStartCreatesWorkspaceAndLaunchesClaude(t *testing.T) {
 	}
 }
 
+func TestStartPrefersRootPaneOverLexicographicallyFirst(t *testing.T) {
+	// A create response that carries more than the root pane must still launch
+	// Claude in (and address) the root pane, not whichever pane id happens to
+	// sort first. herdr documents the root pane at result.root_pane.pane_id.
+	fr := &herdrFake{
+		createOut: `{"result":{"root_pane":{"pane_id":"2-1"},"panes":[{"pane_id":"1-1"}]}}`,
+		read:      []string{readyPane},
+	}
+	e := execherdr.New(fastOpts(fr)...)
+
+	sess, err := e.Start(context.Background(), exec.SessionSpec{Cwd: "/tmp", Command: "claude", Name: "n"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if sess.ID != "2-1" {
+		t.Errorf("session ID = %q; want 2-1 (root pane, not lexicographically-first 1-1)", sess.ID)
+	}
+	runArgs := strings.Join(fr.callsFor("pane", "run")[0].args, " ")
+	if !strings.Contains(runArgs, "2-1") {
+		t.Errorf("pane run args %q; want the command addressed to root pane 2-1", runArgs)
+	}
+}
+
 func TestStartOmitsLabelWhenNameBlank(t *testing.T) {
 	fr := &herdrFake{createOut: createOK, read: []string{readyPane}}
 	e := execherdr.New(fastOpts(fr)...)
@@ -213,8 +236,34 @@ func TestStartClosesWorkspaceWhenRunFails(t *testing.T) {
 	if len(closes) != 1 {
 		t.Fatalf("workspace close calls = %d; want 1 (leak cleanup)", len(closes))
 	}
-	if !strings.Contains(strings.Join(closes[0].args, " "), "1") {
-		t.Errorf("workspace close args %v; want the workspace ref derived from pane 1-1", closes[0].args)
+	if got := closes[0].args[len(closes[0].args)-1]; got != "1" {
+		t.Errorf("workspace close ref = %q; want \"1\" (derived from pane 1-1)", got)
+	}
+}
+
+func TestStartSkipsCloseWhenPaneIDHasNoWorkspaceRef(t *testing.T) {
+	// A pane id without a "-" yields no workspace ref, so the leak-cleanup
+	// close must be skipped rather than issued against a bogus workspace.
+	fr := &herdrFake{
+		createOut: `{"result":{"root_pane":{"pane_id":"solo"}}}`,
+		runErr:    errors.New("pane run boom"),
+	}
+	e := execherdr.New(fastOpts(fr)...)
+
+	if _, err := e.Start(context.Background(), exec.SessionSpec{Cwd: "/tmp", Command: "c", Name: "n"}); err == nil {
+		t.Fatal("Start err = nil; want pane run failure")
+	}
+	if n := len(fr.callsFor("workspace", "close")); n != 0 {
+		t.Errorf("workspace close calls = %d; want 0 (no workspace ref derivable from %q)", n, "solo")
+	}
+}
+
+func TestStartMapsBinaryNotFoundOnPaneRun(t *testing.T) {
+	fr := &herdrFake{createOut: createOK, runErr: osexec.ErrNotFound}
+	e := execherdr.New(fastOpts(fr)...)
+	_, err := e.Start(context.Background(), exec.SessionSpec{Cwd: "/tmp", Command: "c", Name: "n"})
+	if !errors.Is(err, execherdr.ErrHerdrNotFound) {
+		t.Errorf("Start err = %v; want ErrHerdrNotFound when pane run reports a missing binary", err)
 	}
 }
 
@@ -348,6 +397,9 @@ func TestReadOutputReadsPane(t *testing.T) {
 	if !strings.Contains(joined, "--source recent") {
 		t.Errorf("pane read args %q; want --source recent", joined)
 	}
+	if !strings.Contains(joined, "--lines 1000") {
+		t.Errorf("pane read args %q; want the default --lines 1000", joined)
+	}
 }
 
 func TestReadOutputRejectsEmptySession(t *testing.T) {
@@ -366,6 +418,34 @@ func TestListSessionsParsesPaneIDs(t *testing.T) {
 	}
 	if len(sessions) != 2 || sessions[0].ID != "1-1" || sessions[1].ID != "2-1" {
 		t.Errorf("sessions = %+v; want ids 1-1, 2-1", sessions)
+	}
+}
+
+func TestListSessionsSortsPaneIDs(t *testing.T) {
+	// Feed the ids in reverse so the test fails if the harvester ever stops
+	// sorting — the reaper diffs this set and wants a deterministic order.
+	fr := &herdrFake{listOut: `{"result":{"panes":[{"pane_id":"2-1"},{"pane_id":"1-1"}]}}`}
+	e := execherdr.New(execherdr.WithRunner(fr))
+	sessions, err := e.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != "1-1" || sessions[1].ID != "2-1" {
+		t.Errorf("sessions = %+v; want sorted ids 1-1, 2-1", sessions)
+	}
+}
+
+func TestListSessionsTolerantOfNestedLayout(t *testing.T) {
+	// pane_id buried under an unexpected nesting must still be harvested; this
+	// pins the layout-tolerant recursion rather than a fixed top-level path.
+	fr := &herdrFake{listOut: `{"result":{"workspaces":[{"tabs":[{"panes":[{"pane_id":"3-7"}]}]}]}}`}
+	e := execherdr.New(execherdr.WithRunner(fr))
+	sessions, err := e.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "3-7" {
+		t.Errorf("sessions = %+v; want the deeply-nested pane id 3-7", sessions)
 	}
 }
 

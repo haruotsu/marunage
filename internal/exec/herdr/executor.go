@@ -133,6 +133,11 @@ func New(opts ...Option) *Executor {
 // readiness fails — so the dispatcher preserves the reference and fails the
 // row rather than leaking a second pane on retry — and the zero Session when
 // nothing usable was left behind.
+//
+// spec.Env is not forwarded: herdr exposes no per-pane environment flag on
+// `workspace create`, so the pane inherits the launcher's environment. (tmux
+// forwards env via `-e`; herdr simply lacks the capability. This can be added
+// at the Runner boundary once herdr grows an env flag.)
 func (e *Executor) Start(ctx context.Context, spec exec.SessionSpec) (exec.Session, error) {
 	args := []string{"workspace", "create", "--no-focus"}
 	if spec.Cwd != "" {
@@ -409,10 +414,23 @@ func (e *Executor) sentinelDir(s exec.Session) string {
 }
 
 // firstPaneID parses a `herdr workspace create` JSON response and returns the
-// id of the (single) pane it created. herdr documents the root pane at
-// result.root_pane.pane_id; collectPaneIDs is layout-tolerant so a future
-// reshuffle of the response still resolves the pane id.
+// id of the root pane Claude is launched in. herdr documents the root pane at
+// result.root_pane.pane_id, so that explicit path is preferred — a create
+// response that ever carries more than one pane must still resolve to the
+// root, not whichever pane id sorts first. collectPaneIDs is the layout-
+// tolerant fallback for response shapes that omit result.root_pane (herdr's
+// JSON is still evolving upstream).
 func firstPaneID(data []byte) (string, error) {
+	var typed struct {
+		Result struct {
+			RootPane struct {
+				PaneID string `json:"pane_id"`
+			} `json:"root_pane"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &typed); err == nil && typed.Result.RootPane.PaneID != "" {
+		return typed.Result.RootPane.PaneID, nil
+	}
 	ids, err := collectPaneIDs(data)
 	if err != nil {
 		return "", err
