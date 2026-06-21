@@ -12,11 +12,14 @@ Japanese version: [README.ja.md](./README.ja.md)
 `marunage` (Japanese for "to delegate completely") is a single-binary,
 OSS OODA-loop runner for
 [Claude Code](https://www.anthropic.com/claude-code). It polls your inboxes
-(Gmail / Calendar / Slack / GitHub / Google Tasks / Notion / Markdown TODOs),
-triages each item with a customisable skill, and dispatches survivors into
-isolated interactive [`cmux`](https://github.com/manaflow-ai/cmux)
-workspaces — one Claude session per task, left alive after completion so
-you can step in at any time.
+(Gmail / Calendar / Slack / GitHub / Google Tasks / Notion / Markdown TODOs)
+through a **collection layer**, runs every item past a **management layer**
+that decides whether it is something to do *now* (`ready`), *later* (`hold` /
+`defer`), *by a human* (`needs-human`), or *not at all* (`drop`), and then
+hands the `ready` ones to a pluggable **execution layer** — by default an
+isolated interactive [`cmux`](https://github.com/manaflow-ai/cmux) workspace
+(or `tmux` / a local process), one Claude session per task, left alive after
+completion so you can step in at any time.
 
 ## Invariants
 
@@ -30,20 +33,45 @@ you can step in at any time.
 
 ## How it works
 
+marunage is built from three layers around a single SQLite source of truth
+(`~/.marunage/tasks.db`):
+
 ```mermaid
 flowchart LR
-    D["Discovery (Observe)"]
-    Q["Queue (Orient + Decide)<br/>SQLite · triage"]
-    E["Execution (Act)<br/>cmux + Claude"]
+    C["Collection<br/>internal/collect<br/>sources + early triage"]
+    M["Management<br/>internal/manage<br/>rules + LLM scoring → verdict"]
+    X["Execution<br/>internal/exec<br/>cmux · tmux · local"]
     O["Observation<br/>Web UI · audit.log"]
 
-    D --> Q --> E --> O
-    O -.->|promote · reopen · stop| Q
+    C -->|"[]Candidate"| M -->|"ready, ranked"| X --> O
+    O -.->|promote · reopen · stop| M
 ```
 
-1 task = 1 cmux workspace = 1 interactive Claude session. The runtime never
-uses `claude -p` one-shots, so you can attach and continue the conversation
-after the task completes.
+- **Collection** (`internal/collect`) gathers raw messages from every enabled
+  source, normalises them to `Candidate`s, and early-triages obvious noise
+  (ads, GitHub notification mail) straight to `drop` — before paying for any
+  LLM call.
+- **Management** (`internal/manage`) is the second gate. A deterministic rule
+  engine (dependencies, deadlines, cwd policy, duplicates, locks) plus an
+  optional LLM scoring pass assigns each candidate a **verdict** —
+  `ready` / `hold` / `defer` / `needs-human` / `drop` — and ranks the `ready`
+  ones. Only `ready` tasks are dispatched; everything else is held,
+  escalated, or skipped (never silently lost).
+- **Execution** (`internal/exec`) runs each `ready` task behind a
+  backend-agnostic `Executor` interface. cmux is the default backend;
+  `tmux` and `local` ship too, selected with `[execution] executor`.
+
+1 task = 1 workspace = 1 interactive Claude session. The runtime never uses
+`claude -p` one-shots, so you can attach and continue the conversation after
+the task completes.
+
+| Verdict | Meaning | Lands as |
+| ------- | ------- | -------- |
+| `ready` | Do it now — dispatched in rank order | `pending` (dispatched) |
+| `hold` | Blocked on a dependency; auto-promotes when it clears | `pending` (held) |
+| `defer` | Worth doing, but not now | `pending` (held) |
+| `needs-human` | Missing info, or a human/approval call | `waiting_human` |
+| `drop` | Out of scope, duplicate, or noise | `skipped` |
 
 ## Prerequisites
 
@@ -117,10 +145,19 @@ backend = "auto"   # keyring → pass → age → 0600 file → env
 interval = "10m"
 sources_enabled = ["markdown", "github"]
 
+[manage]
+enabled = true
+llm_scoring = false   # rules only by default; turn on for LLM ready-ordering
+
 [execution]
+executor = "cmux"            # cmux | tmux | local
 permission_mode = "bypass"   # bypass | default | acceptEdits | plan | custom
 allowed_cwd_prefixes = ["~/works", "~/src"]
 ```
+
+The management layer's verdict → status mapping and rule toggles live under
+`[manage.rules]` / `[manage.verdicts]`; LLM scoring uses the customisable
+`marunage-manage` skill installed by `marunage setup --skills`.
 
 Secrets are never written to `config.toml`.
 
