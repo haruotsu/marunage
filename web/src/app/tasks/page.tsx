@@ -6,7 +6,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { TaskCard } from '@/components/task-card'
 import { formatRelativeTime } from '@/lib/utils'
 import type { Task, TaskDetail } from '@/lib/types'
-import { ArrowLeft, ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowLeft, ExternalLink, RefreshCw, Trash2, X } from 'lucide-react'
 import Link from 'next/link'
 
 export default function TaskDetailPage() {
@@ -240,22 +240,33 @@ export function TaskDetailContent() {
 }
 
 export function TaskListView() {
+  const params = useSearchParams()
+  const status = params.get('status') ?? undefined
   const [tasks, setTasks] = useState<Task[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    getTasks()
+    let active = true
+    getTasks(status)
       .then((resp) => {
+        if (!active) return
         setTasks(resp.tasks)
         setTotal(resp.total)
+        setError(null)
       })
       .catch((e: unknown) => {
+        if (!active) return
         setError(e instanceof Error ? e.message : 'Failed to load tasks')
       })
-      .finally(() => setLoading(false))
-  }, [])
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [status])
 
   if (loading) {
     return (
@@ -275,13 +286,29 @@ export function TaskListView() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
           Tasks <span className="text-sm font-normal text-zinc-500">({total})</span>
         </h1>
+        {status && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-zinc-400">filtered by</span>
+            <StatusBadge status={status} />
+            <Link
+              href="/tasks"
+              className="rounded-full p-0.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800"
+              aria-label="Clear filter"
+              title="Clear filter"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+        )}
       </div>
       {tasks.length === 0 ? (
-        <div className="py-12 text-center text-sm text-zinc-500">No tasks found.</div>
+        <div className="py-12 text-center text-sm text-zinc-500">
+          {status ? `No ${status} tasks.` : 'No tasks found.'}
+        </div>
       ) : (
         <div className="space-y-3">
           {tasks.map((task) => (
