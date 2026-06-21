@@ -3,6 +3,7 @@ package manage
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/haruotsu/marunage/internal/collect"
@@ -142,6 +143,41 @@ func TestPlanLLMScorerLengthMismatchFallsBack(t *testing.T) {
 	}
 	if plan.Ready[0].Candidate.Title != "high" {
 		t.Fatalf("length-mismatch must fall back to stub: ready=%v", titles(plan.Ready))
+	}
+}
+
+func TestPlanLLMScorerRejectsNonFiniteScore(t *testing.T) {
+	st := &fakeStore{}
+	cands := []collect.Candidate{
+		{Title: "finite", Body: "x", Priority: "1"},
+		{Title: "nan", Body: "x", Priority: "7"},
+	}
+	scorer := &fakeScorer{fn: func(items []ScoreItem) ([]ScoreResult, error) {
+		out := make([]ScoreResult, len(items))
+		for i, it := range items {
+			if it.Candidate.Title == "nan" {
+				out[i] = ScoreResult{Score: math.NaN()}
+			} else {
+				out[i] = ScoreResult{Score: 3}
+			}
+		}
+		return out, nil
+	}}
+	plan, err := Plan(context.Background(), cands, st, WithLLMScorer(scorer))
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	// The non-finite score must be rejected and the candidate stubbed to its
+	// priority (7), never letting NaN poison the ranking.
+	nan := decisionFor(t, plan, "nan")
+	if math.IsNaN(nan.Score) {
+		t.Fatalf("non-finite score leaked into ranking: %v", nan.Score)
+	}
+	if nan.Score != 7 {
+		t.Fatalf("nan candidate should fall back to stub priority 7, got %v", nan.Score)
+	}
+	if decisionFor(t, plan, "finite").Score != 3 {
+		t.Fatalf("finite candidate should keep its LLM score 3")
 	}
 }
 

@@ -21,7 +21,10 @@ type Runner interface {
 
 // execRunner is the production Runner: it pipes the prompt to the claude CLI
 // in headless print mode and captures stdout. exec.CommandContext kills the
-// process if ctx is cancelled (e.g. the loop tick times out).
+// process if ctx is cancelled (e.g. the loop tick times out). It stays
+// unexported (unlike the exported ExecRunner in journal/source) because the
+// stdin-threading variant is specific to the scorer and NewClaudeScorer is its
+// only constructor — no external package needs to instantiate it.
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, []byte, error) {
@@ -172,6 +175,14 @@ func (s *ClaudeScorer) buildPrompt(items []ScoreItem) (string, error) {
 // built-in instruction rather than failing the scoring pass.
 func (s *ClaudeScorer) readSkill() string {
 	if s.skillPath == "" {
+		return ""
+	}
+	// Refuse a symlink before reading, mirroring the installer's stance
+	// (internal/skills checkRegular): a symlink planted in the skills dir
+	// would otherwise splice the contents of an arbitrary file into the
+	// claude prompt. Lstat (not Stat) is the point — Stat would follow it.
+	info, err := os.Lstat(s.skillPath)
+	if err != nil || !info.Mode().IsRegular() {
 		return ""
 	}
 	body, err := os.ReadFile(s.skillPath)

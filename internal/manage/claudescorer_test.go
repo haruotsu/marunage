@@ -94,6 +94,14 @@ func TestClaudeScorerRejectsOutOfRangeIndex(t *testing.T) {
 	}
 }
 
+func TestClaudeScorerRejectsDuplicateIndex(t *testing.T) {
+	r := &fakeRunner{stdout: []byte(`[{"index":0,"score":1},{"index":0,"score":2}]`)} // index 0 twice, index 1 missing
+	s := NewClaudeScorer(WithScorerRunner(r))
+	if _, err := s.Score(context.Background(), twoItems()); err == nil {
+		t.Fatal("Score must reject a duplicate index")
+	}
+}
+
 func TestClaudeScorerRejectsNonArrayOutput(t *testing.T) {
 	r := &fakeRunner{stdout: []byte("I cannot do that")}
 	s := NewClaudeScorer(WithScorerRunner(r))
@@ -115,6 +123,26 @@ func TestClaudeScorerIncludesSkillBody(t *testing.T) {
 	}
 	if !strings.Contains(string(r.stdin), "MY CUSTOM CRITERIA") {
 		t.Errorf("prompt missing skill body: %s", r.stdin)
+	}
+}
+
+func TestClaudeScorerIgnoresSymlinkedSkill(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOP SECRET CONTENT"), 0o600); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	link := filepath.Join(dir, "SKILL.md")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	r := &fakeRunner{stdout: []byte(`[{"index":0,"score":1},{"index":1,"score":2}]`)}
+	s := NewClaudeScorer(WithScorerRunner(r), WithScorerSkillPath(link))
+	if _, err := s.Score(context.Background(), twoItems()); err != nil {
+		t.Fatalf("Score: %v", err)
+	}
+	if strings.Contains(string(r.stdin), "TOP SECRET") {
+		t.Errorf("symlinked skill content was spliced into the prompt: %s", r.stdin)
 	}
 }
 
