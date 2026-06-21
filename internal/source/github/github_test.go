@@ -108,9 +108,13 @@ func TestListInvokesGhSearchForIssuesAndPRs(t *testing.T) {
 		t.Errorf("second call should be `gh search prs`, got %q", got)
 	}
 	for i, c := range fr.calls {
-		// The query (`is:open assignee:@me`) is the third positional arg.
-		if c.Args[2] != "is:open assignee:@me" {
-			t.Errorf("calls[%d] query = %q, want is:open assignee:@me", i, c.Args[2])
+		// `is:open` is lifted into the --state flag, leaving `assignee:@me` as
+		// the query (gh search issues ignores is:open as a query qualifier).
+		if c.Args[2] != "assignee:@me" {
+			t.Errorf("calls[%d] query = %q, want assignee:@me", i, c.Args[2])
+		}
+		if !hasFlagValue(c.Args, "--state", "open") {
+			t.Errorf("calls[%d] missing --state open: %v", i, c.Args)
 		}
 		// `--json` request must be present so the runner sees structured output.
 		if !contains(c.Args, "--json") {
@@ -205,7 +209,7 @@ func TestSinceEmptyCheckpointBehavesLikeList(t *testing.T) {
 		t.Fatalf("Since: %v", err)
 	}
 	for i, c := range fr.calls {
-		if c.Args[2] != "is:open assignee:@me" {
+		if c.Args[2] != "assignee:@me" {
 			t.Errorf("calls[%d] query = %q (must not include `updated:` qualifier)", i, c.Args[2])
 		}
 	}
@@ -222,10 +226,13 @@ func TestSinceCheckpointAppendsUpdatedQualifier(t *testing.T) {
 	if _, err := p.Since(context.Background(), "2026-01-02T03:04:05Z"); err != nil {
 		t.Fatalf("Since: %v", err)
 	}
-	want := "is:open assignee:@me updated:>=2026-01-02T03:04:05Z"
+	want := "assignee:@me updated:>=2026-01-02T03:04:05Z"
 	for i, c := range fr.calls {
 		if c.Args[2] != want {
 			t.Errorf("calls[%d] query = %q, want %q", i, c.Args[2], want)
+		}
+		if !hasFlagValue(c.Args, "--state", "open") {
+			t.Errorf("calls[%d] missing --state open: %v", i, c.Args)
 		}
 	}
 }
@@ -481,6 +488,37 @@ func contains(args []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// hasFlagValue reports whether args contains flag immediately followed by value
+// (e.g. "--state" then "open").
+func hasFlagValue(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestStateFromFilter(t *testing.T) {
+	cases := []struct {
+		in           string
+		query, state string
+	}{
+		{"is:open assignee:@me", "assignee:@me", "open"},
+		{"assignee:@me is:closed", "assignee:@me", "closed"},
+		{"state:open author:x", "author:x", "open"},
+		{"IS:OPEN assignee:@me", "assignee:@me", "open"},
+		{"assignee:@me", "assignee:@me", ""},
+		{"is:open", "", "open"},
+	}
+	for _, c := range cases {
+		q, s := stateFromFilter(c.in)
+		if q != c.query || s != c.state {
+			t.Errorf("stateFromFilter(%q) = (%q,%q); want (%q,%q)", c.in, q, s, c.query, c.state)
+		}
+	}
 }
 
 func equalStrings(a, b []string) bool {

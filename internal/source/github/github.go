@@ -190,8 +190,23 @@ func (p *Plugin) search(ctx context.Context, query string) ([]source.Task, error
 // runSearch executes one `gh search <kind> <query> --json ...` and parses
 // the result. kind is "issues" or "prs" — the only two values the gh CLI
 // accepts for our purposes — so we do not gate it behind a typed enum.
+//
+// A state qualifier (is:open / is:closed) is lifted out of the query into
+// gh's `--state` flag: `gh search issues` does NOT honour `is:open` as a query
+// qualifier — it matches the literal text and returns nothing — so a config
+// filter like "is:open assignee:@me" would silently find zero issues even when
+// open assigned issues exist. See stateFromFilter.
 func (p *Plugin) runSearch(ctx context.Context, kind, query string) ([]rawItem, error) {
-	stdout, _, err := p.runner.Run(ctx, "gh", "search", kind, query, "--json", jsonFields)
+	q, state := stateFromFilter(query)
+	args := []string{"search", kind}
+	if q != "" {
+		args = append(args, q)
+	}
+	if state != "" {
+		args = append(args, "--state", state)
+	}
+	args = append(args, "--json", jsonFields)
+	stdout, _, err := p.runner.Run(ctx, "gh", args...)
 	if err != nil {
 		return nil, fmt.Errorf("gh search %s: %w", kind, err)
 	}
@@ -203,6 +218,28 @@ func (p *Plugin) runSearch(ctx context.Context, kind, query string) ([]rawItem, 
 		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	return items, nil
+}
+
+// stateFromFilter splits a gh search query, lifting a state qualifier out of
+// the free-text query into the value gh's `--state` flag expects. It accepts
+// both the GitHub web syntax (is:open / is:closed) and the bare form
+// (state:open / state:closed), case-insensitively, because users copy filters
+// from the github.com search box where `is:open` is idiomatic. The remaining
+// tokens are returned as the query; state is "" when no qualifier was present.
+func stateFromFilter(filter string) (query, state string) {
+	fields := strings.Fields(filter)
+	kept := fields[:0]
+	for _, f := range fields {
+		switch strings.ToLower(f) {
+		case "is:open", "state:open":
+			state = "open"
+		case "is:closed", "state:closed":
+			state = "closed"
+		default:
+			kept = append(kept, f)
+		}
+	}
+	return strings.Join(kept, " "), state
 }
 
 // toTask lifts a rawItem into the cross-source Task shape. RawMetadata
