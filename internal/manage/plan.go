@@ -30,6 +30,12 @@ var _ Store = (*store.TaskRepo)(nil)
 type PlannedCandidate struct {
 	Candidate collect.Candidate
 	Verdict   collect.Verdict
+	// Status is the stable DB status this verdict maps to via the registry
+	// (原則1: verdict 語彙と status 語彙の分離). The cmd pipeline persists it
+	// directly so the verdict→status decision stays in manage, where the
+	// registry lives, rather than being re-derived at the wiring seam. An
+	// unknown verdict resolves to the safe needs-human status (原則2).
+	Status string
 	// Reason is the rule- or stub-scorer rationale. For a candidate that
 	// arrived already classified by early triage, the upstream reason is
 	// preserved verbatim.
@@ -161,8 +167,9 @@ func Plan(ctx context.Context, candidates []collect.Candidate, st Store, opts ..
 			}
 		}
 
-		pc := PlannedCandidate{Candidate: c, Verdict: verdict, Reason: reason}
-		if p.registry.policyFor(verdict).Dispatchable {
+		policy := p.registry.policyFor(verdict)
+		pc := PlannedCandidate{Candidate: c, Verdict: verdict, Status: policy.Status, Reason: reason}
+		if policy.Dispatchable {
 			pc.Score = p.score(c, n)
 			pc.Serialized = p.lockConflict(c, w)
 			readyIdx = append(readyIdx, len(decisions))
