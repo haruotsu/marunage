@@ -14,13 +14,15 @@ import (
 	"github.com/haruotsu/marunage/internal/exec"
 	execcmux "github.com/haruotsu/marunage/internal/exec/cmux"
 	execherdr "github.com/haruotsu/marunage/internal/exec/herdr"
+	execlocal "github.com/haruotsu/marunage/internal/exec/local"
 	exectmux "github.com/haruotsu/marunage/internal/exec/tmux"
 )
 
 // ErrUnknownExecutor is returned by New for an executor name no backend
 // implements. config validation already rejects unknown names at load time;
 // this guards the seam against a name that is allowed by config but not yet
-// wired here (e.g. "local" before PR-R08).
+// wired here (config's allowedExecutors still lists "docker" / "ssh", which
+// have no backend yet).
 var ErrUnknownExecutor = fmt.Errorf("exec/backend: unknown executor")
 
 // New constructs the execution backend named by the config value. An empty
@@ -38,6 +40,8 @@ func New(executor string) (exec.Executor, error) {
 		return exectmux.New(), nil
 	case "herdr":
 		return execherdr.New(), nil
+	case "local":
+		return execlocal.New(), nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnknownExecutor, executor)
 	}
