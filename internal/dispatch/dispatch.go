@@ -387,6 +387,13 @@ func (d *Dispatcher) Run(ctx context.Context, opts RunOptions) error {
 
 	candidates, err := d.store.List(ctx, store.ListFilter{
 		Statuses: []string{store.StatusPending},
+		// Restrict to rows the management layer cleared for dispatch
+		// (redesign §5.2). DispatchableOnly is the strangler-fig form: it
+		// keeps legacy rows (plan_label IS NULL) flowing exactly as before
+		// while excluding hold / defer / needs-human / drop, so this PR adds
+		// the data-model wiring without changing dispatch behaviour until the
+		// manager starts populating plan_label (PR-R05+).
+		DispatchableOnly: true,
 		// Pull more than MaxParallel because some rows may be skipped
 		// for lock contention — without slack the dispatcher would stall
 		// on a single contended row at the head of the queue. The 4x

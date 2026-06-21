@@ -834,7 +834,24 @@ type ListFilter struct {
 	// CreatedAfter, when non-zero, restricts results to rows whose created_at
 	// is strictly after this time. Used by `marunage review --since Xd`.
 	CreatedAfter time.Time
+	// DispatchableOnly restricts results to rows the management layer
+	// (internal/manage, PR-R03+) considers dispatchable. redesign §5.2 wants
+	// the dispatch query narrowed to plan_label='ready', but doing that
+	// outright would strand every legacy row — nothing populates plan_label
+	// until PR-R05 — and break動作不変. So the strangler-fig form keeps rows
+	// the manager has NOT yet evaluated (plan_label IS NULL) dispatchable
+	// alongside the ones it marked ready, while excluding hold / defer /
+	// needs-human / drop. Once the manager fills plan_label for every row
+	// (PR-R05+), the NULL branch naturally stops matching and the filter
+	// converges on the strict ready-only query. Off (zero value) leaves List
+	// unchanged for all other callers.
+	DispatchableOnly bool
 }
+
+// dispatchablePlanLabel is the verdict the management layer assigns to rows
+// that are cleared for immediate dispatch (redesign §3.1). Centralised here so
+// the dispatch filter and any future writer agree on the literal.
+const dispatchablePlanLabel = "ready"
 
 // maxFilterValues caps Statuses / Sources slice length so a caller (or a
 // CLI flag accepting repeated `--status`) cannot blow past
@@ -882,6 +899,10 @@ func (r *TaskRepo) List(ctx context.Context, f ListFilter) ([]Task, error) {
 	if !f.CreatedAfter.IsZero() {
 		clauses = append(clauses, "created_at > ?")
 		args = append(args, formatTime(f.CreatedAfter))
+	}
+	if f.DispatchableOnly {
+		clauses = append(clauses, "(plan_label = ? OR plan_label IS NULL)")
+		args = append(args, dispatchablePlanLabel)
 	}
 	q := "SELECT " + taskColumns + " FROM tasks"
 	if len(clauses) > 0 {

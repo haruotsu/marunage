@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -115,6 +116,7 @@ func (f *fakeCmux) ReadOutput(_ context.Context, _ cmux.Workspace) (string, erro
 // started_at values.
 type dispatchFixture struct {
 	repo *store.TaskRepo
+	db   *sql.DB
 	cmux *fakeCmux
 	disp *dispatch.Dispatcher
 	now  time.Time
@@ -147,6 +149,7 @@ func newDispatchFixture(t *testing.T, opts ...dispatch.Option) dispatchFixture {
 	}
 	return dispatchFixture{
 		repo: repo,
+		db:   db,
 		cmux: fcm,
 		disp: d,
 		now:  now,
@@ -1883,5 +1886,55 @@ func TestRunOmitsTriageSectionWhenSkillNotConfigured(t *testing.T) {
 	if len(with) <= len(without) {
 		t.Errorf("triage payload (len=%d) should be strictly longer than no-triage payload (len=%d)",
 			len(with), len(without))
+	}
+}
+
+// TestRunDispatchesLegacyAndReadySkipsHeld is the PR-R04 strangler-fig pin:
+// the dispatcher now filters on plan_label, but legacy rows (plan_label IS
+// NULL, the only kind that exists until PR-R05 fills it in) must keep
+// dispatching exactly as before, ready rows dispatch, and hold rows are left
+// pending. Verified end-to-end through the real Dispatcher.Run so a future
+// change to the List filter cannot silently strand legacy work.
+func TestRunDispatchesLegacyAndReadySkipsHeld(t *testing.T) {
+	f := newDispatchFixture(t)
+
+	mk := func(title, label string) int64 {
+		id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", Title: title, CWD: "/tmp"})
+		if err != nil {
+			t.Fatalf("insert %s: %v", title, err)
+		}
+		if label != "" {
+			if _, err := f.db.Exec("UPDATE tasks SET plan_label=? WHERE id=?", label, id); err != nil {
+				t.Fatalf("set plan_label=%s: %v", label, err)
+			}
+		}
+		return id
+	}
+	legacyID := mk("legacy", "")
+	readyID := mk("ready", "ready")
+	holdID := mk("hold", "hold")
+
+	if err := f.disp.Run(f.ctx, dispatch.RunOptions{MaxParallel: 10}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	statusOf := func(id int64) string {
+		row, err := f.repo.Get(f.ctx, id)
+		if err != nil {
+			t.Fatalf("Get %d: %v", id, err)
+		}
+		return row.Status
+	}
+	if got := statusOf(legacyID); got != store.StatusRunning {
+		t.Errorf("legacy row status = %q; want running (legacy must still dispatch)", got)
+	}
+	if got := statusOf(readyID); got != store.StatusRunning {
+		t.Errorf("ready row status = %q; want running", got)
+	}
+	if got := statusOf(holdID); got != store.StatusPending {
+		t.Errorf("hold row status = %q; want pending (must NOT dispatch)", got)
+	}
+	if n := len(f.cmux.newWorkspaceCalls); n != 2 {
+		t.Errorf("NewWorkspace called %d times; want 2 (legacy + ready only)", n)
 	}
 }
