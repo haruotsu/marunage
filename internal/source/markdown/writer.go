@@ -12,11 +12,11 @@
 package markdown
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/fsutil"
 )
 
 // taskLine is the canonical, render-ready shape of one checklist line.
@@ -209,41 +209,11 @@ func joinLines(lines []string, eol string) []byte {
 	return out
 }
 
-// atomicWriteFile writes data to path via a sibling tmp file then
-// renames it into place. It mirrors the pattern in
-// internal/secrets/file_backend.go fileBackend.Set: chmod the tmp file
-// before rename so a racing reader never observes a wider mode.
-//
-// The tmp lives in the same directory so the final rename is a
-// same-filesystem operation (cross-FS rename would fail with EXDEV on
-// Linux). Cleanup on every error path keeps a half-written tmp from
-// piling up next to the target after a crash.
+// atomicWriteFile writes data to path via a sibling tmp file then renames it
+// into place, chmod-ing the tmp before rename so a racing reader never observes
+// a wider mode. It delegates to the shared fsutil.AtomicWrite implementation;
+// the thin wrapper keeps the package-local call sites and the requirement
+// rationale (Reversibility for hand-written notes) documented here.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	tmp, err := os.CreateTemp(dir, base+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close tmp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename tmp: %w", err)
-	}
-	return nil
+	return fsutil.AtomicWrite(path, data, perm)
 }

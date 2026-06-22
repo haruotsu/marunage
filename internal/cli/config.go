@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/haruotsu/marunage/internal/config"
+	"github.com/haruotsu/marunage/internal/fsutil"
 	"github.com/haruotsu/marunage/internal/logging"
 )
 
@@ -162,6 +163,15 @@ func runConfigEdit(configPath string, out io.Writer) error {
 		return rollbackConfig(configPath, original, existed, origMode, fmt.Errorf("invalid config after edit (rolled back): %w", err))
 	}
 
+	// Snapshot the pre-edit contents to <path>.bak.<timestamp>, mirroring
+	// config.Save, so a valid-but-unwanted edit stays recoverable. Only when
+	// the file existed before: a freshly-created config has nothing to back up.
+	if existed {
+		if _, err := config.WriteBackup(configPath, original); err != nil {
+			return fmt.Errorf("snapshot pre-edit config: %w", err)
+		}
+	}
+
 	if auditor, err := logging.NewAuditLog(auditLogPathFor(configPath)); err == nil {
 		auditor.Record(config.AuditEvent{Action: "config.edit", Path: configPath})
 		_ = auditor.Close()
@@ -206,6 +216,6 @@ func rollbackConfig(configPath string, original []byte, existed bool, mode fs.Fi
 		_ = os.Remove(configPath)
 		return cause
 	}
-	_ = atomicWriteFileMode(configPath, original, mode)
+	_ = fsutil.AtomicWrite(configPath, original, mode)
 	return cause
 }

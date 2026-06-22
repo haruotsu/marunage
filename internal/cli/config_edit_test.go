@@ -105,6 +105,61 @@ func TestConfigEdit_RecordsAuditEvent(t *testing.T) {
 	}
 }
 
+// CE7: a successful edit on an existing config leaves exactly one timestamped
+// .bak snapshot holding the PRE-edit content, mirroring config.Save's backup so
+// a bad edit stays recoverable even after the editor has overwritten the file.
+func TestConfigEdit_SnapshotsPreEditBackup(t *testing.T) {
+	path := configPathFlag(t)
+	original := "# keep me\n[core]\nmax_parallel = 2\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	withEditHook(t, func(p string) error {
+		return os.WriteFile(p, []byte("[core]\nmax_parallel = 4\n"), 0o600)
+	})
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"--config", path, "config", "edit"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("config edit exit=%d; stderr=%q", code, stderr.String())
+	}
+
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one .bak snapshot; got %v", matches)
+	}
+	got, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("backup content = %q; want the pre-edit original %q", got, original)
+	}
+}
+
+// CE8: an invalid edit that rolls back leaves no .bak snapshot — nothing was
+// committed, so there is nothing to recover and we keep the directory clean.
+func TestConfigEdit_InvalidEditWritesNoBackup(t *testing.T) {
+	path := configPathFlag(t)
+	if err := os.WriteFile(path, []byte("[core]\nmax_parallel = 2\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	withEditHook(t, func(p string) error {
+		return os.WriteFile(p, []byte("[core]\nmax_parallel = 0\n"), 0o600)
+	})
+
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"--config", path, "config", "edit"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("config edit exit=0; want non-zero on invalid edit")
+	}
+	matches, _ := filepath.Glob(path + ".bak.*")
+	if len(matches) != 0 {
+		t.Errorf("invalid edit should leave no .bak snapshot; got %v", matches)
+	}
+}
+
 // auditHasAction reports whether the audit log at path contains at least one
 // JSON line whose action field equals want.
 func auditHasAction(t *testing.T, path, want string) bool {

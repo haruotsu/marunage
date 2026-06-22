@@ -5,7 +5,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestBackupPathFormat pins the exported backup-path contract that Save and
+// `config edit` both depend on: "<path>.bak.<UTC yyyymmddThhmmssZ>".
+func TestBackupPathFormat(t *testing.T) {
+	ts := time.Date(2026, 6, 22, 9, 8, 7, 0, time.FixedZone("JST", 9*3600))
+	got := BackupPath("/x/config.toml", ts)
+	want := "/x/config.toml.bak.20260622T000807Z" // converted to UTC
+	if got != want {
+		t.Errorf("BackupPath = %q; want %q", got, want)
+	}
+}
 
 // TestLoadMissingFile mirrors the spec contract: a fresh user with no
 // config file gets the documented defaults rather than an error. Downstream

@@ -3,13 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/haruotsu/marunage/internal/fsutil"
 	"github.com/haruotsu/marunage/internal/render"
 	"github.com/haruotsu/marunage/internal/store"
 )
@@ -122,45 +122,8 @@ func writeViewFile(ctx context.Context, configPath string) (string, error) {
 	return dest, nil
 }
 
-// atomicWriteFileMode drops body at path via a sibling tmp file + rename, so
-// readers never observe a partial file, and chmods the result to mode before
-// the rename publishes it. This is the CLI package's single atomic-write
-// helper (mirrors internal/source/markdown.atomicWriteFile, re-implemented
-// here rather than imported to avoid pulling that package into the CLI
-// dependency graph; the markdown writer remains the canonical reference if
-// either ever needs to change).
-func atomicWriteFileMode(path string, body []byte, mode fs.FileMode) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	tmp, err := os.CreateTemp(dir, base+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close tmp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename tmp: %w", err)
-	}
-	return nil
-}
-
 // atomicWriteViewFile writes body at path with the 0o600 mode used for rendered
-// view files, delegating to the shared atomicWriteFileMode helper.
+// view files, delegating to the shared fsutil.AtomicWrite helper.
 func atomicWriteViewFile(path string, body []byte) error {
-	return atomicWriteFileMode(path, body, 0o600)
+	return fsutil.AtomicWrite(path, body, 0o600)
 }
