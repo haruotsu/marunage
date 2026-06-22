@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,7 +44,41 @@ func registeredChecks(_ config.Config) []Check {
 		{Name: "jq", RequiredFor: neverRequired, Eval: probeBinary("jq", noVersionFloor)},
 		{Name: "secrets", RequiredFor: alwaysRequired, Eval: probeSecrets},
 		{Name: "slack-mcp", RequiredFor: slackSourceEnabled, Eval: probeSlackMCP},
+		{Name: "notion", RequiredFor: notionSourceEnabled, Eval: probeNotion},
 	}
+}
+
+// notionSourceEnabled reports whether the Notion source is on in
+// cfg.Discovery.SourcesEnabled.
+func notionSourceEnabled(cfg config.Config) bool {
+	for _, s := range cfg.Discovery.SourcesEnabled {
+		if s == "notion" {
+			return true
+		}
+	}
+	return false
+}
+
+// probeNotion verifies the two things the Notion source needs beyond the code
+// wiring: the MARUNAGE_NOTION_TOKEN integration token (env) and the
+// [discovery.notion].database_id. Both missing/empty fails with a setup hint so
+// the gap surfaces at `doctor` time instead of as a runtime 401/404.
+func probeNotion(_ context.Context, in Inputs) CheckOutcome {
+	var missing []string
+	if os.Getenv("MARUNAGE_NOTION_TOKEN") == "" {
+		missing = append(missing, "MARUNAGE_NOTION_TOKEN")
+	}
+	if strings.TrimSpace(in.Cfg.Discovery.Notion.DatabaseID) == "" {
+		missing = append(missing, "[discovery.notion].database_id")
+	}
+	if len(missing) > 0 {
+		return CheckOutcome{
+			OK:     false,
+			Detail: "notion source enabled but " + strings.Join(missing, " + ") + " not set",
+			Hint:   "create an integration at app.notion.com/developers, set MARUNAGE_NOTION_TOKEN + [discovery.notion].database_id, and share the database with the integration",
+		}
+	}
+	return CheckOutcome{OK: true, Detail: "notion integration token + database_id configured"}
 }
 
 // registeredToolNames is the set of names that the install-hint table must

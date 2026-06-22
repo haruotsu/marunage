@@ -195,6 +195,11 @@ var installHints = map[string]installHintRow{
 		pkgs: map[OSFamily]string{},
 		url:  "run `claude mcp add slack <transport>` to configure the Slack MCP server",
 	},
+	"notion": {
+		// notion is not a binary; the fix is an integration token + database_id.
+		pkgs: map[OSFamily]string{},
+		url:  "create an integration at app.notion.com/developers, set MARUNAGE_NOTION_TOKEN + [discovery.notion].database_id, share the database",
+	},
 }
 
 // installHintFor returns the install hint string for tool on family. The
