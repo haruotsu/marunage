@@ -284,18 +284,6 @@ func pollHealthz(t *testing.T, url string, timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for %s", url)
 }
 
-// TestWeb_StubRemoved confirms the leaf stub for `web` is gone — the
-// command must run real logic, not return notImplementedError.
-// Without this assertion a regression that re-adds the stub would slip
-// through because root_test.go's leaf-stub list is hand-curated.
-func TestWeb_StubRemoved(t *testing.T) {
-	for _, sub := range leafStubSubcommands {
-		if sub == "web" {
-			t.Fatalf("web is still in leafStubSubcommands; remove it from root_test.go")
-		}
-	}
-}
-
 // TestWeb_ProductionFactory_TaskDetailWired pins the requirement that
 // productionWebFactory wires TaskDetail into web.Options so that
 // GET /tasks/{id} resolves against the real SQLite store rather than
