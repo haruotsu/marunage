@@ -119,7 +119,7 @@ func (c *GWSClient) ListTaskLists(ctx context.Context) ([]GTaskList, error) {
 	}
 	lists := make([]GTaskList, len(resp.Items))
 	for i, l := range resp.Items {
-		lists[i] = GTaskList{ID: l.ID, Title: l.Title}
+		lists[i] = GTaskList(l)
 	}
 	return lists, nil
 }
@@ -146,7 +146,7 @@ func (c *GWSClient) ListTasks(ctx context.Context, tasklistID string) ([]GTask, 
 	}
 	tasks := make([]GTask, len(resp.Items))
 	for i, t := range resp.Items {
-		tasks[i] = GTask{ID: t.ID, Title: t.Title, Notes: t.Notes, Status: t.Status}
+		tasks[i] = GTask(t)
 	}
 	return tasks, nil
 }
@@ -222,5 +222,5 @@ func decodeTask(out []byte) (GTask, error) {
 	if err := json.Unmarshal(out, &t); err != nil {
 		return GTask{}, fmt.Errorf("googletasks gws: decode task: %w", err)
 	}
-	return GTask{ID: t.ID, Title: t.Title, Notes: t.Notes, Status: t.Status}, nil
+	return GTask(t), nil
 }
