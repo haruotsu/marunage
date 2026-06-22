@@ -397,9 +397,10 @@ func (r *serverRunner) Run(ctx context.Context) error {
 // opt-in semantics non-negotiable ("明示しないと外部公開しない").
 func newWebCmd(configPath *string) *cobra.Command {
 	var (
-		bind   string
-		port   int
-		remote bool
+		bind           string
+		insecureNoAuth bool
+		port           int
+		remote         bool
 	)
 
 	cmd := &cobra.Command{
@@ -430,9 +431,20 @@ func newWebCmd(configPath *string) *cobra.Command {
 				effectiveRemote = remote
 			}
 			if effectiveRemote {
-				// Brief: --remote opts into 0.0.0.0 binding; auth
-				// itself is a separate PR.  Override the bind
-				// regardless of what --bind / [web] said so the
+				// Fail closed: requirement.md mandates that remote mode
+				// require authentication, but no auth ships yet — so a
+				// bare --remote would expose the dashboard / SSE / metrics
+				// on 0.0.0.0 with none. Refuse to start (before the
+				// factory binds anything) unless the operator explicitly
+				// accepts the risk with --insecure-no-auth. When OIDC /
+				// Basic auth lands, gate this on "auth configured" too.
+				if !insecureNoAuth {
+					return fmt.Errorf("--remote would serve the Web UI on 0.0.0.0 with no authentication, " +
+						"which requirement.md forbids until auth ships; re-run with --insecure-no-auth to " +
+						"accept this risk (only behind a trusted network or a TLS-terminating reverse proxy)")
+				}
+				// Brief: --remote opts into 0.0.0.0 binding. Override the
+				// bind regardless of what --bind / [web] said so the
 				// behaviour matches the user's intent.
 				effectiveBind = "0.0.0.0"
 			}
@@ -472,7 +484,8 @@ func newWebCmd(configPath *string) *cobra.Command {
 
 	cmd.Flags().StringVar(&bind, "bind", "", "Host or IP to bind (overrides web.bind from --config; defaults to 127.0.0.1).")
 	cmd.Flags().IntVar(&port, "port", 0, "TCP port to listen on (overrides web.port from --config; defaults to 7777).")
-	cmd.Flags().BoolVar(&remote, "remote", false, "Bind to 0.0.0.0 to publish externally (auth lands in a later PR).")
+	cmd.Flags().BoolVar(&remote, "remote", false, "Bind to 0.0.0.0 to publish externally (requires --insecure-no-auth until auth lands).")
+	cmd.Flags().BoolVar(&insecureNoAuth, "insecure-no-auth", false, "Acknowledge that --remote serves the Web UI on 0.0.0.0 with no authentication; required to start in remote mode until auth ships.")
 
 	return cmd
 }
