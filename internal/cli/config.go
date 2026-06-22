@@ -177,12 +177,12 @@ func runConfigEdit(configPath string, out io.Writer) error {
 // (permissions, EISDIR, transient I/O) aborts so the rollback's os.Remove can
 // never delete a real, still-present config (data loss).
 func readConfigForEdit(path string) (content []byte, mode fs.FileMode, existed bool, err error) {
-	f, openErr := os.Open(path)
-	if openErr != nil {
-		if errors.Is(openErr, fs.ErrNotExist) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, 0o600, false, nil
 		}
-		return nil, 0, false, fmt.Errorf("open %s: %w", path, openErr)
+		return nil, 0, false, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -190,9 +190,9 @@ func readConfigForEdit(path string) (content []byte, mode fs.FileMode, existed b
 	if info, statErr := f.Stat(); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	content, readErr := io.ReadAll(f)
-	if readErr != nil {
-		return nil, 0, false, fmt.Errorf("read %s: %w", path, readErr)
+	content, err = io.ReadAll(f)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("read %s: %w", path, err)
 	}
 	return content, mode, true, nil
 }
