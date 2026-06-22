@@ -281,6 +281,28 @@ func TestListMultilineTextSplitsTitleAndBody(t *testing.T) {
 	}
 }
 
+// A single-line message must still populate Body (= the text) so the manage
+// layer's empty-body rule does not escalate every single-line mention to a
+// human.
+func TestListSingleLineTextStillPopulatesBody(t *testing.T) {
+	t.Parallel()
+	c := &fakeClient{
+		mentions: []Message{{
+			ChannelID: "C9",
+			TS:        "1.0",
+			Text:      "can you review the deploy doc?",
+		}},
+	}
+	p := New(WithClient(c), WithIncludeMentions(true))
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got[0].Body != "can you review the deploy doc?" {
+		t.Errorf("Body = %q; want the full single-line text", got[0].Body)
+	}
+}
+
 // C5 (channel-type metadata for mentions has no dm_id).
 func TestListMentionDoesNotCarryDMID(t *testing.T) {
 	t.Parallel()
