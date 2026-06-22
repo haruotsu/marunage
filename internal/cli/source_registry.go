@@ -102,7 +102,10 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			return fmt.Errorf("register calendar: %w", err)
 		}
 	case "googletasks":
-		if err := googletasks.RegisterBuiltin(r); err != nil {
+		// Wire the gws-CLI client (mirrors gmail/calendar). Without WithClient
+		// the plugin has no client and every operation fails with
+		// ErrNotConfigured, so discovery could never read tasks.
+		if err := googletasks.RegisterBuiltin(r, googletasks.WithClient(googletasks.NewGWSClient())); err != nil {
 			return fmt.Errorf("register googletasks: %w", err)
 		}
 	case "notion":
