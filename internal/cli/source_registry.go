@@ -69,6 +69,12 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			reaction.WithReactions(cfg.Discovery.Slack.ReactionTrigger.Reactions),
 			reaction.WithDMOnComplete(cfg.Discovery.Slack.ReactionTrigger.DMOnComplete),
 		}
+		// Auto-wire the Slack Web API client from MARUNAGE_SLACK_TOKEN. Without
+		// a client the plugin returns ErrClientNotConfigured, so reaction
+		// discovery could never read reacted messages.
+		if tok := os.Getenv("MARUNAGE_SLACK_TOKEN"); tok != "" {
+			opts = append(opts, reaction.WithClient(reaction.NewWebAPIClient("", tok)))
+		}
 		if err := reaction.RegisterBuiltin(r, opts...); err != nil {
 			return fmt.Errorf("register slack:reaction: %w", err)
 		}
