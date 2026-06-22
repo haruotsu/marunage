@@ -178,3 +178,46 @@ func TestRoutes_EventsServesSSE(t *testing.T) {
 		t.Errorf("Content-Type = %q; want text/event-stream", got)
 	}
 }
+
+// fakeAccessLogger is a no-op AccessLogger that just proves a non-nil logger
+// is wired, so newAccessLogger installs its statusRecorder wrapper (the nil
+// case elides the wrapper and would hide the bug below).
+type fakeAccessLogger struct{ count int }
+
+func (f *fakeAccessLogger) Log(AccessRecord) { f.count++ }
+
+// flushSpyWriter records whether Flush reached the underlying writer.
+type flushSpyWriter struct {
+	http.ResponseWriter
+	flushed bool
+}
+
+func (f *flushSpyWriter) Flush() { f.flushed = true }
+
+// TestAccessLogger_PreservesFlusher pins the production-critical contract that
+// the access-log wrapper does not hide http.Flusher from downstream handlers.
+// The CLI wires a real AccessLogger, so without this the SSE (/events) and
+// live-stream (/api/tasks/{id}/stream) handlers receive a non-Flusher writer
+// and bail out with "streaming unsupported" in production — invisible to the
+// existing tests, which run with a nil logger (wrapper elided).
+func TestAccessLogger_PreservesFlusher(t *testing.T) {
+	sawFlusher := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fl, ok := w.(http.Flusher)
+		sawFlusher = ok
+		if ok {
+			fl.Flush()
+		}
+	})
+	h := newAccessLogger(inner, &fakeAccessLogger{})
+
+	spy := &flushSpyWriter{ResponseWriter: httptest.NewRecorder()}
+	h.ServeHTTP(spy, httptest.NewRequest("GET", "/api/tasks/1/stream", nil))
+
+	if !sawFlusher {
+		t.Fatal("handler behind the access logger did not see an http.Flusher; SSE/live-stream return \"streaming unsupported\" in production")
+	}
+	if !spy.flushed {
+		t.Error("Flush did not propagate to the underlying ResponseWriter")
+	}
+}
