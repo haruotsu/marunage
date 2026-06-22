@@ -76,12 +76,39 @@ func TestWeb_RemoteBindsToAllInterfaces(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"--config", cfgPath, "web", "--remote"}, &stdout, &stderr)
+	code := Execute([]string{"--config", cfgPath, "web", "--remote", "--insecure-no-auth"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
 	}
 	if captured.Addr != "0.0.0.0:7777" {
 		t.Errorf("Addr = %q; want 0.0.0.0:7777 when --remote", captured.Addr)
+	}
+}
+
+// TestWeb_RemoteWithoutAuthAckRefusesToStart pins the fail-closed contract:
+// --remote would serve the dashboard / SSE / metrics on 0.0.0.0 with no auth,
+// which requirement.md forbids (remote mode requires auth). Until auth ships,
+// the command must refuse to start — never binding a listener — unless the
+// operator explicitly accepts the risk with --insecure-no-auth.
+func TestWeb_RemoteWithoutAuthAckRefusesToStart(t *testing.T) {
+	cfgPath := writeMinimalWebConfig(t, "127.0.0.1", 7777)
+
+	factoryCalled := false
+	withWebFactory(t, func(_ context.Context, _ WebFactoryOptions) (webRunner, func() error, error) {
+		factoryCalled = true
+		return immediateExitWebRunner{}, nil, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"--config", cfgPath, "web", "--remote"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("web --remote exit=0; want non-zero (fail-closed without --insecure-no-auth)")
+	}
+	if factoryCalled {
+		t.Error("web factory bound a listener despite refusing to start; want no bind on a refused --remote")
+	}
+	if !strings.Contains(stderr.String(), "insecure-no-auth") {
+		t.Errorf("error should point the operator at --insecure-no-auth; got %q", stderr.String())
 	}
 }
 
@@ -149,7 +176,7 @@ func TestWeb_RemotePrintsAuthlessWarning(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code := Execute([]string{"--config", cfgPath, "web", "--remote"}, &stdout, &stderr)
+	code := Execute([]string{"--config", cfgPath, "web", "--remote", "--insecure-no-auth"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("web exit=%d; stderr=%q", code, stderr.String())
 	}
