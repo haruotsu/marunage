@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +31,10 @@ type fakeDaemon struct {
 	stopErr     error
 	statusResp  daemonStatus
 	statusErr   error
+	logPath     string
 }
+
+func (f *fakeDaemon) LogPath() string { return f.logPath }
 
 func (f *fakeDaemon) Start(args []string) (int, error) {
 	f.mu.Lock()
@@ -60,6 +65,44 @@ func installFakeDaemon(t *testing.T) *fakeDaemon {
 		return fd, nil
 	})
 	return fd
+}
+
+// `daemon logs` streams the daemon log file (~/.marunage/logs/daemon.log) so
+// the operator can see what the background loop is doing — the README promised
+// this; it must actually exist.
+func TestDaemonLogs_PrintsLogFile(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "daemon.log")
+	if err := os.WriteFile(logPath, []byte("loop tick 1\nloop tick 2\n"), 0o600); err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+	fd := installFakeDaemon(t)
+	fd.logPath = logPath
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"daemon", "logs"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("daemon logs exit=%d; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "loop tick 2") {
+		t.Errorf("stdout=%q; want the daemon log contents", stdout.String())
+	}
+}
+
+// `daemon logs` before the daemon has ever run must fail with a friendly hint
+// pointing at `daemon start`, not a bare "file not found".
+func TestDaemonLogs_NoLogFileHintsStart(t *testing.T) {
+	fd := installFakeDaemon(t)
+	fd.logPath = filepath.Join(t.TempDir(), "absent", "daemon.log")
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"daemon", "logs"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("daemon logs exit=0; want non-zero when no log file exists yet")
+	}
+	if !strings.Contains(stderr.String(), "daemon start") {
+		t.Errorf("stderr=%q; want a hint to run `marunage daemon start`", stderr.String())
+	}
 }
 
 // CLI4: `daemon start` calls Start with no extra args, prints the pid,

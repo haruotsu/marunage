@@ -113,13 +113,18 @@ marunage loop              # discover → dispatch → render を定期実行
 marunage web               # http://127.0.0.1:7777
 ```
 
-デーモン運用:
+デーモン運用（`~/.marunage/` の pidfile で管理されるバックグラウンド `marunage loop`）:
 
 ```sh
-marunage daemon install    # LaunchAgent (macOS) / systemd-user unit (Linux)
-marunage daemon start
-marunage daemon logs -f
+marunage daemon start      # バックグラウンドでループを起動
+marunage daemon status     # 稼働状況（pid）
+marunage daemon logs -f    # ~/.marunage/logs/daemon.log を tail
+marunage daemon stop       # SIGTERM（10秒後 SIGKILL にエスカレート）
 ```
+
+ログイン時に自動起動したい場合は、`marunage daemon start` をご自身の
+LaunchAgent (macOS) / systemd-user unit (Linux) でラップしてください
+（marunage 自体はこれらのファイルを生成しません）。
 
 ## Configuration
 

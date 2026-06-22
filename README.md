@@ -119,13 +119,19 @@ marunage loop              # discover → dispatch → render on a timer
 marunage web               # http://127.0.0.1:7777
 ```
 
-Run as a daemon:
+Run in the background as a daemon (a managed `marunage loop`, tracked by a
+pidfile under `~/.marunage/`):
 
 ```sh
-marunage daemon install    # LaunchAgent (macOS) or systemd-user unit (Linux)
-marunage daemon start
-marunage daemon logs -f
+marunage daemon start      # spawn the background loop
+marunage daemon status     # running? (pid)
+marunage daemon logs -f    # tail ~/.marunage/logs/daemon.log
+marunage daemon stop       # SIGTERM, escalating to SIGKILL after 10s
 ```
+
+To start it automatically on login, wrap `marunage daemon start` in your own
+LaunchAgent (macOS) or systemd-user unit (Linux) — marunage does not generate
+those files itself.
 
 ## Configuration
 

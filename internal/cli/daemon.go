@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +32,9 @@ type daemonControl interface {
 	Start(args []string) (int, error)
 	Stop(timeout time.Duration) (int, error)
 	Status() (daemonStatus, error)
+	// LogPath returns the path the daemon's stdout/stderr are redirected to
+	// (~/.marunage/logs/daemon.log), so `daemon logs` can stream it.
+	LogPath() string
 }
 
 // daemonStatus captures a single status probe. Running == false with a
@@ -111,6 +116,8 @@ type fileBackedDaemon struct {
 	exe        string
 	configPath string
 }
+
+func (d *fileBackedDaemon) LogPath() string { return d.logPath }
 
 func (d *fileBackedDaemon) Status() (daemonStatus, error) {
 	st := daemonStatus{Path: d.pidPath}
@@ -328,7 +335,63 @@ func newDaemonCmd(configPath *string) *cobra.Command {
 	cmd.AddCommand(newDaemonStartCmd(configPath))
 	cmd.AddCommand(newDaemonStopCmd(configPath))
 	cmd.AddCommand(newDaemonStatusCmd(configPath))
+	cmd.AddCommand(newDaemonLogsCmd(configPath))
 	return cmd
+}
+
+func newDaemonLogsCmd(configPath *string) *cobra.Command {
+	var follow bool
+	cmd := &cobra.Command{
+		Use:          "logs",
+		Short:        "Print the daemon log (~/.marunage/logs/daemon.log); -f to follow.",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctl, err := activeDaemonControl()(*configPath)
+			if err != nil {
+				return err
+			}
+			return streamDaemonLog(cmd.Context(), ctl.LogPath(), follow, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Follow the log, streaming new lines as the daemon writes them (like tail -f).")
+	return cmd
+}
+
+// streamDaemonLog writes the daemon log at path to out. Without follow it dumps
+// the current contents and returns; with follow it then polls for appended
+// bytes until ctx is cancelled (Ctrl-C). A missing file is reported with a hint
+// to start the daemon, rather than a bare "no such file" — the first thing a
+// new operator does is `daemon logs` before `daemon start`.
+func streamDaemonLog(ctx context.Context, path string, follow bool, out io.Writer) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no daemon log at %s yet — start the daemon first with `marunage daemon start`", path)
+		}
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := io.Copy(out, f); err != nil {
+		return err
+	}
+	if !follow {
+		return nil
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if _, err := io.Copy(out, f); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func newDaemonStartCmd(configPath *string) *cobra.Command {
