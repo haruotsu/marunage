@@ -359,7 +359,7 @@ func (p *Plugin) fetch(ctx context.Context, sinceTS string) ([]source.Task, erro
 //	Source       = "slack"
 //	ExternalID   = "<channel_id>:<ts>"
 //	Title        = first line of Text (truncated to titleMaxLen)
-//	Body         = full Text (only when multi-line)
+//	Body         = full Text (always; equals Title for short single-line)
 //	SourcePath   = Permalink
 //	RawMetadata  = { channel_id, channel_type, ts, thread_ts, user_id [, dm_id] }
 func messageToTask(m Message) source.Task {
@@ -384,16 +384,18 @@ func messageToTask(m Message) source.Task {
 	}
 }
 
-// splitTitleBody returns the first line as title (truncated) and the
-// full text as body when the message is multi-line. Single-line
-// messages return ("", body=="") in body so the caller can detect
-// "nothing more to show" without comparing strings.
+// splitTitleBody returns the first line as the title (truncated to
+// titleMaxLen) and the full text as the body. Body always carries the
+// message text — including for single-line messages — so the management
+// layer's "empty body → needs-human" rule does not escalate every
+// single-line Slack mention to a human. For a short single-line message
+// title and body coincide (the convention the markdown source uses too);
+// for a long single line the title is truncated while the body stays full.
 func splitTitleBody(text string) (title, body string) {
-	idx := strings.IndexByte(text, '\n')
-	if idx < 0 {
-		return truncate(text, titleMaxLen), ""
+	if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+		return truncate(text[:idx], titleMaxLen), text
 	}
-	return truncate(text[:idx], titleMaxLen), text
+	return truncate(text, titleMaxLen), text
 }
 
 // truncate caps s at n runes, not bytes, so a multi-byte character is
