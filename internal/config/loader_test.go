@@ -1,11 +1,96 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestWriteBackup_WritesContentWithModeAndReturnsPath pins WriteBackup's
+// contract directly (it was previously only exercised through Save / config
+// edit): the snapshot holds the given bytes, is mode 0o600, and the returned
+// path is the timestamped sidecar.
+func TestWriteBackup_WritesContentWithModeAndReturnsPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := []byte("# secret-bearing config\n[core]\nmax_parallel = 3\n")
+
+	backup, err := WriteBackup(path, content)
+	if err != nil {
+		t.Fatalf("WriteBackup: %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(backup), "config.toml.bak.") {
+		t.Errorf("returned path = %q; want a <path>.bak.<ts> sidecar", backup)
+	}
+	got, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("backup content = %q; want %q", got, content)
+	}
+	info, err := os.Stat(backup)
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("backup mode = %o; want 0600", perm)
+	}
+}
+
+// TestWriteBackup_PrunesToRetentionLimit pins the bounded-retention contract:
+// secret-bearing config snapshots must not accumulate without limit, so
+// WriteBackup keeps only the newest maxConfigBackups and prunes older ones.
+func TestWriteBackup_PrunesToRetentionLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Seed more than the limit of older snapshots with distinct,
+	// chronologically-sorting timestamps (all well before "now").
+	seeded := maxConfigBackups + 3
+	for i := 0; i < seeded; i++ {
+		old := fmt.Sprintf("%s.bak.20200101T0000%02dZ", path, i)
+		if err := os.WriteFile(old, []byte("old"), 0o600); err != nil {
+			t.Fatalf("seed backup %d: %v", i, err)
+		}
+	}
+
+	newest, err := WriteBackup(path, []byte("newest"))
+	if err != nil {
+		t.Fatalf("WriteBackup: %v", err)
+	}
+
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != maxConfigBackups {
+		t.Fatalf("after WriteBackup there are %d backups; want the retention limit %d", len(matches), maxConfigBackups)
+	}
+	// The freshly-written snapshot (timestamped "now", i.e. 2026+) survives.
+	if _, err := os.Stat(newest); err != nil {
+		t.Errorf("newest backup was pruned: %v", err)
+	}
+	// The oldest seeded snapshot is gone.
+	oldest := fmt.Sprintf("%s.bak.20200101T000000Z", path)
+	if _, err := os.Stat(oldest); !os.IsNotExist(err) {
+		t.Errorf("oldest backup should have been pruned; stat err=%v", err)
+	}
+}
+
+// TestBackupPathFormat pins the exported backup-path contract that Save and
+// `config edit` both depend on: "<path>.bak.<UTC yyyymmddThhmmssZ>".
+func TestBackupPathFormat(t *testing.T) {
+	ts := time.Date(2026, 6, 22, 9, 8, 7, 0, time.FixedZone("JST", 9*3600))
+	got := BackupPath("/x/config.toml", ts)
+	want := "/x/config.toml.bak.20260622T000807Z" // converted to UTC
+	if got != want {
+		t.Errorf("BackupPath = %q; want %q", got, want)
+	}
+}
 
 // TestLoadMissingFile mirrors the spec contract: a fresh user with no
 // config file gets the documented defaults rather than an error. Downstream

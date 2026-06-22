@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/haruotsu/marunage/internal/fsutil"
 )
 
 // fileBackend persists each secret to ~/.marunage/secrets/<name>.json with
@@ -98,31 +100,11 @@ func (f *fileBackend) Set(name, value string) error {
 	if err != nil {
 		return fmt.Errorf("marshal secret %q: %w", name, err)
 	}
-	// Atomic-write: tmp file in the same directory, chmod 0600 before
-	// rename so a reader that races us never sees a >0600 file.
-	tmp, err := os.CreateTemp(f.dir, name+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create tmp for %q: %w", name, err)
-	}
-	tmpName := tmp.Name()
-	cleanupTmp := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		cleanupTmp()
-		return fmt.Errorf("write tmp for %q: %w", name, err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		cleanupTmp()
-		return fmt.Errorf("chmod tmp for %q: %w", name, err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanupTmp()
-		return fmt.Errorf("close tmp for %q: %w", name, err)
-	}
-	if err := os.Rename(tmpName, f.path(name)); err != nil {
-		cleanupTmp()
-		return fmt.Errorf("rename tmp for %q: %w", name, err)
+	// Atomic-write via the shared helper: tmp file in the same directory,
+	// chmod 0600 before rename so a reader that races us never sees a >0600
+	// file.
+	if err := fsutil.AtomicWrite(f.path(name), body, 0o600); err != nil {
+		return fmt.Errorf("write secret %q: %w", name, err)
 	}
 	return nil
 }

@@ -6,9 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/haruotsu/marunage/internal/fsutil"
 )
 
 // Load reads path and returns the parsed Config. A missing file yields the
@@ -60,45 +63,65 @@ func Save(path string, c Config, auditor Auditor) error {
 	// Snapshot the prior file before touching it; if anything below fails we
 	// still have a recoverable copy on disk.
 	if _, err := os.Stat(path); err == nil {
-		ts := time.Now().UTC().Format("20060102T150405Z")
-		backup := fmt.Sprintf("%s.bak.%s", path, ts)
 		prev, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read existing config for backup: %w", err)
 		}
-		if err := os.WriteFile(backup, prev, 0o600); err != nil {
-			return fmt.Errorf("write backup %s: %w", backup, err)
+		if _, err := WriteBackup(path, prev); err != nil {
+			return err
 		}
 	}
 
 	// Atomic write: tmp file in the same directory, then rename. This keeps
 	// readers from seeing a partial file even if the process is killed mid-
-	// write.
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanupTmp := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		cleanupTmp()
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		cleanupTmp()
-		return fmt.Errorf("chmod tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanupTmp()
-		return fmt.Errorf("close tmp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanupTmp()
-		return fmt.Errorf("rename %s -> %s: %w", tmpName, path, err)
+	// write. config.toml is 0o600 since it may hold secret references.
+	if err := fsutil.AtomicWrite(path, body, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 
 	auditor.Record(AuditEvent{Action: "config.save", Path: path})
 	return nil
+}
+
+// BackupPath returns the timestamped sidecar backup path for a config file,
+// e.g. "<path>.bak.20060102T150405Z". Save and `config edit` both snapshot the
+// pre-write file there so a bad change stays recoverable.
+func BackupPath(path string, t time.Time) string {
+	return fmt.Sprintf("%s.bak.%s", path, t.UTC().Format("20060102T150405Z"))
+}
+
+// maxConfigBackups bounds how many <path>.bak.<ts> snapshots are retained.
+// Backups carry the same (possibly secret-referencing) contents as the config,
+// so they must not accumulate without limit; WriteBackup prunes older
+// generations past this count.
+const maxConfigBackups = 10
+
+// WriteBackup snapshots content to BackupPath(path, now) with 0o600 and returns
+// the backup path written. The 0o600 mode matches config.toml's own, since a
+// backup carries the same (possibly secret-referencing) contents. Older
+// snapshots beyond maxConfigBackups are pruned so secret-bearing copies do not
+// pile up indefinitely.
+func WriteBackup(path string, content []byte) (string, error) {
+	backup := BackupPath(path, time.Now())
+	if err := os.WriteFile(backup, content, 0o600); err != nil {
+		return "", fmt.Errorf("write backup %s: %w", backup, err)
+	}
+	pruneBackups(path, maxConfigBackups)
+	return backup, nil
+}
+
+// pruneBackups keeps the keep most-recent <path>.bak.* snapshots and removes
+// the rest. The fixed-width UTC timestamp in BackupPath sorts lexicographically
+// in chronological order, so a plain string sort puts the oldest first. Pruning
+// is best-effort: a glob or remove failure must never fail the save/edit that
+// already succeeded on disk.
+func pruneBackups(path string, keep int) {
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		_ = os.Remove(old)
+	}
 }
