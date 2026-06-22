@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,45 +75,50 @@ func newTaskRenderCmd(configPath *string) *cobra.Command {
 		Short:        "Generate ~/.marunage/view.md for the cmux markdown viewer.",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			repo, closer, err := activeTaskRepoFactory()(cmd.Context(), *configPath)
+			dest, err := writeViewFile(cmd.Context(), *configPath)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = closer() }()
-
-			// An empty ListFilter returns every row regardless of status —
-			// view.md is the "single screen of everything" surface PR-60
-			// promises, not a filtered queue view.
-			rows, err := repo.List(cmd.Context(), store.ListFilter{})
-			if err != nil {
-				return translateRepoError(err)
-			}
-
-			body := render.Render(rows, activeRenderClock())
-
-			dest, err := activeViewPath()
-			if err != nil {
-				return fmt.Errorf("resolve view path: %w", err)
-			}
-			parent := filepath.Dir(dest)
-			if err := os.MkdirAll(parent, 0o700); err != nil {
-				return fmt.Errorf("create view dir: %w", err)
-			}
-			// MkdirAll does not narrow an existing directory's mode, so
-			// retighten in case a previous run (or the user's umask) left
-			// it world-readable. Mirrors internal/secrets/file_backend.go's
-			// parent-tighten pattern for the rest of ~/.marunage/.
-			if err := os.Chmod(parent, 0o700); err != nil {
-				return fmt.Errorf("chmod view dir: %w", err)
-			}
-			if err := atomicWriteViewFile(dest, []byte(body)); err != nil {
-				return err
-			}
-
 			fmt.Fprintln(cmd.OutOrStdout(), dest)
 			return nil
 		},
 	}
+}
+
+// writeViewFile renders every task to ~/.marunage/view.md atomically and
+// returns the resolved destination path. Shared by `render` and `open` so the
+// two never drift on layout or location.
+func writeViewFile(ctx context.Context, configPath string) (string, error) {
+	repo, closer, err := activeTaskRepoFactory()(ctx, configPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = closer() }()
+
+	// An empty ListFilter returns every row regardless of status — view.md is
+	// the "single screen of everything" surface, not a filtered queue view.
+	rows, err := repo.List(ctx, store.ListFilter{})
+	if err != nil {
+		return "", translateRepoError(err)
+	}
+
+	dest, err := activeViewPath()
+	if err != nil {
+		return "", fmt.Errorf("resolve view path: %w", err)
+	}
+	parent := filepath.Dir(dest)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", fmt.Errorf("create view dir: %w", err)
+	}
+	// MkdirAll does not narrow an existing directory's mode, so retighten in
+	// case a previous run (or the user's umask) left it world-readable.
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return "", fmt.Errorf("chmod view dir: %w", err)
+	}
+	if err := atomicWriteViewFile(dest, []byte(render.Render(rows, activeRenderClock()))); err != nil {
+		return "", err
+	}
+	return dest, nil
 }
 
 // atomicWriteViewFile drops body at path via a sibling tmp file + rename,

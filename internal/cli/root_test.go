@@ -19,16 +19,6 @@ var requiredTopLevelSubcommands = []string{
 	"config",
 }
 
-// leafStubSubcommands are the subcommands that have no further sub-tree in
-// PR-02 and therefore must report "not yet implemented" with a non-zero exit
-// code so users discover the missing feature immediately. As individual
-// commands ship (config in PR-05, doctor in PR-32, add/list/show in PR-20,
-// done/fail/rm/promote/reopen in PR-21, setup in PR-34, ...) they leave
-// this list.
-var leafStubSubcommands = []string{
-	"run-all", "open", "notify",
-}
-
 func TestExecute_Help_ListsAllRequiredSubcommands(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -76,23 +66,6 @@ func TestExecute_Subcommand_HelpAlwaysSucceeds(t *testing.T) {
 	}
 }
 
-func TestExecute_LeafStub_ReportsNotImplemented(t *testing.T) {
-	for _, sub := range leafStubSubcommands {
-		t.Run(sub, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-
-			code := Execute([]string{sub}, &stdout, &stderr)
-
-			if code == 0 {
-				t.Fatalf("Execute %q exit=0; want non-zero for stub", sub)
-			}
-			if !strings.Contains(stderr.String(), "not yet implemented") {
-				t.Errorf("Execute %q stderr=%q; want substring %q", sub, stderr.String(), "not yet implemented")
-			}
-		})
-	}
-}
-
 func TestExecute_DaemonGroup(t *testing.T) {
 	subs := []string{"start", "stop", "status"}
 
@@ -114,7 +87,6 @@ func TestExecute_DaemonGroup(t *testing.T) {
 
 func TestExecute_ConfigGroup(t *testing.T) {
 	allSubs := []string{"get", "set", "edit", "wizard"}
-	stillStubbed := []string{"edit"}
 
 	t.Run("config --help lists subcommands", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -130,21 +102,6 @@ func TestExecute_ConfigGroup(t *testing.T) {
 			}
 		}
 	})
-
-	for _, s := range stillStubbed {
-		t.Run("config "+s, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-
-			code := Execute([]string{"config", s}, &stdout, &stderr)
-
-			if code == 0 {
-				t.Fatalf("config %s exit=0; want non-zero stub", s)
-			}
-			if !strings.Contains(stderr.String(), "not yet implemented") {
-				t.Errorf("config %s stderr=%q; want substring %q", s, stderr.String(), "not yet implemented")
-			}
-		})
-	}
 }
 
 func TestExecute_UnknownCommand_NonZero(t *testing.T) {

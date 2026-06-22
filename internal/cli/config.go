@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -105,9 +107,72 @@ func newConfigCmd(configPath *string) *cobra.Command {
 		},
 	})
 
-	cmd.AddCommand(newStubCmd(stubSpec{
-		use:   "edit",
-		short: "Open ~/.marunage/config.toml in $EDITOR with schema validation on save.",
-	}, "config"))
+	cmd.AddCommand(&cobra.Command{
+		Use:          "edit",
+		Short:        "Open config.toml in $EDITOR; validate on save and roll back if invalid.",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runConfigEdit(*configPath, cmd.OutOrStdout())
+		},
+	})
 	return cmd
+}
+
+// editFileHook launches the user's editor on path. It is a package var so
+// tests can substitute a scripted editor instead of spawning a real one.
+var editFileHook = launchEditor
+
+// launchEditor opens path in $EDITOR (falling back to $VISUAL, then vi),
+// inheriting the terminal so the user can edit interactively.
+func launchEditor(path string) error {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	c := exec.Command(editor, path)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
+}
+
+// runConfigEdit opens config.toml in the editor and, after it exits, re-loads
+// + validates the file. On a parse/validation failure it restores the pre-edit
+// contents so an invalid config never lands on disk, preserving the user's
+// comments and formatting (the editor writes the raw file in place; we never
+// re-serialise). A successful edit is recorded to audit.log.
+func runConfigEdit(configPath string, out io.Writer) error {
+	original, readErr := os.ReadFile(configPath)
+	existed := readErr == nil
+
+	if err := editFileHook(configPath); err != nil {
+		return fmt.Errorf("launch editor: %w", err)
+	}
+
+	c, err := config.Load(configPath)
+	if err != nil {
+		return rollbackConfig(configPath, original, existed, fmt.Errorf("invalid config after edit (rolled back): %w", err))
+	}
+	if err := c.Validate(); err != nil {
+		return rollbackConfig(configPath, original, existed, fmt.Errorf("invalid config after edit (rolled back): %w", err))
+	}
+
+	if auditor, err := logging.NewAuditLog(auditLogPathFor(configPath)); err == nil {
+		auditor.Record(config.AuditEvent{Action: "config.edit", Path: configPath})
+		_ = auditor.Close()
+	}
+	_, _ = fmt.Fprintln(out, "Config saved.")
+	return nil
+}
+
+// rollbackConfig restores the pre-edit file (or removes it when the edit
+// created a previously-absent file) and returns cause.
+func rollbackConfig(configPath string, original []byte, existed bool, cause error) error {
+	if existed {
+		_ = os.WriteFile(configPath, original, 0o600)
+	} else {
+		_ = os.Remove(configPath)
+	}
+	return cause
 }
