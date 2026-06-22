@@ -205,3 +205,14 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
+
+// Flush forwards to the wrapped ResponseWriter's Flusher so the access-log
+// wrapper does not break streaming handlers. Without this, the embedded
+// http.ResponseWriter is hidden behind *statusRecorder, the SSE and live-stream
+// handlers' w.(http.Flusher) assertion fails, and they abort with "streaming
+// unsupported" whenever a real AccessLogger is wired (i.e. in production).
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
