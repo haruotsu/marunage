@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -121,12 +122,14 @@ func writeViewFile(ctx context.Context, configPath string) (string, error) {
 	return dest, nil
 }
 
-// atomicWriteViewFile drops body at path via a sibling tmp file + rename,
-// mirroring internal/source/markdown.atomicWriteFile. Re-implemented here
-// rather than imported to avoid pulling internal/source/markdown into the
-// CLI dependency graph just for one helper; the markdown package's writer
-// is the canonical reference if either ever needs to change.
-func atomicWriteViewFile(path string, body []byte) error {
+// atomicWriteFileMode drops body at path via a sibling tmp file + rename, so
+// readers never observe a partial file, and chmods the result to mode before
+// the rename publishes it. This is the CLI package's single atomic-write
+// helper (mirrors internal/source/markdown.atomicWriteFile, re-implemented
+// here rather than imported to avoid pulling that package into the CLI
+// dependency graph; the markdown writer remains the canonical reference if
+// either ever needs to change).
+func atomicWriteFileMode(path string, body []byte, mode fs.FileMode) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	tmp, err := os.CreateTemp(dir, base+".tmp.*")
@@ -140,7 +143,7 @@ func atomicWriteViewFile(path string, body []byte) error {
 		cleanup()
 		return fmt.Errorf("write tmp: %w", err)
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return fmt.Errorf("chmod tmp: %w", err)
@@ -154,4 +157,10 @@ func atomicWriteViewFile(path string, body []byte) error {
 		return fmt.Errorf("rename tmp: %w", err)
 	}
 	return nil
+}
+
+// atomicWriteViewFile writes body at path with the 0o600 mode used for rendered
+// view files, delegating to the shared atomicWriteFileMode helper.
+func atomicWriteViewFile(path string, body []byte) error {
+	return atomicWriteFileMode(path, body, 0o600)
 }
