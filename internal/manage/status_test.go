@@ -15,10 +15,10 @@ import (
 func TestPlanResolvesStatusFromVerdict(t *testing.T) {
 	st := &fakeStore{}
 	cands := []collect.Candidate{
-		{Title: "ready row", Body: "x"},                                   // ready -> pending
-		{Title: "drop row", Body: "x", Verdict: collect.VerdictDrop},      // drop -> skipped
-		{Title: "escalate", Body: ""},                                     // needs-human -> waiting_human
-		{Title: "weird", Body: "x", Verdict: collect.Verdict("delegate")}, // unknown -> needs-human fallback
+		{Title: "ready row", Body: "x"},                                    // ready -> pending
+		{Title: "drop row", Body: "x", Verdict: collect.VerdictDrop},       // drop -> skipped
+		{Title: "escalate", Body: "x", Verdict: collect.VerdictNeedsHuman}, // needs-human -> waiting_human
+		{Title: "weird", Body: "x", Verdict: collect.Verdict("delegate")},  // unknown -> needs-human fallback
 	}
 	plan, err := Plan(context.Background(), cands, st)
 	if err != nil {
