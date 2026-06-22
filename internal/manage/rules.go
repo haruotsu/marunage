@@ -21,8 +21,10 @@ type Rules struct {
 	// BlockIfDepsIncomplete holds a candidate whose notes.depends_on lists a
 	// task that is not yet done.
 	BlockIfDepsIncomplete bool
-	// EscalateIfBodyEmpty routes a candidate with no body (or no title) to
-	// needs-human — there is not enough to act on unattended.
+	// EscalateIfBodyEmpty routes a candidate with no actionable summary (an
+	// empty title) to needs-human — there is not enough to act on unattended.
+	// A non-empty title is sufficient even with an empty body; the config key
+	// keeps its historical name for compatibility.
 	EscalateIfBodyEmpty bool
 	// DropIfCwdViolation drops a candidate whose resolved cwd falls outside
 	// the allowed prefixes (absorbs policy.CwdAllowed, redesign §3.2 / §7).
@@ -149,8 +151,13 @@ func (p *planner) cutoff(ctx context.Context, c collect.Candidate, n candidateNo
 	}
 
 	if p.rules.EscalateIfBodyEmpty {
-		if strings.TrimSpace(c.Body) == "" || strings.TrimSpace(c.Title) == "" {
-			return collect.VerdictNeedsHuman, "rule (info-insufficient): empty title or body", nil
+		// Escalate only when there is no actionable summary at all — an empty
+		// title. A clear title ("review the deploy doc", "marunageの実装を完了
+		// させる") is enough to act on even with an empty body, so we do NOT
+		// escalate purely on a missing body: that sent every title-only Slack
+		// mention / Google Task / email subject to needs-human.
+		if strings.TrimSpace(c.Title) == "" {
+			return collect.VerdictNeedsHuman, "rule (info-insufficient): no actionable title", nil
 		}
 	}
 

@@ -115,15 +115,18 @@ func TestPlanRuleMissingDepHolds(t *testing.T) {
 	}
 }
 
-func TestPlanRuleEmptyBodyEscalates(t *testing.T) {
+// A clear title with no body is actionable — the title is enough — so it must
+// NOT be escalated. Regression: it used to land in needs-human, sending every
+// title-only Slack mention / Google Task / email subject to a human.
+func TestPlanRuleTitleOnlyIsActionable(t *testing.T) {
 	st := &fakeStore{}
-	cands := []collect.Candidate{{Title: "no body", Body: ""}}
+	cands := []collect.Candidate{{Title: "review the deploy doc", Body: ""}}
 	plan, err := Plan(context.Background(), cands, st)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if got := decisionFor(t, plan, "no body").Verdict; got != collect.VerdictNeedsHuman {
-		t.Errorf("verdict = %q; want needs-human", got)
+	if got := decisionFor(t, plan, "review the deploy doc").Verdict; got == collect.VerdictNeedsHuman {
+		t.Errorf("verdict = needs-human; want a title-only candidate to stay actionable")
 	}
 }
 
@@ -354,7 +357,7 @@ func TestPlanSplitsReadyFromOther(t *testing.T) {
 	st := &fakeStore{}
 	cands := []collect.Candidate{
 		{Title: "ready1", Body: "x", Priority: "1"},
-		{Title: "escalate", Body: ""}, // needs-human
+		{Title: "", Body: "escalate"}, // needs-human (no actionable title)
 	}
 	plan, err := Plan(context.Background(), cands, st)
 	if err != nil {

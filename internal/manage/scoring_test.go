@@ -185,7 +185,7 @@ func TestPlanLLMScorerOnlyScoresReadyCandidates(t *testing.T) {
 	st := &fakeStore{}
 	cands := []collect.Candidate{
 		{Title: "ready1", Body: "x"},
-		{Title: "escalated", Body: ""}, // empty body -> needs-human, never scored
+		{Title: "escalated", Body: "x", Verdict: collect.VerdictNeedsHuman}, // needs-human, never scored
 		{Title: "ready2", Body: "x"},
 	}
 	var seen []string

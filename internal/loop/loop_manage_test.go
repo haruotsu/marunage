@@ -84,13 +84,13 @@ func TestRunOnce_ManagePipeline_ReadyCandidateIsDispatchable(t *testing.T) {
 	}
 }
 
-// An empty-body candidate escalates: status waiting_human, plan_label
-// needs-human, and it is NOT dispatchable.
-func TestRunOnce_ManagePipeline_EmptyBodyEscalates(t *testing.T) {
+// A title-only candidate (no body) is actionable — the title is enough — so it
+// becomes ready/pending and IS dispatchable, NOT escalated to a human.
+func TestRunOnce_ManagePipeline_TitleOnlyIsReady(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	registerListPlugin(t, f, "manual", []source.Task{
-		{Source: "manual", ExternalID: "e1", Title: "no body"},
+		{Source: "manual", ExternalID: "e1", Title: "review the deploy doc"},
 	})
 	l := f.newLoop(t, loop.WithManageStore(f.repo))
 	if err := l.RunOnce(f.ctx); err != nil {
@@ -98,18 +98,18 @@ func TestRunOnce_ManagePipeline_EmptyBodyEscalates(t *testing.T) {
 	}
 
 	row := rowByExternalID(t, f, "e1")
-	if row.Status != store.StatusWaitingHuman {
-		t.Errorf("Status = %q; want waiting_human", row.Status)
+	if row.Status != store.StatusPending {
+		t.Errorf("Status = %q; want pending", row.Status)
 	}
-	if row.PlanLabel != string(collect.VerdictNeedsHuman) {
-		t.Errorf("PlanLabel = %q; want needs-human", row.PlanLabel)
+	if row.PlanLabel != string(collect.VerdictReady) {
+		t.Errorf("PlanLabel = %q; want ready", row.PlanLabel)
 	}
 	disp, err := f.repo.List(f.ctx, store.ListFilter{Statuses: []string{store.StatusPending}, DispatchableOnly: true})
 	if err != nil {
 		t.Fatalf("List dispatchable: %v", err)
 	}
-	if len(disp) != 0 {
-		t.Errorf("dispatchable set = %+v; want empty (needs-human is not dispatchable)", disp)
+	if len(disp) != 1 {
+		t.Errorf("dispatchable set = %+v; want the title-only ready row", disp)
 	}
 }
 
@@ -192,33 +192,30 @@ func TestRunOnce_ManagePipeline_PersistsAllDecisions(t *testing.T) {
 func TestRunOnce_ManagePipeline_PromotesWaitingHumanToReady(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	call := 0
-	plug := &fakePlugin{
-		name: "manual",
-		listFn: func(context.Context) ([]source.Task, error) {
-			call++
-			if call == 1 {
-				// Empty body -> needs-human.
-				return []source.Task{{Source: "manual", ExternalID: "x", Title: "need info"}}, nil
-			}
-			// Body present -> ready.
-			return []source.Task{{Source: "manual", ExternalID: "x", Title: "need info", Body: "now has detail"}}, nil
-		},
+	// Seed a planner-owned waiting_human row directly (as an earlier
+	// escalation would leave it). The info-insufficient rule no longer
+	// produces needs-human from a title-only candidate, so we set the state
+	// rather than driving it through a tick.
+	id, err := f.repo.Insert(f.ctx, store.Task{Source: "manual", ExternalID: "x", Title: "need info", Body: "fragment"})
+	if err != nil {
+		t.Fatalf("seed insert: %v", err)
 	}
-	if err := f.reg.Register(plug); err != nil {
-		t.Fatalf("register: %v", err)
+	if err := f.repo.UpdateStatus(f.ctx, id, store.StatusWaitingHuman); err != nil {
+		t.Fatalf("seed status: %v", err)
 	}
+	if err := f.repo.SetPlan(f.ctx, id, string(collect.VerdictNeedsHuman), "seed", 0, 0, f.now); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+
+	// Re-emitting the row as a ready candidate must move status AND plan_label
+	// together: leaving status at waiting_human while plan_label flips to ready
+	// would create a row the dispatcher can never pick yet is labelled ready.
+	registerListPlugin(t, f, "manual", []source.Task{
+		{Source: "manual", ExternalID: "x", Title: "need info", Body: "now has detail"},
+	})
 	l := f.newLoop(t, loop.WithManageStore(f.repo))
-
 	if err := l.RunOnce(f.ctx); err != nil {
-		t.Fatalf("tick1: %v", err)
-	}
-	if got := rowByExternalID(t, f, "x").Status; got != store.StatusWaitingHuman {
-		t.Fatalf("after tick1 status = %q; want waiting_human", got)
-	}
-
-	if err := l.RunOnce(f.ctx); err != nil {
-		t.Fatalf("tick2: %v", err)
+		t.Fatalf("tick: %v", err)
 	}
 	row := rowByExternalID(t, f, "x")
 	if row.Status != store.StatusPending {
