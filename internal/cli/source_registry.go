@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/haruotsu/marunage/internal/config"
 	"github.com/haruotsu/marunage/internal/source"
@@ -109,7 +110,18 @@ func registerBuiltin(r *source.Registry, name string, cfg config.Config, files [
 			return fmt.Errorf("register googletasks: %w", err)
 		}
 	case "notion":
-		if err := notion.RegisterBuiltin(r); err != nil {
+		// Wire the database id from config and the HTTP client from the
+		// MARUNAGE_NOTION_TOKEN integration token. Without WithClient /
+		// WithDatabaseID every List fails with ErrClientRequired /
+		// ErrDatabaseIDRequired, so discovery could never read pages.
+		var notionOpts []notion.Option
+		if id := cfg.Discovery.Notion.DatabaseID; id != "" {
+			notionOpts = append(notionOpts, notion.WithDatabaseID(id))
+		}
+		if tok := os.Getenv("MARUNAGE_NOTION_TOKEN"); tok != "" {
+			notionOpts = append(notionOpts, notion.WithClient(notion.NewHTTPClient(nil, "", tok)))
+		}
+		if err := notion.RegisterBuiltin(r, notionOpts...); err != nil {
 			return fmt.Errorf("register notion: %w", err)
 		}
 	default:

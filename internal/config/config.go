@@ -48,6 +48,15 @@ type DiscoveryConfig struct {
 	Gmail            DiscoveryGmail    `toml:"gmail"`
 	Slack            DiscoverySlack    `toml:"slack"`
 	GitHub           DiscoveryGitHub   `toml:"github"`
+	Notion           DiscoveryNotion   `toml:"notion"`
+}
+
+// DiscoveryNotion configures the Notion source. The integration token is
+// read from MARUNAGE_NOTION_TOKEN (or the secrets store) rather than the
+// config file, so only the non-secret database id lives here.
+type DiscoveryNotion struct {
+	// DatabaseID is the Notion database the source queries for pages.
+	DatabaseID string `toml:"database_id"`
 }
 
 // DiscoveryMarkdown configures the Markdown TODO source for the loop/daemon.
