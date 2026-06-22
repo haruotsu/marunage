@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,8 +145,10 @@ func launchEditor(path string) error {
 // comments and formatting (the editor writes the raw file in place; we never
 // re-serialise). A successful edit is recorded to audit.log.
 func runConfigEdit(configPath string, out io.Writer) error {
-	original, readErr := os.ReadFile(configPath)
-	existed := readErr == nil
+	original, origMode, existed, err := readConfigForEdit(configPath)
+	if err != nil {
+		return err
+	}
 
 	if err := editFileHook(configPath); err != nil {
 		return fmt.Errorf("launch editor: %w", err)
@@ -152,10 +156,10 @@ func runConfigEdit(configPath string, out io.Writer) error {
 
 	c, err := config.Load(configPath)
 	if err != nil {
-		return rollbackConfig(configPath, original, existed, fmt.Errorf("invalid config after edit (rolled back): %w", err))
+		return rollbackConfig(configPath, original, existed, origMode, fmt.Errorf("invalid config after edit (rolled back): %w", err))
 	}
 	if err := c.Validate(); err != nil {
-		return rollbackConfig(configPath, original, existed, fmt.Errorf("invalid config after edit (rolled back): %w", err))
+		return rollbackConfig(configPath, original, existed, origMode, fmt.Errorf("invalid config after edit (rolled back): %w", err))
 	}
 
 	if auditor, err := logging.NewAuditLog(auditLogPathFor(configPath)); err == nil {
@@ -166,13 +170,42 @@ func runConfigEdit(configPath string, out io.Writer) error {
 	return nil
 }
 
-// rollbackConfig restores the pre-edit file (or removes it when the edit
-// created a previously-absent file) and returns cause.
-func rollbackConfig(configPath string, original []byte, existed bool, cause error) error {
-	if existed {
-		_ = os.WriteFile(configPath, original, 0o600)
-	} else {
-		_ = os.Remove(configPath)
+// readConfigForEdit reads the pre-edit config and its permission mode in a
+// single open, so a successful read always yields a known mode (there is no
+// separate stat that could fail and force a default). A genuine "file absent"
+// is reported as existed=false with no error; any other read failure
+// (permissions, EISDIR, transient I/O) aborts so the rollback's os.Remove can
+// never delete a real, still-present config (data loss).
+func readConfigForEdit(path string) (content []byte, mode fs.FileMode, existed bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, 0o600, false, nil
+		}
+		return nil, 0, false, fmt.Errorf("open %s: %w", path, err)
 	}
+	defer func() { _ = f.Close() }()
+
+	mode = 0o600
+	if info, statErr := f.Stat(); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	content, err = io.ReadAll(f)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	return content, mode, true, nil
+}
+
+// rollbackConfig restores the pre-edit file (or removes it when the edit
+// created a previously-absent file) and returns cause. The restore is atomic
+// (tmp file in the same dir + rename) so a crash mid-rollback can never leave a
+// half-written config on disk, and it re-applies the original permission mode.
+func rollbackConfig(configPath string, original []byte, existed bool, mode fs.FileMode, cause error) error {
+	if !existed {
+		_ = os.Remove(configPath)
+		return cause
+	}
+	_ = atomicWriteFileMode(configPath, original, mode)
 	return cause
 }
