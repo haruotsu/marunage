@@ -3,6 +3,7 @@ package loop_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,34 @@ import (
 	"github.com/haruotsu/marunage/internal/source"
 	"github.com/haruotsu/marunage/internal/store"
 )
+
+// An empty-title candidate is escalated to needs-human by the rule engine. It
+// must still persist (with a placeholder title) so it surfaces in the
+// waiting_human queue for a human to triage — otherwise the store's
+// title-required constraint drops the row and the escalation is silently lost
+// (the human never sees what manage decided to hand them).
+func TestRunOnce_ManagePipeline_EmptyTitleEscalatesToWaitingHuman(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	registerListPlugin(t, f, "manual", []source.Task{
+		{Source: "manual", ExternalID: "blank1", Title: "", Body: "a body but no title"},
+	})
+	l := f.newLoop(t, loop.WithManageStore(f.repo))
+	if err := l.RunOnce(f.ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	row := rowByExternalID(t, f, "blank1")
+	if row.Status != store.StatusWaitingHuman {
+		t.Errorf("Status = %q; want waiting_human (escalated, not dropped)", row.Status)
+	}
+	if strings.TrimSpace(row.Title) == "" {
+		t.Errorf("Title empty; want a placeholder so the row is visible to a human")
+	}
+	if row.PlanLabel != string(collect.VerdictNeedsHuman) {
+		t.Errorf("PlanLabel = %q; want needs-human", row.PlanLabel)
+	}
+}
 
 // rowByExternalID lists the tasks table and returns the row with the given
 // external_id, failing the test when absent.

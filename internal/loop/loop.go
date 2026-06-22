@@ -604,11 +604,27 @@ func taskFromCandidate(c collect.Candidate, status string) store.Task {
 		Source:      c.Source,
 		ExternalID:  c.ExternalID,
 		ExternalURL: c.SourcePath,
-		Title:       strings.TrimSpace(c.Title),
+		Title:       candidateTitle(c),
 		Body:        c.Body,
 		Notes:       c.Notes,
 		Status:      status,
 	}
+}
+
+// candidateTitle returns the candidate's trimmed title, or a placeholder when
+// it is empty. An empty title is exactly what the rule engine escalates to
+// needs-human, but the store rejects a blank title — so without a placeholder
+// the escalated row never persists and the candidate vanishes from the
+// waiting_human queue (a silent escalation loss). The placeholder keeps the row
+// visible to a human, who can rename it during triage.
+func candidateTitle(c collect.Candidate) string {
+	if title := strings.TrimSpace(c.Title); title != "" {
+		return title
+	}
+	if c.ExternalID != "" {
+		return fmt.Sprintf("(untitled %s item %s)", c.Source, c.ExternalID)
+	}
+	return fmt.Sprintf("(untitled %s item)", c.Source)
 }
 
 // discoverAll walks the registry and runs each plugin's Since/List in
