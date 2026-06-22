@@ -141,12 +141,18 @@ func TestConfigEdit_SnapshotsPreEditBackup(t *testing.T) {
 
 // CE8: an invalid edit that rolls back leaves no .bak snapshot — nothing was
 // committed, so there is nothing to recover and we keep the directory clean.
+// The edit hook genuinely rewrites the file (and the result is rolled back), so
+// this drives the rollback path: an implementation that snapshotted before
+// validation, or unconditionally, would leave a .bak here and fail.
 func TestConfigEdit_InvalidEditWritesNoBackup(t *testing.T) {
 	path := configPathFlag(t)
-	if err := os.WriteFile(path, []byte("[core]\nmax_parallel = 2\n"), 0o600); err != nil {
+	original := "# keep me\n[core]\nmax_parallel = 2\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
+	editorCalled := false
 	withEditHook(t, func(p string) error {
+		editorCalled = true
 		return os.WriteFile(p, []byte("[core]\nmax_parallel = 0\n"), 0o600)
 	})
 
@@ -154,6 +160,18 @@ func TestConfigEdit_InvalidEditWritesNoBackup(t *testing.T) {
 	if code := Execute([]string{"--config", path, "config", "edit"}, &stdout, &stderr); code == 0 {
 		t.Fatalf("config edit exit=0; want non-zero on invalid edit")
 	}
+	if !editorCalled {
+		t.Fatal("edit hook was not called; the rollback path was never exercised")
+	}
+	// The rollback path ran: the file is back to its pre-edit contents...
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("config not rolled back: got %q", got)
+	}
+	// ...and no snapshot was written for the discarded edit.
 	matches, _ := filepath.Glob(path + ".bak.*")
 	if len(matches) != 0 {
 		t.Errorf("invalid edit should leave no .bak snapshot; got %v", matches)

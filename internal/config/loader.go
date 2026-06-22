@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -89,13 +90,38 @@ func BackupPath(path string, t time.Time) string {
 	return fmt.Sprintf("%s.bak.%s", path, t.UTC().Format("20060102T150405Z"))
 }
 
+// maxConfigBackups bounds how many <path>.bak.<ts> snapshots are retained.
+// Backups carry the same (possibly secret-referencing) contents as the config,
+// so they must not accumulate without limit; WriteBackup prunes older
+// generations past this count.
+const maxConfigBackups = 10
+
 // WriteBackup snapshots content to BackupPath(path, now) with 0o600 and returns
 // the backup path written. The 0o600 mode matches config.toml's own, since a
-// backup carries the same (possibly secret-referencing) contents.
+// backup carries the same (possibly secret-referencing) contents. Older
+// snapshots beyond maxConfigBackups are pruned so secret-bearing copies do not
+// pile up indefinitely.
 func WriteBackup(path string, content []byte) (string, error) {
 	backup := BackupPath(path, time.Now())
 	if err := os.WriteFile(backup, content, 0o600); err != nil {
 		return "", fmt.Errorf("write backup %s: %w", backup, err)
 	}
+	pruneBackups(path, maxConfigBackups)
 	return backup, nil
+}
+
+// pruneBackups keeps the keep most-recent <path>.bak.* snapshots and removes
+// the rest. The fixed-width UTC timestamp in BackupPath sorts lexicographically
+// in chronological order, so a plain string sort puts the oldest first. Pruning
+// is best-effort: a glob or remove failure must never fail the save/edit that
+// already succeeded on disk.
+func pruneBackups(path string, keep int) {
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		_ = os.Remove(old)
+	}
 }
