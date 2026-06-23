@@ -1,5 +1,39 @@
 # Changelog
 
+## [v0.0.15](https://github.com/haruotsu/marunage/compare/v0.0.14...v0.0.15) - 2026-06-23
+
+- PR-R04: data model (plan_* columns) + [manage] config section by @haruotsu in https://github.com/haruotsu/marunage/pull/117
+- feat(collect): add collection layer (PR-R02) by @haruotsu in https://github.com/haruotsu/marunage/pull/118
+- PR-R03: internal/manage skeleton (verdict registry, rule engine, LLM-free Plan) by @haruotsu in https://github.com/haruotsu/marunage/pull/120
+- feat(exec): Executor 抽象を導入し cmux を一実装に降格 (PR-R01) by @haruotsu in https://github.com/haruotsu/marunage/pull/119
+- PR-R08: localExecutor (direct child process, Attachable 非対応) by @haruotsu in https://github.com/haruotsu/marunage/pull/121
+- PR-R07: tmuxExecutor + backend-agnostic Executor conformance suite by @haruotsu in https://github.com/haruotsu/marunage/pull/122
+- PR-R05: wire cmd/marunage into the collect → manage → exec pipeline by @haruotsu in https://github.com/haruotsu/marunage/pull/123
+- PR-R06: LLM スコアリング本実装 + marunage-manage skill + コスト制御 by @haruotsu in https://github.com/haruotsu/marunage/pull/124
+- docs(readme): document the collect → manage → exec layering by @haruotsu in https://github.com/haruotsu/marunage/pull/125
+- feat(exec/herdr): herdr backend (exec 抽象の3つ目の実装) by @haruotsu in https://github.com/haruotsu/marunage/pull/126
+- fix(exec): make the local executor usable (backend.New wiring + graceful reaper skip) by @haruotsu in https://github.com/haruotsu/marunage/pull/127
+- fix(sources): wire calendar gws client + doctor gws-auth check by @haruotsu in https://github.com/haruotsu/marunage/pull/128
+- fix(gmail): fetch with format=full so Candidate.Body is populated by @haruotsu in https://github.com/haruotsu/marunage/pull/129
+- feat(web): clickable status cards + Skipped card + pending delete button by @haruotsu in https://github.com/haruotsu/marunage/pull/130
+- feat(dispatch): resolve task cwd via ghq with default_cwd fallback by @haruotsu in https://github.com/haruotsu/marunage/pull/131
+- fix(github): lift is:open into gh search --state flag (discovery returned nothing) by @haruotsu in https://github.com/haruotsu/marunage/pull/132
+- feat(slack): agent-agnostic command adapter for discovery (token path kept) by @haruotsu in https://github.com/haruotsu/marunage/pull/133
+- fix(slack): populate Body for single-line messages (avoid needs-human escalation) by @haruotsu in https://github.com/haruotsu/marunage/pull/134
+- feat(googletasks): gws-CLI client (Google Tasks discovery now works) by @haruotsu in https://github.com/haruotsu/marunage/pull/135
+- feat(notion): wire HTTP client + database_id (Notion discovery now works) by @haruotsu in https://github.com/haruotsu/marunage/pull/136
+- fix(manage): escalate on empty title not empty body (title-only items are actionable) by @haruotsu in https://github.com/haruotsu/marunage/pull/137
+- feat(slack/reaction): Slack Web API client (reaction trigger now works) by @haruotsu in https://github.com/haruotsu/marunage/pull/138
+- feat(doctor): verify Notion token + database_id when notion is enabled by @haruotsu in https://github.com/haruotsu/marunage/pull/139
+- feat(cli): implement run-all, open, notify, config edit (drop stubs) by @haruotsu in https://github.com/haruotsu/marunage/pull/141
+- fix(config): make `config edit` rollback safe and audited by @haruotsu in https://github.com/haruotsu/marunage/pull/142
+- refactor(fsutil): share AtomicWrite + config edit .bak parity with bounded retention by @haruotsu in https://github.com/haruotsu/marunage/pull/143
+- fix(web): preserve http.Flusher through the access-log wrapper (SSE was dead in prod) by @haruotsu in https://github.com/haruotsu/marunage/pull/144
+- fix(loop): persist empty-title needs-human escalations (was silently dropped) by @haruotsu in https://github.com/haruotsu/marunage/pull/145
+- fix(web): fail closed on --remote without auth acknowledgement by @haruotsu in https://github.com/haruotsu/marunage/pull/146
+- feat(daemon): add `daemon logs` and fix onboarding docs by @haruotsu in https://github.com/haruotsu/marunage/pull/147
+- feat(web): delete tasks directly from the task list (implements #114) by @haruotsu in https://github.com/haruotsu/marunage/pull/148
+
 ## [v0.0.14](https://github.com/haruotsu/marunage/compare/v0.0.13...v0.0.14) - 2026-05-11
 - fix(cli): config wizardのレイアウト崩れを修正（raw modeでCRLF出力） by @haruotsu in https://github.com/haruotsu/marunage/pull/109
 
