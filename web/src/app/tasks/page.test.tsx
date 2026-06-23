@@ -23,8 +23,15 @@ vi.mock('next/navigation', () => ({
 }))
 
 vi.mock('@/components/task-card', () => ({
-  TaskCard: ({ task }: { task: Task }) => (
-    <div data-testid="task-card">{task.title}</div>
+  TaskCard: ({ task, onDelete }: { task: Task; onDelete?: (id: number) => void }) => (
+    <div data-testid="task-card">
+      {task.title}
+      {onDelete && (
+        <button aria-label={`delete-${task.id}`} onClick={() => onDelete(task.id)}>
+          del
+        </button>
+      )}
+    </div>
   ),
 }))
 
@@ -179,5 +186,39 @@ describe('TaskListView', () => {
       expect(mockGetTasks).toHaveBeenCalledWith('skipped')
     })
     expect(screen.getByText('filtered by')).toBeTruthy()
+  })
+
+  it('deletes a task from the list and decrements the count', async () => {
+    mockDeleteTask.mockReset()
+    mockDeleteTask.mockResolvedValue(undefined)
+    mockGetTasks.mockResolvedValue({
+      tasks: [makeTask({ id: 1, title: 'Keep' }), makeTask({ id: 2, title: 'Remove' })],
+      total: 2,
+    })
+    render(<TaskListView />)
+    await waitFor(() => expect(screen.getByText('Remove')).toBeTruthy())
+
+    fireEvent.click(screen.getByLabelText('delete-2'))
+
+    await waitFor(() => expect(screen.queryByText('Remove')).toBeNull())
+    expect(mockDeleteTask).toHaveBeenCalledWith(2)
+    expect(screen.getByText('Keep')).toBeTruthy()
+    expect(screen.getByText('(1)')).toBeTruthy()
+  })
+
+  it('keeps the task and shows an error banner when delete fails', async () => {
+    mockDeleteTask.mockReset()
+    mockDeleteTask.mockRejectedValue(new Error('delete boom'))
+    mockGetTasks.mockResolvedValue({
+      tasks: [makeTask({ id: 1, title: 'Sticky' })],
+      total: 1,
+    })
+    render(<TaskListView />)
+    await waitFor(() => expect(screen.getByText('Sticky')).toBeTruthy())
+
+    fireEvent.click(screen.getByLabelText('delete-1'))
+
+    await waitFor(() => expect(screen.getByText('delete boom')).toBeTruthy())
+    expect(screen.getByText('Sticky')).toBeTruthy()
   })
 })
